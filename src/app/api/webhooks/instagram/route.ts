@@ -1,10 +1,10 @@
 import "server-only";
 
+import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
+import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
 import { verifyInstagramWebhookSignature } from "@/lib/webhook-verify";
-import { sendWorkflowExecution } from "@/inngest/utils";
-import { type NextRequest, NextResponse } from "next/server";
 
 type CommentValue = {
   id: string;

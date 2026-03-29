@@ -1,9 +1,9 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
 import { useEffect } from "react";
+import { Button } from "@/components/ui/button";
 
-export default function DashboardError({
+export default function DashboardRouteError({
   error,
   reset,
 }: {
@@ -17,7 +17,9 @@ export default function DashboardError({
   return (
     <div className="flex min-h-[50vh] flex-col items-center justify-center gap-6 px-6 text-center">
       <div className="space-y-2">
-        <p className="text-sm font-medium text-destructive">Something went wrong</p>
+        <p className="text-sm font-medium text-destructive">
+          Something went wrong
+        </p>
         <h1 className="text-xl font-semibold tracking-tight text-foreground">
           This part of the app failed to load
         </h1>

@@ -5,7 +5,11 @@ import {
   verifyStripeWebhookSignature,
 } from "./webhook-verify";
 
-function stripeSignatureHeader(rawBody: string, secret: string, timestamp: number) {
+function stripeSignatureHeader(
+  rawBody: string,
+  secret: string,
+  timestamp: number,
+) {
   const signedPayload = `${timestamp}.${rawBody}`;
   const key = Buffer.from(secret, "utf8");
   const v1 = createHmac("sha256", key)
@@ -32,9 +36,7 @@ describe("verifyStripeWebhookSignature", () => {
   });
 
   it("rejects missing header", () => {
-    expect(
-      verifyStripeWebhookSignature("{}", null, "secret"),
-    ).toBe(false);
+    expect(verifyStripeWebhookSignature("{}", null, "secret")).toBe(false);
   });
 });
 
@@ -57,11 +59,9 @@ describe("verifyInstagramWebhookSignature", () => {
   });
 
   it("rejects missing or malformed header", () => {
-    expect(
-      verifyInstagramWebhookSignature("{}", null, "secret"),
-    ).toBe(false);
-    expect(
-      verifyInstagramWebhookSignature("{}", "md5=abc", "secret"),
-    ).toBe(false);
+    expect(verifyInstagramWebhookSignature("{}", null, "secret")).toBe(false);
+    expect(verifyInstagramWebhookSignature("{}", "md5=abc", "secret")).toBe(
+      false,
+    );
   });
 });

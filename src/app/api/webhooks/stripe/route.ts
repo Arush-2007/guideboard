@@ -1,6 +1,6 @@
+import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import { verifyStripeWebhookSignature } from "@/lib/webhook-verify";
-import { type NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
@@ -20,11 +20,7 @@ export async function POST(request: NextRequest) {
     const stripeSignature = request.headers.get("stripe-signature");
 
     if (
-      !verifyStripeWebhookSignature(
-        rawBody,
-        stripeSignature,
-        signingSecret,
-      )
+      !verifyStripeWebhookSignature(rawBody, stripeSignature, signingSecret)
     ) {
       return NextResponse.json(
         { success: false, error: "Invalid Stripe signature" },
