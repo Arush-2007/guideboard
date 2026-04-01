@@ -95,6 +95,11 @@ const credentialTypeOptions = [
     label: "Instagram",
     logo: "/logos/instagram.svg",
   },
+  {
+    value: CredentialType.XAI,
+    label: "xAI (Grok)",
+    logo: "/logos/xai.svg",
+  },
 ];
 
 interface CredentialFormProps {
@@ -323,7 +328,11 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                       <FormControl>
                         <Input
                           type="password"
-                          placeholder="sk-..."
+                          placeholder={
+                            watchedType === CredentialType.XAI
+                              ? "xai-..."
+                              : "sk-..."
+                          }
                           {...field}
                         />
                       </FormControl>

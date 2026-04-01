@@ -27,6 +27,8 @@ model User {
   workflows     Workflow[]
   credentials   Credential[]
   instagramCredentials InstagramCredential[]
+  instagramSettings    InstagramSettings?
+  youtubeCredentials   YoutubeCredential[]
 
   @@unique([email])
   @@map("user")
@@ -103,11 +105,37 @@ model InstagramCredential {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model InstagramSettings {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  accountDescription String?
+  replyTone          String?
+  replyGoal          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model YoutubeCredential {
+  id           String   @id @default(cuid())
+  userId       String
+  accessToken  String
+  refreshToken String
+  channelId    String
+  channelTitle String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
 enum CredentialType {
   OPENAI
   ANTHROPIC
   GEMINI
   INSTAGRAM
+  XAI
 }
 
 model Workflow {
@@ -132,6 +160,9 @@ enum NodeType {
   STRIPE_TRIGGER
   INSTAGRAM_COMMENT_TRIGGER
   INSTAGRAM_REPLY_COMMENT
+  YOUTUBE_COMMENT_TRIGGER
+  YOUTUBE_REPLY_COMMENT
+  AI_REPLY_GENERATOR
   ANTHROPIC
   GEMINI
   OPENAI

@@ -51,6 +51,12 @@ const triggerNodes: NodeTypeOption[] = [
     description: "Runs the flow when a comment is posted on your Instagram post",
     icon: "/logos/instagram.svg",
   },
+  {
+    type: NodeType.YOUTUBE_COMMENT_TRIGGER,
+    label: "YouTube Comment",
+    description: "Runs the flow when a comment is posted on your YouTube video",
+    icon: "/logos/youtube.svg",
+  },
 ];
 
 const executionNodes: NodeTypeOption[] = [
@@ -95,6 +101,18 @@ const executionNodes: NodeTypeOption[] = [
     label: "Instagram Reply",
     description: "Reply to an Instagram comment using your connected account",
     icon: "/logos/instagram.svg",
+  },
+  {
+    type: NodeType.YOUTUBE_REPLY_COMMENT,
+    label: "YouTube Reply",
+    description: "Reply to a YouTube comment using your connected channel",
+    icon: "/logos/youtube.svg",
+  },
+  {
+    type: NodeType.AI_REPLY_GENERATOR,
+    label: "AI Reply Generator",
+    description: "Generate an AI reply to a comment using xAI, Gemini, or OpenAI",
+    icon: "/logos/xai.svg",
   },
 ];
 

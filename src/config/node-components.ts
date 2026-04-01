@@ -8,6 +8,9 @@ import { GoogleFormTrigger } from "@/features/triggers/components/google-form-tr
 import { StripeTriggerNode } from "@/features/triggers/components/stripe-trigger/node";
 import { InstagramCommentTriggerNode } from "@/features/triggers/components/instagram-comment-trigger/node";
 import { InstagramReplyNode } from "@/features/executions/components/instagram-reply-comment/node";
+import { YoutubeCommentTriggerNode } from "@/features/triggers/components/youtube-comment-trigger/node";
+import { YoutubeReplyNode } from "@/features/executions/components/youtube-reply-comment/node";
+import { AiReplyGeneratorNode } from "@/features/executions/components/ai-reply-generator/node";
 import { GeminiNode } from "@/features/executions/components/gemini/node";
 import { OpenAiNode } from "@/features/executions/components/openai/node";
 import { AnthropicNode } from "@/features/executions/components/anthropic/node";
@@ -22,6 +25,9 @@ export const nodeComponents = {
   [NodeType.STRIPE_TRIGGER]: StripeTriggerNode,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: InstagramCommentTriggerNode,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: InstagramReplyNode,
+  [NodeType.YOUTUBE_COMMENT_TRIGGER]: YoutubeCommentTriggerNode,
+  [NodeType.YOUTUBE_REPLY_COMMENT]: YoutubeReplyNode,
+  [NodeType.AI_REPLY_GENERATOR]: AiReplyGeneratorNode,
   [NodeType.GEMINI]: GeminiNode,
   [NodeType.OPENAI]: OpenAiNode,
   [NodeType.ANTHROPIC]: AnthropicNode,

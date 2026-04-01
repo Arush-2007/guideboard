@@ -219,4 +219,20 @@ export const credentialsRouter = createTRPCRouter({
     });
     return { ok: true as const };
   }),
+  getYoutube: protectedProcedure.query(async ({ ctx }) => {
+    return prisma.youtubeCredential.findFirst({
+      where: { userId: ctx.auth.user.id },
+      select: {
+        id: true,
+        channelTitle: true,
+        channelId: true,
+      },
+    });
+  }),
+  disconnectYoutube: protectedProcedure.mutation(async ({ ctx }) => {
+    await prisma.youtubeCredential.deleteMany({
+      where: { userId: ctx.auth.user.id },
+    });
+    return { ok: true as const };
+  }),
 });

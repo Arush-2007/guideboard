@@ -6,6 +6,7 @@ import {
   KeyIcon,
   LayoutGridIcon,
   LogOutIcon,
+  SettingsIcon,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
@@ -37,6 +38,11 @@ const menuItems = [
         title: "Credentials",
         icon: KeyIcon,
         url: "/credentials",
+      },
+      {
+        title: "Settings",
+        icon: SettingsIcon,
+        url: "/settings",
       },
       {
         title: "Executions",

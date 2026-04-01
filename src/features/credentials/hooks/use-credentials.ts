@@ -126,3 +126,33 @@ export const useDisconnectInstagram = () => {
     }),
   );
 };
+
+/**
+ * Linked YouTube channel (OAuth), without sensitive fields
+ */
+export const useYoutubeCredential = () => {
+  const trpc = useTRPC();
+  return useQuery(trpc.credentials.getYoutube.queryOptions());
+};
+
+/**
+ * Remove linked YouTube channel for the current user
+ */
+export const useDisconnectYoutube = () => {
+  const queryClient = useQueryClient();
+  const trpc = useTRPC();
+
+  return useMutation(
+    trpc.credentials.disconnectYoutube.mutationOptions({
+      onSuccess: () => {
+        toast.success("YouTube disconnected");
+        queryClient.invalidateQueries(
+          trpc.credentials.getYoutube.queryOptions(),
+        );
+      },
+      onError: (error) => {
+        toast.error(error.message);
+      },
+    }),
+  );
+};

@@ -14,9 +14,11 @@ import {
 } from "@/components/entity-components";
 import {
   useDisconnectInstagram,
+  useDisconnectYoutube,
   useInstagramCredential,
   useRemoveCredential,
   useSuspenseCredentials,
+  useYoutubeCredential,
 } from "../hooks/use-credentials";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCredentialsParams } from "../hooks/use-credentials-params";
@@ -106,6 +108,80 @@ export const CredentialsInstagramSection = () => {
             className="w-full border-[#E1306C]/30 bg-[#E1306C] text-white hover:bg-[#E1306C]/90 sm:w-auto"
           >
             <Link href="/api/auth/instagram">Connect Instagram</Link>
+          </Button>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+export const CredentialsYoutubeAuthErrorToast = () => {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (searchParams.get("error") !== "youtube_auth_failed") {
+      return;
+    }
+
+    toast.error("YouTube connection failed. Please try again.");
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("error");
+    const qs = next.toString();
+    router.replace(qs ? `/credentials?${qs}` : "/credentials");
+  }, [searchParams, router]);
+
+  return null;
+};
+
+export const CredentialsYoutubeSection = () => {
+  const { data, isPending } = useYoutubeCredential();
+  const disconnect = useDisconnectYoutube();
+
+  return (
+    <Card className="rounded-3xl border border-[#FF0000]/25 bg-card/90 shadow-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-lg">
+          <span className="flex size-9 items-center justify-center rounded-xl bg-[#FF0000]/10">
+            <Image
+              src="/logos/youtube.svg"
+              alt="YouTube"
+              width={22}
+              height={22}
+            />
+          </span>
+          YouTube
+        </CardTitle>
+        <CardDescription>
+          Connect your YouTube channel with OAuth to use YouTube features.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {isPending ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : data ? (
+          <>
+            <p className="text-sm text-foreground">
+              Connected as{" "}
+              <span className="font-medium">{data.channelTitle}</span>
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              className="w-full shrink-0 border-[#FF0000]/30 sm:w-auto"
+              disabled={disconnect.isPending}
+              onClick={() => disconnect.mutate()}
+            >
+              Disconnect
+            </Button>
+          </>
+        ) : (
+          <Button
+            asChild
+            className="w-full border-[#FF0000]/30 bg-[#FF0000] text-white hover:bg-[#FF0000]/90 sm:w-auto"
+          >
+            <Link href="/api/auth/youtube">Connect YouTube</Link>
           </Button>
         )}
       </CardContent>
@@ -212,6 +288,7 @@ const credentialLogos: Record<CredentialType, string> = {
   [CredentialType.ANTHROPIC]: "/logos/anthropic.svg",
   [CredentialType.GEMINI]: "/logos/gemini.svg",
   [CredentialType.INSTAGRAM]: "/logos/instagram.svg",
+  [CredentialType.XAI]: "/logos/xai.svg",
 };
 
 export const CredentialItem = ({ data }: { data: Credential }) => {

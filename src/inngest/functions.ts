@@ -15,6 +15,9 @@ import { discordChannel } from "./channels/discord";
 import { slackChannel } from "./channels/slack";
 import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
 import { instagramReplyChannel } from "./channels/instagram-reply-comment";
+import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
+import { youtubeReplyChannel } from "./channels/youtube-reply-comment";
+import { aiReplyGeneratorChannel } from "./channels/ai-reply-generator";
 
 export const executeWorkflow = inngest.createFunction(
   { 
@@ -45,6 +48,9 @@ export const executeWorkflow = inngest.createFunction(
       slackChannel(),
       instagramCommentTriggerChannel(),
       instagramReplyChannel(),
+      youtubeCommentTriggerChannel(),
+      youtubeReplyChannel(),
+      aiReplyGeneratorChannel(),
     ],
   },
   async ({ event, step, publish }) => {
