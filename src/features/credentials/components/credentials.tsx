@@ -59,9 +59,15 @@ export const CredentialsInstagramAuthErrorToast = () => {
   return null;
 };
 
+const INSTAGRAM_TOKEN_WARNING_MS = 10 * 24 * 60 * 60 * 1000;
+
 export const CredentialsInstagramSection = () => {
   const { data, isPending } = useInstagramCredential();
   const disconnect = useDisconnectInstagram();
+
+  const isExpiringSoon =
+    data?.tokenExpiresAt != null &&
+    new Date(data.tokenExpiresAt).getTime() < Date.now() + INSTAGRAM_TOKEN_WARNING_MS;
 
   return (
     <Card className="rounded-3xl border border-[#E1306C]/25 bg-card/90 shadow-sm">
@@ -81,26 +87,38 @@ export const CredentialsInstagramSection = () => {
           Connect your Instagram account with OAuth to use Instagram features.
         </CardDescription>
       </CardHeader>
-      <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <CardContent className="flex flex-col gap-3">
         {isPending ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : data ? (
           <>
-            <p className="text-sm text-foreground">
-              Connected as{" "}
-              <span className="font-medium">
-                @{data.instagramUsername}
-              </span>
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full shrink-0 border-[#E1306C]/30 sm:w-auto"
-              disabled={disconnect.isPending}
-              onClick={() => disconnect.mutate()}
-            >
-              Disconnect
-            </Button>
+            {isExpiringSoon && (
+              <div
+                role="alert"
+                className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400"
+              >
+                Your Instagram token expires on{" "}
+                <span className="font-medium">
+                  {new Date(data.tokenExpiresAt!).toLocaleDateString()}
+                </span>
+                . Reconnect Instagram to reset the 60-day window.
+              </div>
+            )}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-foreground">
+                Connected as{" "}
+                <span className="font-medium">@{data.instagramUsername}</span>
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full shrink-0 border-[#E1306C]/30 sm:w-auto"
+                disabled={disconnect.isPending}
+                onClick={() => disconnect.mutate()}
+              >
+                Disconnect
+              </Button>
+            </div>
           </>
         ) : (
           <Button

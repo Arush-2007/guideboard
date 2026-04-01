@@ -2,8 +2,25 @@ import prisma from "@/lib/db";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
+import { ExecutionStatus } from "@/generated/prisma";
 
 export const executionsRouter = createTRPCRouter({
+  getRecentFailures: protectedProcedure.query(async ({ ctx }) => {
+    return prisma.execution.findMany({
+      where: {
+        workflow: { userId: ctx.auth.user.id },
+        status: ExecutionStatus.FAILED,
+      },
+      orderBy: { startedAt: "desc" },
+      take: 5,
+      select: {
+        id: true,
+        startedAt: true,
+        error: true,
+        workflow: { select: { id: true, name: true } },
+      },
+    });
+  }),
   getOne: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(({ ctx, input }) => {

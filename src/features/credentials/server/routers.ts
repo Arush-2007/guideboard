@@ -210,6 +210,7 @@ export const credentialsRouter = createTRPCRouter({
         id: true,
         instagramUsername: true,
         instagramAccountId: true,
+        tokenExpiresAt: true,
       },
     });
   }),

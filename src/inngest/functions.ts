@@ -186,3 +186,21 @@ export const pollYoutubeComments = inngest.createFunction(
     }
   },
 );
+
+export const pruneOldExecutions = inngest.createFunction(
+  { id: "prune-old-executions", retries: 0 },
+  { cron: "0 3 * * *" }, // 3 AM UTC daily
+  async ({ step }) => {
+    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const result = await step.run("delete-old-executions", async () => {
+      return prisma.execution.deleteMany({
+        where: {
+          startedAt: { lt: cutoff },
+        },
+      });
+    });
+
+    return { deletedCount: result.count, cutoff: cutoff.toISOString() };
+  },
+);

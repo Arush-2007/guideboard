@@ -95,13 +95,14 @@ model Credential {
 }
 
 model InstagramCredential {
-  id                   String   @id @default(cuid())
+  id                   String    @id @default(cuid())
   userId               String
   accessToken          String
   instagramAccountId   String
   instagramUsername    String
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
+  tokenExpiresAt       DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

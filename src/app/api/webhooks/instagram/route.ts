@@ -5,6 +5,7 @@ import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
 import { verifyInstagramWebhookSignature } from "@/lib/webhook-verify";
+import { refreshInstagramTokenIfNeeded } from "@/lib/instagram-token";
 
 type CommentValue = {
   id: string;
@@ -86,12 +87,27 @@ export async function POST(request: NextRequest) {
 
     const triggerNodes = await prisma.node.findMany({
       where: { type: NodeType.INSTAGRAM_COMMENT_TRIGGER },
-      select: { id: true, workflowId: true, data: true },
+      select: {
+        id: true,
+        workflowId: true,
+        data: true,
+        workflow: { select: { userId: true } },
+      },
     });
 
     if (triggerNodes.length === 0) {
       return NextResponse.json({ success: true }, { status: 200 });
     }
+
+    // Refresh Instagram tokens for all users with active trigger nodes (non-fatal)
+    const uniqueUserIds = [...new Set(triggerNodes.map((n) => n.workflow.userId))];
+    await Promise.all(
+      uniqueUserIds.map((userId) =>
+        refreshInstagramTokenIfNeeded(userId).catch(() => {
+          console.warn("Instagram token refresh attempt failed");
+        }),
+      ),
+    );
 
     for (const entry of body.entry ?? []) {
       for (const change of entry.changes ?? []) {

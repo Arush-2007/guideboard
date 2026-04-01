@@ -82,6 +82,9 @@ export async function GET(request: Request) {
       .json<LongLivedTokenResponse>();
 
     const longLivedToken = longLived.access_token;
+    const tokenExpiresAt = longLived.expires_in
+      ? new Date(Date.now() + longLived.expires_in * 1000)
+      : undefined;
 
     const meUrl = new URL("https://graph.instagram.com/me");
     meUrl.searchParams.set("fields", "id,username");
@@ -102,6 +105,7 @@ export async function GET(request: Request) {
           accessToken: encryptedToken,
           instagramAccountId: me.id,
           instagramUsername: me.username,
+          tokenExpiresAt,
         },
       });
     } else {
@@ -111,6 +115,7 @@ export async function GET(request: Request) {
           accessToken: encryptedToken,
           instagramAccountId: me.id,
           instagramUsername: me.username,
+          tokenExpiresAt,
         },
       });
     }

@@ -1,8 +1,9 @@
-import { BellIcon, SearchIcon, SparklesIcon } from "lucide-react";
+import { SparklesIcon } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Input } from "@/components/ui/input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { AppHeaderSearch } from "@/components/app-header-search";
+import { AppHeaderNotifications } from "@/components/app-header-notifications";
 
 export const AppHeader = () => {
   return (
@@ -18,27 +19,13 @@ export const AppHeader = () => {
           </span>
           Guideboard
         </Link>
-        <div className="relative ml-1 hidden w-full max-w-sm md:block">
-          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            readOnly
-            aria-label="Search"
-            className="h-10 rounded-full border-border/80 bg-card/80 pl-9"
-            placeholder="Search workflows, credentials, executions..."
-          />
-        </div>
+        <AppHeaderSearch />
         <div className="ml-auto flex items-center gap-2">
           <span className="hidden rounded-full border border-primary/20 bg-primary/10 px-3.5 py-1.5 text-xs font-semibold text-primary sm:inline-flex">
             Workspace
           </span>
           <ThemeToggle />
-          <button
-            type="button"
-            className="inline-flex size-10 items-center justify-center rounded-full border border-border/80 bg-card text-muted-foreground transition-all duration-200 hover:-translate-y-0.5 hover:bg-accent hover:text-foreground hover:shadow-sm"
-            aria-label="Notifications"
-          >
-            <BellIcon className="size-4" />
-          </button>
+          <AppHeaderNotifications />
         </div>
       </div>
     </header>
