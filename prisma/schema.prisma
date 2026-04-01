@@ -27,7 +27,7 @@ model User {
   workflows     Workflow[]
   credentials   Credential[]
   instagramCredentials InstagramCredential[]
-  instagramSettings    InstagramSettings?
+  aiReplySettings      AiReplySettings?
   youtubeCredentials   YoutubeCredential[]
   youtubeCommentPolls  YoutubeCommentPoll[]
 
@@ -107,7 +107,7 @@ model InstagramCredential {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
-model InstagramSettings {
+model AiReplySettings {
   id                 String   @id @default(cuid())
   userId             String   @unique
   accountDescription String?

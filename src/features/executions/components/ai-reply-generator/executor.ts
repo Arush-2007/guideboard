@@ -82,7 +82,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
     const resolved = await step.run(
       "resolve-credential-and-settings",
       async (): Promise<ResolvedCredential> => {
-        const settings = await prisma.instagramSettings.findUnique({
+        const settings = await prisma.aiReplySettings.findUnique({
           where: { userId },
         });
 

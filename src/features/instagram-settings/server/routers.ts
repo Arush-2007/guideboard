@@ -2,24 +2,24 @@ import prisma from "@/lib/db";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import z from "zod";
 
-const instagramSettingsBodySchema = z.object({
+const aiReplySettingsBodySchema = z.object({
   accountDescription: z.string().optional(),
   replyTone: z.string().optional(),
   replyGoal: z.string().optional(),
 });
 
-export const instagramSettingsRouter = createTRPCRouter({
+export const aiReplySettingsRouter = createTRPCRouter({
   get: protectedProcedure.query(async ({ ctx }) => {
-    return prisma.instagramSettings.findUnique({
+    return prisma.aiReplySettings.findUnique({
       where: { userId: ctx.auth.user.id },
     });
   }),
   save: protectedProcedure
-    .input(instagramSettingsBodySchema)
+    .input(aiReplySettingsBodySchema)
     .mutation(async ({ ctx, input }) => {
       const { accountDescription, replyTone, replyGoal } = input;
 
-      return prisma.instagramSettings.upsert({
+      return prisma.aiReplySettings.upsert({
         where: { userId: ctx.auth.user.id },
         create: {
           userId: ctx.auth.user.id,

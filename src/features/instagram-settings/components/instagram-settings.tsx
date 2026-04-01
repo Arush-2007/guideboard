@@ -33,13 +33,13 @@ import {
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 
-const instagramSettingsSchema = z.object({
+const aiReplySettingsSchema = z.object({
   accountDescription: z.string().optional(),
   replyTone: z.string().optional(),
   replyGoal: z.string().optional(),
 });
 
-type InstagramSettingsValues = z.infer<typeof instagramSettingsSchema>;
+type AiReplySettingsValues = z.infer<typeof aiReplySettingsSchema>;
 
 const REPLY_TONES = [
   { value: "friendly", label: "Friendly" },
@@ -53,15 +53,15 @@ export const InstagramSettings = () => {
   const queryClient = useQueryClient();
 
   const { data, isPending } = useQuery(
-    trpc.instagramSettings.get.queryOptions(),
+    trpc.aiReplySettings.get.queryOptions(),
   );
 
   const save = useMutation(
-    trpc.instagramSettings.save.mutationOptions({
+    trpc.aiReplySettings.save.mutationOptions({
       onSuccess: () => {
-        toast.success("Instagram settings saved");
+        toast.success("Settings saved");
         queryClient.invalidateQueries(
-          trpc.instagramSettings.get.queryOptions(),
+          trpc.aiReplySettings.get.queryOptions(),
         );
       },
       onError: (error) => {
@@ -70,8 +70,8 @@ export const InstagramSettings = () => {
     }),
   );
 
-  const form = useForm<InstagramSettingsValues>({
-    resolver: zodResolver(instagramSettingsSchema),
+  const form = useForm<AiReplySettingsValues>({
+    resolver: zodResolver(aiReplySettingsSchema),
     defaultValues: {
       accountDescription: "",
       replyTone: "",
@@ -88,7 +88,7 @@ export const InstagramSettings = () => {
     });
   }, [data, form]);
 
-  const onSubmit = (values: InstagramSettingsValues) => {
+  const onSubmit = (values: AiReplySettingsValues) => {
     save.mutate(values);
   };
 
@@ -97,26 +97,26 @@ export const InstagramSettings = () => {
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Configure how Guideboard behaves for your Instagram account.
+          Configure how the AI Reply Generator responds across all platforms.
         </p>
       </div>
 
-      <Card className="rounded-3xl border border-[#E1306C]/25 bg-card/90 shadow-sm">
+      <Card className="rounded-3xl border border-primary/20 bg-card/90 shadow-sm">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-lg">
-            <span className="flex size-9 items-center justify-center rounded-xl bg-[#E1306C]/15">
+            <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10">
               <Image
-                src="/logos/instagram.svg"
-                alt="Instagram"
+                src="/logos/xai.svg"
+                alt="AI Reply Settings"
                 width={22}
                 height={22}
               />
             </span>
-            Instagram Settings
+            AI Reply Settings
           </CardTitle>
           <CardDescription>
             Tell Guideboard about your account so it can craft better automated
-            replies.
+            replies across Instagram, YouTube, and other platforms.
           </CardDescription>
         </CardHeader>
 
@@ -197,7 +197,6 @@ export const InstagramSettings = () => {
                   <Button
                     type="submit"
                     disabled={save.isPending}
-                    className="bg-[#E1306C] text-white hover:bg-[#E1306C]/90"
                   >
                     {save.isPending ? "Saving…" : "Save settings"}
                   </Button>
