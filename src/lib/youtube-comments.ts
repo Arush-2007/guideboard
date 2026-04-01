@@ -1,0 +1,51 @@
+import ky from "ky";
+import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
+
+export interface YoutubeComment {
+  commentId: string;
+  commentText: string;
+  commenterName: string;
+  videoId: string;
+}
+
+interface CommentThreadsResponse {
+  items?: Array<{
+    id: string;
+    snippet: {
+      topLevelComment: {
+        snippet: {
+          textDisplay: string;
+          authorDisplayName: string;
+        };
+      };
+    };
+  }>;
+}
+
+export async function fetchNewYoutubeComments(
+  userId: string,
+  videoId: string,
+  publishedAfter: Date,
+): Promise<YoutubeComment[]> {
+  const accessToken = await refreshYoutubeTokenIfNeeded(userId);
+
+  const data = await ky
+    .get("https://www.googleapis.com/youtube/v3/commentThreads", {
+      searchParams: {
+        part: "snippet",
+        videoId,
+        publishedAfter: publishedAfter.toISOString(),
+        maxResults: "50",
+        order: "time",
+      },
+      headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    .json<CommentThreadsResponse>();
+
+  return (data.items ?? []).map((item) => ({
+    commentId: item.id,
+    commentText: item.snippet.topLevelComment.snippet.textDisplay,
+    commenterName: item.snippet.topLevelComment.snippet.authorDisplayName,
+    videoId,
+  }));
+}

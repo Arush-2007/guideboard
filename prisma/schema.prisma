@@ -29,6 +29,7 @@ model User {
   instagramCredentials InstagramCredential[]
   instagramSettings    InstagramSettings?
   youtubeCredentials   YoutubeCredential[]
+  youtubeCommentPolls  YoutubeCommentPoll[]
 
   @@unique([email])
   @@map("user")
@@ -131,6 +132,19 @@ model YoutubeCredential {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model YoutubeCommentPoll {
+  id          String   @id @default(cuid())
+  userId      String
+  workflowId  String
+  videoId     String
+  lastChecked DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, videoId])
+}
+
 enum CredentialType {
   OPENAI
   ANTHROPIC
@@ -148,6 +162,7 @@ model Workflow {
   nodes Node[]
   connections Connection[]
   executions Execution[]
+  youtubeCommentPolls YoutubeCommentPoll[]
 
   userId String
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

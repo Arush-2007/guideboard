@@ -80,7 +80,7 @@ export const workflowsRouter = createTRPCRouter({
       });
 
       // Transaction to ensure consistency
-      return await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx) => {
         // Delete existing nodes and connections (cascade deletes connections)
         await tx.node.deleteMany({
           where: { workflowId: id },
@@ -109,14 +109,44 @@ export const workflowsRouter = createTRPCRouter({
           })),
         });
 
-        // Update workflow's updateAt timestamp
+        // Update workflow's updatedAt timestamp
         await tx.workflow.update({
           where: { id },
           data: { updatedAt: new Date() },
         });
-
-        return workflow;
       });
+
+      // Sync YoutubeCommentPoll rows for this workflow
+      const youtubeTrigger = nodes.find(
+        (n) => n.type === "YOUTUBE_COMMENT_TRIGGER",
+      );
+
+      if (youtubeTrigger) {
+        const videoId = (
+          youtubeTrigger.data as { videoId?: string } | undefined
+        )?.videoId;
+
+        if (videoId) {
+          await prisma.youtubeCommentPoll.upsert({
+            where: {
+              workflowId_videoId: { workflowId: id, videoId },
+            },
+            update: {},
+            create: {
+              userId: ctx.auth.user.id,
+              workflowId: id,
+              videoId,
+              lastChecked: new Date(),
+            },
+          });
+        }
+      } else {
+        await prisma.youtubeCommentPoll.deleteMany({
+          where: { workflowId: id },
+        });
+      }
+
+      return workflow;
     }),
   updateName: protectedProcedure
     .input(z.object({ id: z.string(), name: z.string().min(1) }))

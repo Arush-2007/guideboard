@@ -1,9 +1,10 @@
 import { NonRetriableError } from "inngest";
 import { inngest } from "./client";
 import prisma from "@/lib/db";
-import { topologicalSort } from "./utils";
+import { topologicalSort, sendWorkflowExecution } from "./utils";
 import { ExecutionStatus, NodeType } from "@/generated/prisma";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
+import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { httpRequestChannel } from "./channels/http-request";
 import { manualTriggerChannel } from "./channels/manual-trigger";
 import { googleFormTriggerChannel } from "./channels/google-form-trigger";
@@ -124,5 +125,64 @@ export const executeWorkflow = inngest.createFunction(
       workflowId,
       result: context,
     };
+  },
+);
+
+export const pollYoutubeComments = inngest.createFunction(
+  { id: "poll-youtube-comments", retries: 1 },
+  { cron: "*/5 * * * *" },
+  async ({ step }) => {
+    const polls = await step.run("fetch-polls", async () => {
+      return prisma.youtubeCommentPoll.findMany({
+        include: {
+          workflow: {
+            include: { nodes: true },
+          },
+        },
+      });
+    });
+
+    for (const poll of polls) {
+      await step.run(`poll-${poll.videoId}-${poll.workflowId}`, async () => {
+        const comments = await fetchNewYoutubeComments(
+          poll.userId,
+          poll.videoId,
+          new Date(poll.lastChecked),
+        );
+
+        for (const comment of comments) {
+          const triggerNode = poll.workflow.nodes.find(
+            (n) => n.type === "YOUTUBE_COMMENT_TRIGGER",
+          );
+          if (!triggerNode) continue;
+
+          const nodeData = triggerNode.data as { keywordFilter?: string } | null;
+          if (nodeData?.keywordFilter) {
+            if (
+              !comment.commentText
+                .toLowerCase()
+                .includes(nodeData.keywordFilter.toLowerCase())
+            ) {
+              continue;
+            }
+          }
+
+          await sendWorkflowExecution({
+            workflowId: poll.workflowId,
+            initialData: {
+              commentId: comment.commentId,
+              commentText: comment.commentText,
+              commenterName: comment.commenterName,
+              videoId: comment.videoId,
+            },
+          });
+        }
+
+        await prisma.youtubeCommentPoll.update({
+          where: { id: poll.id },
+          data: { lastChecked: new Date() },
+        });
+      });
+    }
   },
 );
