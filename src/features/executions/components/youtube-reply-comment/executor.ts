@@ -4,8 +4,7 @@ import { NonRetriableError } from "inngest";
 import ky from "ky";
 import type { NodeExecutor } from "@/features/executions/types";
 import { youtubeReplyChannel } from "@/inngest/channels/youtube-reply-comment";
-import prisma from "@/lib/db";
-import { decrypt } from "@/lib/encryption";
+import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
 
 Handlebars.registerHelper("json", (context) => {
   return new Handlebars.SafeString(JSON.stringify(context, null, 2));
@@ -59,21 +58,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
         );
       }
 
-      const credential = await prisma.youtubeCredential.findFirst({
-        where: { userId },
-      });
-
-      if (!credential) {
-        await publish(
-          youtubeReplyChannel().status({ nodeId, status: "error" }),
-        );
-        throw new NonRetriableError(
-          "YouTube Reply node: No connected YouTube account found. Connect your YouTube account in Credentials.",
-        );
-      }
-
-      // accessToken is stored as encrypt(rawToken) — decrypt gives the raw token
-      const accessToken = decrypt(credential.accessToken);
+      const accessToken = await refreshYoutubeTokenIfNeeded(userId);
 
       await ky
         .post("https://www.googleapis.com/youtube/v3/comments", {

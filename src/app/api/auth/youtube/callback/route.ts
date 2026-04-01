@@ -70,6 +70,9 @@ export async function GET(request: Request) {
 
     const accessToken = tokenResponse.access_token;
     const refreshToken = tokenResponse.refresh_token;
+    const expiresAt = new Date(
+      Date.now() + tokenResponse.expires_in * 1000,
+    );
 
     if (!refreshToken) {
       return failRedirect(request);
@@ -112,6 +115,7 @@ export async function GET(request: Request) {
           refreshToken: encryptedRefreshToken,
           channelId,
           channelTitle,
+          expiresAt,
         },
       });
     } else {
@@ -122,6 +126,7 @@ export async function GET(request: Request) {
           refreshToken: encryptedRefreshToken,
           channelId,
           channelTitle,
+          expiresAt,
         },
       });
     }
