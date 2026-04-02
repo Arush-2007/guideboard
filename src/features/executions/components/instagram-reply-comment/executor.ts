@@ -6,6 +6,8 @@ import type { NodeExecutor } from "@/features/executions/types";
 import { instagramReplyChannel } from "@/inngest/channels/instagram-reply-comment";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   return new Handlebars.SafeString(JSON.stringify(context, null, 2));
@@ -35,7 +37,13 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
     }),
   );
 
-  if (!data.replyMessage) {
+  let config: InstagramReplyData;
+  try {
+    config = parseNodeConfig(
+      NodeType.INSTAGRAM_REPLY_COMMENT,
+      data,
+    ) as InstagramReplyData;
+  } catch (error) {
     await publish(
       instagramReplyChannel().status({
         nodeId,
@@ -43,11 +51,11 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
       }),
     );
     throw new NonRetriableError(
-      "Instagram Reply node: Reply message is required",
+      error instanceof Error ? error.message : "Invalid node config",
     );
   }
 
-  const rawReply = Handlebars.compile(data.replyMessage)(context);
+  const rawReply = Handlebars.compile(config.replyMessage)(context);
   const compiledReply = decode(rawReply);
 
   try {
@@ -92,7 +100,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
         },
       ).json<InstagramReplyResponse>();
 
-      if (!data.variableName) {
+      if (!config.variableName) {
         await publish(
           instagramReplyChannel().status({
             nodeId,
@@ -106,7 +114,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
 
       return {
         ...context,
-        [data.variableName]: {
+        [config.variableName]: {
           replyText: compiledReply,
         },
       };

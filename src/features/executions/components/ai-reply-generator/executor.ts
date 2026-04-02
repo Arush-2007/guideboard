@@ -5,6 +5,8 @@ import type { NodeExecutor } from "@/features/executions/types";
 import { aiReplyGeneratorChannel } from "@/inngest/channels/ai-reply-generator";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 type AiReplyGeneratorData = {
   variableName?: string;
@@ -34,38 +36,41 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
       aiReplyGeneratorChannel().status({ nodeId, status: "loading" }),
     );
 
-    if (!data.variableName) {
+    let config: AiReplyGeneratorData;
+    try {
+      config = parseNodeConfig(NodeType.AI_REPLY_GENERATOR, data) as AiReplyGeneratorData;
+    } catch (error) {
       await publish(
         aiReplyGeneratorChannel().status({ nodeId, status: "error" }),
       );
       throw new NonRetriableError(
-        "AI Reply Generator node: Variable name is required",
+        error instanceof Error ? error.message : "Invalid node config",
       );
     }
 
     // ── Keyword routing ──────────────────────────────────────────────────────
     const commentText = (context.commentText as string | undefined) ?? "";
-    const keyword = data.keyword?.trim();
+    const keyword = config.keyword?.trim();
     const hasKeyword = Boolean(
       keyword && commentText.toLowerCase().includes(keyword.toLowerCase()),
     );
 
     // Default both toggles to true when undefined (matches dialog defaults)
-    const replyToKeyword = data.replyToKeywordComments !== false;
-    const replyToNonKeyword = data.replyToNonKeywordComments !== false;
+    const replyToKeyword = config.replyToKeywordComments !== false;
+    const replyToNonKeyword = config.replyToNonKeywordComments !== false;
 
     let activeInstruction: string | undefined;
     let shouldSkip = false;
 
     if (hasKeyword) {
       if (replyToKeyword) {
-        activeInstruction = data.keywordPrompt;
+        activeInstruction = config.keywordPrompt;
       } else {
         shouldSkip = true;
       }
     } else {
       if (replyToNonKeyword) {
-        activeInstruction = data.defaultPrompt;
+        activeInstruction = config.defaultPrompt;
       } else {
         shouldSkip = true;
       }
@@ -91,7 +96,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
           return prisma.credential.findUnique({ where: { id, userId } });
         };
 
-        const xaiCred = await tryCredential(data.xaiCredentialId);
+        const xaiCred = await tryCredential(config.xaiCredentialId);
         if (xaiCred) {
           return {
             apiKey: decrypt(xaiCred.value),
@@ -103,7 +108,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
           };
         }
 
-        const geminiCred = await tryCredential(data.geminiCredentialId);
+        const geminiCred = await tryCredential(config.geminiCredentialId);
         if (geminiCred) {
           return {
             apiKey: decrypt(geminiCred.value),
@@ -115,7 +120,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
           };
         }
 
-        const openaiCred = await tryCredential(data.openaiCredentialId);
+        const openaiCred = await tryCredential(config.openaiCredentialId);
         if (openaiCred) {
           return {
             apiKey: decrypt(openaiCred.value),
@@ -153,8 +158,8 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
       `Account description: ${resolved.accountDescription ?? "Not provided"}`,
       `Reply tone: ${resolved.replyTone ?? "friendly"}`,
       `Reply goal: ${resolved.replyGoal ?? "Be helpful and engaging"}`,
-      data.postDescription
-        ? `Post/video context: ${data.postDescription}`
+      config.postDescription
+        ? `Post/video context: ${config.postDescription}`
         : null,
       "Keep replies concise, natural, and under 200 characters.",
       activeInstruction
@@ -202,7 +207,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
 
       return {
         ...context,
-        [data.variableName]: { text: generatedReply },
+        [config.variableName!]: { text: generatedReply },
       };
     } catch (error) {
       await publish(

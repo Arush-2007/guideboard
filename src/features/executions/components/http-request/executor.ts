@@ -3,6 +3,8 @@ import { NonRetriableError } from "inngest";
 import ky, { type Options as KyOptions } from "ky";
 import type { NodeExecutor } from "@/features/executions/types";
 import { httpRequestChannel } from "@/inngest/channels/http-request";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   const jsonString = JSON.stringify(context, null, 2);
@@ -32,9 +34,24 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
     }),
   );
 
+  let config: HttpRequestData;
+  try {
+    config = parseNodeConfig(NodeType.HTTP_REQUEST, data) as HttpRequestData;
+  } catch (error) {
+    await publish(
+      httpRequestChannel().status({
+        nodeId,
+        status: "error",
+      }),
+    );
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
+    );
+  }
+
   try {
     const result = await step.run("http-request", async () => {
-      if (!data.endpoint) {
+      if (!config.endpoint) {
         await publish(
           httpRequestChannel().status({
             nodeId,
@@ -44,7 +61,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
         throw new NonRetriableError("HTTP Request node: No endpoint configured");
       }
 
-      if (!data.variableName) {
+      if (!config.variableName) {
         await publish(
           httpRequestChannel().status({
             nodeId,
@@ -54,7 +71,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
         throw new NonRetriableError("HTTP Request node: Variable name not configured");
       }
 
-      if (!data.method) {
+      if (!config.method) {
         await publish(
           httpRequestChannel().status({
             nodeId,
@@ -64,13 +81,13 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
         throw new NonRetriableError("HTTP Request node: Method not configured");
       }
 
-      const endpoint = Handlebars.compile(data.endpoint)(context);
-      const method = data.method;
+      const endpoint = Handlebars.compile(config.endpoint)(context);
+      const method = config.method;
 
       const options: KyOptions = { method };
 
       if (["POST", "PUT", "PATCH"].includes(method)) {
-        const resolved = Handlebars.compile(data.body || "{}")(context);
+        const resolved = Handlebars.compile(config.body || "{}")(context);
         JSON.parse(resolved);
         options.body = resolved;
         options.headers = {
@@ -94,7 +111,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
 
       return {
         ...context,
-        [data.variableName]: responsePayload,
+        [config.variableName]: responsePayload,
       }
     });
 

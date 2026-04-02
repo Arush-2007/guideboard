@@ -6,6 +6,8 @@ import type { NodeExecutor } from "@/features/executions/types";
 import { anthropicChannel } from "@/inngest/channels/anthropic";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   const jsonString = JSON.stringify(context, null, 2);
@@ -36,45 +38,30 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
     }),
   );
 
-  if (!data.variableName) {
+  let config: AnthropicData;
+  try {
+    config = parseNodeConfig(NodeType.ANTHROPIC, data) as AnthropicData;
+  } catch (error) {
     await publish(
       anthropicChannel().status({
         nodeId,
         status: "error",
       })
     );
-    throw new NonRetriableError("Anthropic node: Variable name is missing");
-  }
-
-  if (!data.credentialId) {
-    await publish(
-      anthropicChannel().status({
-        nodeId,
-        status: "error",
-      }),
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
     );
-    throw new NonRetriableError("Anthropic node: Credential is required");
   }
 
-  if (!data.userPrompt) {
-    await publish(
-      anthropicChannel().status({
-        nodeId,
-        status: "error",
-      })
-    );
-    throw new NonRetriableError("Anthropic node: User prompt is missing");
-  }
-
-  const systemPrompt = data.systemPrompt
-    ? Handlebars.compile(data.systemPrompt)(context)
+  const systemPrompt = config.systemPrompt
+    ? Handlebars.compile(config.systemPrompt)(context)
     : "You are a helpful assistant.";
-  const userPrompt = Handlebars.compile(data.userPrompt)(context);
+  const userPrompt = Handlebars.compile(config.userPrompt)(context);
 
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {
-        id: data.credentialId,
+        id: config.credentialId,
         userId,
       },
     });
@@ -124,7 +111,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
 
     return {
       ...context,
-      [data.variableName]: {
+      [config.variableName!]: {
         text,
       },
     }

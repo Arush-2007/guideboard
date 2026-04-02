@@ -92,6 +92,10 @@ model Credential {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   Node Node[]
+
+  @@index([userId, updatedAt])
+  @@index([userId, name])
+  @@index([userId, type, updatedAt])
 }
 
 model InstagramCredential {
@@ -144,6 +148,8 @@ model YoutubeCommentPoll {
   workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
 
   @@unique([workflowId, videoId])
+
+  @@index([workflowId])
 }
 
 enum CredentialType {
@@ -167,6 +173,9 @@ model Workflow {
 
   userId String
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+  @@index([userId, name])
 }
 
 enum NodeType {
@@ -205,6 +214,8 @@ model Node {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([workflowId])
 }
 
 model Connection {
@@ -250,4 +261,7 @@ model Execution {
   idempotencyKey String? @unique
 
   output Json?
+
+  @@index([workflowId, startedAt])
+  @@index([workflowId, status, startedAt])
 }

@@ -5,6 +5,8 @@ import ky from "ky";
 import type { NodeExecutor } from "@/features/executions/types";
 import { youtubeReplyChannel } from "@/inngest/channels/youtube-reply-comment";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   return new Handlebars.SafeString(JSON.stringify(context, null, 2));
@@ -34,16 +36,20 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
     }),
   );
 
-  if (!data.replyMessage) {
-    await publish(
-      youtubeReplyChannel().status({ nodeId, status: "error" }),
-    );
+  let config: YoutubeReplyData;
+  try {
+    config = parseNodeConfig(
+      NodeType.YOUTUBE_REPLY_COMMENT,
+      data,
+    ) as YoutubeReplyData;
+  } catch (error) {
+    await publish(youtubeReplyChannel().status({ nodeId, status: "error" }));
     throw new NonRetriableError(
-      "YouTube Reply node: Reply message is required",
+      error instanceof Error ? error.message : "Invalid node config",
     );
   }
 
-  const rawReply = Handlebars.compile(data.replyMessage)(context);
+  const rawReply = Handlebars.compile(config.replyMessage)(context);
   const compiledReply = decode(rawReply);
 
   try {
@@ -75,7 +81,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
         })
         .json<YoutubeCommentResponse>();
 
-      if (!data.variableName) {
+      if (!config.variableName) {
         await publish(
           youtubeReplyChannel().status({ nodeId, status: "error" }),
         );
@@ -86,7 +92,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
 
       return {
         ...context,
-        [data.variableName]: {
+        [config.variableName]: {
           replyText: compiledReply,
         },
       };

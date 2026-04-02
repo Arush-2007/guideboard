@@ -4,6 +4,8 @@ import { NonRetriableError } from "inngest";
 import type { NodeExecutor } from "@/features/executions/types";
 import { discordChannel } from "@/inngest/channels/discord";
 import ky from "ky";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   const jsonString = JSON.stringify(context, null, 2);
@@ -33,25 +35,30 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     }),
   );
 
-  if (!data.content) {
+  let config: DiscordData;
+  try {
+    config = parseNodeConfig(NodeType.DISCORD, data) as DiscordData;
+  } catch (error) {
     await publish(
       discordChannel().status({
         nodeId,
         status: "error",
       }),
     );
-    throw new NonRetriableError("Discord node: Message content is required");
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
+    );
   }
 
-  const rawContent = Handlebars.compile(data.content)(context);
+  const rawContent = Handlebars.compile(config.content)(context);
   const content = decode(rawContent);
-  const username = data.username
-    ? decode(Handlebars.compile(data.username)(context))
+  const username = config.username
+    ? decode(Handlebars.compile(config.username)(context))
     : undefined;
 
   try {
     const result = await step.run("discord-webhook", async () => {
-      if (!data.webhookUrl) {
+      if (!config.webhookUrl) {
         await publish(
           discordChannel().status({
             nodeId,
@@ -61,14 +68,14 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
         throw new NonRetriableError("Discord node: Webhook URL is required");
       }
 
-      await ky.post(data.webhookUrl, {
+      await ky.post(config.webhookUrl as string, {
         json: {
           content: content.slice(0, 2000), // Discord's max message length
           username,
         },
       });
 
-      if (!data.variableName) {
+      if (!config.variableName) {
         await publish(
           discordChannel().status({
             nodeId,
@@ -80,7 +87,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
 
       return {
         ...context,
-        [data.variableName]: {
+        [config.variableName]: {
           messageContent: content.slice(0, 2000),
         },
       };

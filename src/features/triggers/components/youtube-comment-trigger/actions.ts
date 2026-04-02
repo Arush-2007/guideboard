@@ -6,6 +6,8 @@ import { inngest } from "@/inngest/client";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { headers } from "next/headers";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 export type YoutubeCommentTriggerToken = Realtime.Token<
   typeof youtubeCommentTriggerChannel,
@@ -30,6 +32,11 @@ export async function saveYoutubeCommentTriggerConfig(
   nodeId: string,
   config: YoutubeCommentTriggerConfig,
 ): Promise<void> {
+  const parsed = parseNodeConfig(
+    NodeType.YOUTUBE_COMMENT_TRIGGER,
+    config,
+  ) as YoutubeCommentTriggerConfig;
+
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user?.id) {
     throw new Error("Unauthorized");
@@ -42,8 +49,8 @@ export async function saveYoutubeCommentTriggerConfig(
     data: {
       data: {
         ...(node.data as Record<string, unknown>),
-        videoId: config.videoId ?? "",
-        keywordFilter: config.keywordFilter ?? "",
+        videoId: parsed.videoId ?? "",
+        keywordFilter: parsed.keywordFilter ?? "",
       },
     },
   });

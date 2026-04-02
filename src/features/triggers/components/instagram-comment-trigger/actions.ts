@@ -6,6 +6,8 @@ import { inngest } from "@/inngest/client";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { headers } from "next/headers";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 export type InstagramCommentTriggerToken = Realtime.Token<
   typeof instagramCommentTriggerChannel,
@@ -31,6 +33,11 @@ export async function saveInstagramCommentTriggerConfig(
   nodeId: string,
   config: InstagramCommentTriggerConfig,
 ): Promise<void> {
+  const parsed = parseNodeConfig(
+    NodeType.INSTAGRAM_COMMENT_TRIGGER,
+    config,
+  ) as InstagramCommentTriggerConfig;
+
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session?.user?.id) {
     throw new Error("Unauthorized");
@@ -43,9 +50,9 @@ export async function saveInstagramCommentTriggerConfig(
     data: {
       data: {
         ...(node.data as Record<string, unknown>),
-        postId: config.postId ?? "",
-        keywordFilter: config.keywordFilter ?? "",
-        replyMessage: config.replyMessage,
+        postId: parsed.postId ?? "",
+        keywordFilter: parsed.keywordFilter ?? "",
+        replyMessage: parsed.replyMessage,
       },
     },
   });

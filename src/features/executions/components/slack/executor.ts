@@ -4,6 +4,8 @@ import { NonRetriableError } from "inngest";
 import type { NodeExecutor } from "@/features/executions/types";
 import { slackChannel } from "@/inngest/channels/slack";
 import ky from "ky";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   const jsonString = JSON.stringify(context, null, 2);
@@ -32,22 +34,27 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     }),
   );
 
-  if (!data.content) {
+  let config: SlackData;
+  try {
+    config = parseNodeConfig(NodeType.SLACK, data) as SlackData;
+  } catch (error) {
     await publish(
       slackChannel().status({
         nodeId,
         status: "error",
       }),
     );
-    throw new NonRetriableError("Slack node: Message content is required");
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
+    );
   }
 
-  const rawContent = Handlebars.compile(data.content)(context);
+  const rawContent = Handlebars.compile(config.content)(context);
   const content = decode(rawContent);
 
   try {
     const result = await step.run("slack-webhook", async () => {
-      if (!data.webhookUrl) {
+      if (!config.webhookUrl) {
         await publish(
           slackChannel().status({
             nodeId,
@@ -57,13 +64,13 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
         throw new NonRetriableError("Slack node: Webhook URL is required");
       }
 
-      await ky.post(data.webhookUrl, {
+      await ky.post(config.webhookUrl, {
         json: {
           content: content, // The key depends on workflow config
         },
       });
 
-      if (!data.variableName) {
+      if (!config.variableName) {
         await publish(
           slackChannel().status({
             nodeId,
@@ -75,7 +82,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
 
       return {
         ...context,
-        [data.variableName]: {
+        [config.variableName]: {
           messageContent: content.slice(0, 2000),
         },
       };

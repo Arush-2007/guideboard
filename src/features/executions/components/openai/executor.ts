@@ -6,6 +6,8 @@ import type { NodeExecutor } from "@/features/executions/types";
 import { openAiChannel } from "@/inngest/channels/openai";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 Handlebars.registerHelper("json", (context) => {
   const jsonString = JSON.stringify(context, null, 2);
@@ -36,45 +38,30 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
     }),
   );
 
-  if (!data.variableName) {
+  let config: OpenAiData;
+  try {
+    config = parseNodeConfig(NodeType.OPENAI, data) as OpenAiData;
+  } catch (error) {
     await publish(
       openAiChannel().status({
         nodeId,
         status: "error",
       })
     );
-    throw new NonRetriableError("OpenAi node: Variable name is missing");
-  }
-
-  if (!data.credentialId) {
-    await publish(
-      openAiChannel().status({
-        nodeId,
-        status: "error",
-      }),
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
     );
-    throw new NonRetriableError("OpenAi node: Credential is required");
   }
 
-  if (!data.userPrompt) {
-    await publish(
-      openAiChannel().status({
-        nodeId,
-        status: "error",
-      })
-    );
-    throw new NonRetriableError("OpenAi node: User prompt is missing");
-  }
-
-  const systemPrompt = data.systemPrompt
-    ? Handlebars.compile(data.systemPrompt)(context)
+  const systemPrompt = config.systemPrompt
+    ? Handlebars.compile(config.systemPrompt)(context)
     : "You are a helpful assistant.";
-  const userPrompt = Handlebars.compile(data.userPrompt)(context);
+  const userPrompt = Handlebars.compile(config.userPrompt)(context);
 
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {
-        id: data.credentialId,
+        id: config.credentialId,
         userId,
       },
     });
@@ -124,7 +111,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
 
     return {
       ...context,
-      [data.variableName]: {
+      [config.variableName!]: {
         text,
       },
     }
