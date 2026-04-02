@@ -247,5 +247,7 @@ model Execution {
 
   inngestEventId String @unique
 
+  idempotencyKey String? @unique
+
   output Json?
 }

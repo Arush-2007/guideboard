@@ -64,6 +64,7 @@ export async function POST(request: NextRequest) {
       initialData: {
         stripe: stripeData,
       },
+      idempotencyKey: `stripe:${stripeData.eventId as string}`,
     });
 
     return NextResponse.json({ success: true }, { status: 200 });

@@ -49,13 +49,24 @@ export const topologicalSort = (
   return sortedNodeIds.map((id) => nodeMap.get(id)!).filter(Boolean);
 };
 
-export const sendWorkflowExecution = async (data: {
+type SendWorkflowExecutionInput = {
   workflowId: string;
-  [key: string]: any;
-}) => {
+  initialData?: Record<string, unknown>;
+  idempotencyKey?: string;
+};
+
+export const sendWorkflowExecution = async ({
+  workflowId,
+  initialData,
+  idempotencyKey,
+}: SendWorkflowExecutionInput) => {
   return inngest.send({
     name: "workflows/execute.workflow",
-    data,
+    data: {
+      workflowId,
+      initialData: initialData ?? {},
+      idempotencyKey,
+    },
     id: createId(),
   });
 };

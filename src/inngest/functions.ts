@@ -56,10 +56,32 @@ export const executeWorkflow = inngest.createFunction(
   },
   async ({ event, step, publish }) => {
     const inngestEventId = event.id;
-    const workflowId = event.data.workflowId;
+    const { workflowId, initialData, idempotencyKey } = event.data as {
+      workflowId?: string;
+      // Keep this loose because this JSON is stored directly in Prisma.
+      initialData?: any;
+      idempotencyKey?: string;
+    };
 
     if (!inngestEventId || !workflowId) {
       throw new NonRetriableError("Event ID or workflow ID is missing");
+    }
+
+    if (idempotencyKey) {
+      const existing = await step.run("check-idempotency", async () => {
+        return prisma.execution.findUnique({
+          where: { idempotencyKey },
+          select: { id: true, status: true },
+        });
+      });
+
+      if (existing) {
+        return {
+          skipped: true,
+          reason: "duplicate",
+          existingExecutionId: existing.id,
+        };
+      }
     }
 
     await step.run("create-execution", async () => {
@@ -67,6 +89,7 @@ export const executeWorkflow = inngest.createFunction(
         data: {
           workflowId,
           inngestEventId,
+          idempotencyKey: idempotencyKey ?? null,
         },
       });
     });
@@ -95,7 +118,7 @@ export const executeWorkflow = inngest.createFunction(
     });
 
     // Initialize context with any initial data from the trigger
-    let context = event.data.initialData || {};
+    let context = initialData || {};
 
     // Execute each node
     for (const node of sortedNodes) {
@@ -175,6 +198,7 @@ export const pollYoutubeComments = inngest.createFunction(
               commenterName: comment.commenterName,
               videoId: comment.videoId,
             },
+            idempotencyKey: `youtube:${comment.commentId}`,
           });
         }
 

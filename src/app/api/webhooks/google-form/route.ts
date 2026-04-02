@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
       initialData: {
         googleForm: formData,
       },
+      idempotencyKey: `google-form:${workflowId}:${Date.now()}`,
     });
 
     return NextResponse.json(

@@ -151,6 +151,7 @@ export async function POST(request: NextRequest) {
               commenterName,
               postId,
             },
+            idempotencyKey: `instagram:${commentId}`,
           });
         }
       }
