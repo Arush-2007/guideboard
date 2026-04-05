@@ -18,15 +18,22 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useTRPC } from "@/trpc/client";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
 
 const formSchema = z.object({
   videoId: z.string().optional(),
-  keywordFilter: z.string().optional(),
 });
 
 export type YoutubeCommentTriggerFormValues = z.infer<typeof formSchema>;
@@ -44,11 +51,15 @@ export const YoutubeCommentTriggerDialog = ({
   onSubmit,
   defaultValues = {},
 }: Props) => {
+  const trpc = useTRPC();
+  const { data: videos = [], isLoading: isVideosLoading } = useQuery(
+    trpc.credentials.getYoutubeVideos.queryOptions(),
+  );
+
   const form = useForm<YoutubeCommentTriggerFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       videoId: defaultValues.videoId ?? "",
-      keywordFilter: defaultValues.keywordFilter ?? "",
     },
   });
 
@@ -56,7 +67,6 @@ export const YoutubeCommentTriggerDialog = ({
     if (open) {
       form.reset({
         videoId: defaultValues.videoId ?? "",
-        keywordFilter: defaultValues.keywordFilter ?? "",
       });
     }
   }, [open, defaultValues, form]);
@@ -78,7 +88,7 @@ export const YoutubeCommentTriggerDialog = ({
           </DialogTitle>
           <DialogDescription>
             Trigger this workflow when a comment is posted on your YouTube
-            video. Optionally filter by video ID or keyword.
+            video. Optionally limit to one video.
           </DialogDescription>
         </DialogHeader>
 
@@ -92,38 +102,36 @@ export const YoutubeCommentTriggerDialog = ({
               name="videoId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Video ID</FormLabel>
+                  <FormLabel>Video</FormLabel>
                   <FormControl>
-                    <Input
-                      placeholder="Leave empty to trigger on all videos"
-                      {...field}
-                    />
+                    <Select
+                      value={field.value || "__all__"}
+                      onValueChange={(value) =>
+                        field.onChange(value === "__all__" ? "" : value)
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue
+                          placeholder={
+                            isVideosLoading
+                              ? "Loading your videos..."
+                              : "Leave empty to trigger on all videos"
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__all__">All videos</SelectItem>
+                        {videos.map((video) => (
+                          <SelectItem key={video.videoId} value={video.videoId}>
+                            {video.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </FormControl>
                   <FormDescription>
-                    The YouTube video ID to watch. Leave blank to trigger on
-                    comments from any video.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="keywordFilter"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Keyword Filter</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="e.g. price, buy (leave empty for all comments)"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    Comma-separated keywords. Only comments containing at least
-                    one keyword will trigger the workflow. Leave blank to match
-                    all comments.
+                    Choose one of your uploaded videos, or leave as All videos
+                    to trigger on comments from any video.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

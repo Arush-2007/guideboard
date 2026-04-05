@@ -4,6 +4,8 @@ import z from "zod";
 import { PAGINATION } from "@/config/constants";
 import { CredentialType } from "@/generated/prisma";
 import { encrypt, decrypt } from "@/lib/encryption";
+import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
+import ky from "ky";
 
 const credentialBodySchema = z
   .object({
@@ -235,5 +237,35 @@ export const credentialsRouter = createTRPCRouter({
       where: { userId: ctx.auth.user.id },
     });
     return { ok: true as const };
+  }),
+  getYoutubeVideos: protectedProcedure.query(async ({ ctx }) => {
+    type YoutubeVideosResponse = {
+      items?: Array<{
+        id?: { videoId?: string };
+        snippet?: { title?: string };
+      }>;
+    };
+
+    const accessToken = await refreshYoutubeTokenIfNeeded(ctx.auth.user.id);
+    const data = await ky
+      .get("https://www.googleapis.com/youtube/v3/search", {
+        searchParams: {
+          part: "snippet",
+          forMine: "true",
+          type: "video",
+          maxResults: "25",
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      })
+      .json<YoutubeVideosResponse>();
+
+    return (data.items ?? [])
+      .map((item) => ({
+        videoId: item.id?.videoId ?? "",
+        title: item.snippet?.title ?? "Untitled video",
+      }))
+      .filter((item) => item.videoId.length > 0);
   }),
 });

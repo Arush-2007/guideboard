@@ -17,7 +17,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -27,13 +26,6 @@ import z from "zod";
 
 const formSchema = z.object({
   replyMessage: z.string().min(1, "Reply message is required"),
-  variableName: z
-    .string()
-    .min(1, { message: "Variable name is required" })
-    .regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, {
-      message:
-        "Variable name must start with a letter or underscore and contain only letters, numbers, and underscores",
-    }),
 });
 
 export type YoutubeReplyFormValues = z.infer<typeof formSchema>;
@@ -55,7 +47,6 @@ export const YoutubeReplyDialog = ({
     resolver: zodResolver(formSchema),
     defaultValues: {
       replyMessage: defaultValues.replyMessage ?? "",
-      variableName: defaultValues.variableName ?? "",
     },
   });
 
@@ -63,12 +54,9 @@ export const YoutubeReplyDialog = ({
     if (open) {
       form.reset({
         replyMessage: defaultValues.replyMessage ?? "",
-        variableName: defaultValues.variableName ?? "",
       });
     }
   }, [open, defaultValues, form]);
-
-  const watchVariableName = form.watch("variableName") || "youtubeReply";
 
   const handleSubmit = (values: YoutubeReplyFormValues) => {
     onSubmit(values);
@@ -82,7 +70,11 @@ export const YoutubeReplyDialog = ({
           <DialogTitle>YouTube Reply Configuration</DialogTitle>
           <DialogDescription>
             Configure the reply to post on a YouTube comment. Uses the YouTube
-            account connected in Credentials.
+            account connected in Credentials. Use{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              {"{{aiReply.text}}"}
+            </code>{" "}
+            after an AI Reply Generator step.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -113,26 +105,6 @@ export const YoutubeReplyDialog = ({
                       {"{{commentText}}"}
                     </code>{" "}
                     as placeholders.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="variableName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Variable Name</FormLabel>
-                  <FormControl>
-                    <Input placeholder="youtubeReply" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    Reference the result in later nodes:{" "}
-                    <code className="rounded bg-muted px-1 py-0.5 text-xs">
-                      {`{{${watchVariableName}.replyText}}`}
-                    </code>
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

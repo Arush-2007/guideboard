@@ -29,6 +29,16 @@ export const auth = betterAuth({
           google: {
             clientId: googleClientId,
             clientSecret: googleClientSecret,
+            scope: [
+              "openid",
+              "email",
+              "profile",
+              "https://www.googleapis.com/auth/spreadsheets",
+              "https://www.googleapis.com/auth/gmail.modify",
+              "https://www.googleapis.com/auth/drive.readonly",
+            ],
+            accessType: "offline",
+            prompt: "consent",
           },
         }
       : {}),

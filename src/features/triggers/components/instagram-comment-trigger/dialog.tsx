@@ -27,7 +27,6 @@ import z from "zod";
 
 const formSchema = z.object({
   postId: z.string().optional(),
-  keywordFilter: z.string().optional(),
   replyMessage: z.string().min(1, "Reply message is required"),
 });
 
@@ -50,7 +49,6 @@ export const InstagramCommentTriggerDialog = ({
     resolver: zodResolver(formSchema),
     defaultValues: {
       postId: defaultValues.postId ?? "",
-      keywordFilter: defaultValues.keywordFilter ?? "",
       replyMessage: defaultValues.replyMessage ?? "",
     },
   });
@@ -59,7 +57,6 @@ export const InstagramCommentTriggerDialog = ({
     if (open) {
       form.reset({
         postId: defaultValues.postId ?? "",
-        keywordFilter: defaultValues.keywordFilter ?? "",
         replyMessage: defaultValues.replyMessage ?? "",
       });
     }
@@ -82,8 +79,7 @@ export const InstagramCommentTriggerDialog = ({
           </DialogTitle>
           <DialogDescription>
             Trigger this workflow when a comment is posted on your Instagram
-            post. Optionally filter by post or keyword, and configure an auto
-            reply.
+            post. Optionally limit to one post, and configure an auto reply.
           </DialogDescription>
         </DialogHeader>
 
@@ -107,28 +103,6 @@ export const InstagramCommentTriggerDialog = ({
                   <FormDescription>
                     The Instagram post ID to watch. Leave blank to trigger on
                     any post.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="keywordFilter"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Keyword Filter</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="e.g. price, discount (leave empty for all comments)"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    Comma-separated keywords. Only comments containing at least
-                    one keyword will trigger the workflow. Leave blank to match
-                    all comments.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

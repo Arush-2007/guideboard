@@ -17,6 +17,7 @@ import {
 
 type InstagramCommentTriggerData = {
   postId?: string;
+  /** Legacy; no longer set from UI */
   keywordFilter?: string;
   replyMessage?: string;
 };
@@ -50,7 +51,6 @@ export const InstagramCommentTriggerNode = memo(
       try {
         await saveInstagramCommentTriggerConfig(props.id, {
           postId: values.postId,
-          keywordFilter: values.keywordFilter,
           replyMessage: values.replyMessage,
         });
       } catch {

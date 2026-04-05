@@ -14,7 +14,6 @@ Handlebars.registerHelper("json", (context) => {
 });
 
 type InstagramReplyData = {
-  variableName?: string;
   replyMessage?: string;
 };
 
@@ -100,23 +99,20 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
         },
       ).json<InstagramReplyResponse>();
 
-      if (!config.variableName) {
-        await publish(
-          instagramReplyChannel().status({
-            nodeId,
-            status: "error",
-          }),
-        );
-        throw new NonRetriableError(
-          "Instagram Reply node: Variable name is missing",
-        );
-      }
+      const prevAi = context.aiReply;
+      const mergedAi =
+        typeof prevAi === "object" &&
+        prevAi !== null &&
+        !Array.isArray(prevAi)
+          ? {
+              ...(prevAi as Record<string, unknown>),
+              replyText: compiledReply,
+            }
+          : { replyText: compiledReply };
 
       return {
         ...context,
-        [config.variableName]: {
-          replyText: compiledReply,
-        },
+        aiReply: mergedAi,
       };
     });
 

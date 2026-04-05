@@ -39,13 +39,6 @@ import { CredentialType } from "@/generated/prisma";
 const NONE = "__none__";
 
 const formSchema = z.object({
-  variableName: z
-    .string()
-    .min(1, { message: "Variable name is required" })
-    .regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, {
-      message:
-        "Must start with a letter or underscore and contain only letters, numbers, and underscores",
-    }),
   keyword: z.string().optional(),
   replyToKeywordComments: z.boolean().optional(),
   keywordPrompt: z.string().optional(),
@@ -82,7 +75,6 @@ export const AiReplyGeneratorDialog = ({
   const form = useForm<AiReplyGeneratorFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      variableName: defaultValues.variableName ?? "",
       keyword: defaultValues.keyword ?? "",
       replyToKeywordComments: defaultValues.replyToKeywordComments ?? true,
       keywordPrompt: defaultValues.keywordPrompt ?? "",
@@ -99,7 +91,6 @@ export const AiReplyGeneratorDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        variableName: defaultValues.variableName ?? "",
         keyword: defaultValues.keyword ?? "",
         replyToKeywordComments: defaultValues.replyToKeywordComments ?? true,
         keywordPrompt: defaultValues.keywordPrompt ?? "",
@@ -114,7 +105,6 @@ export const AiReplyGeneratorDialog = ({
     }
   }, [open, defaultValues, form]);
 
-  const watchVariableName = form.watch("variableName") || "aiReply";
   const watchReplyToKeyword = form.watch("replyToKeywordComments");
   const watchReplyToNonKeyword = form.watch("replyToNonKeywordComments");
 
@@ -149,7 +139,11 @@ export const AiReplyGeneratorDialog = ({
           </DialogTitle>
           <DialogDescription>
             Automatically generate contextual replies using AI based on keyword
-            routing and your account settings.
+            routing and your account settings. Downstream nodes can use{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              {"{{aiReply.text}}"}
+            </code>
+            .
           </DialogDescription>
         </DialogHeader>
 
@@ -158,25 +152,6 @@ export const AiReplyGeneratorDialog = ({
             onSubmit={form.handleSubmit(handleSubmit)}
             className="mt-4 space-y-6"
           >
-            {/* Variable Name */}
-            <FormField
-              control={form.control}
-              name="variableName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Variable Name</FormLabel>
-                  <FormControl>
-                    <Input placeholder="aiReply" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    Reference the generated reply in later nodes:{" "}
-                    {`{{${watchVariableName}.text}}`}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
             {/* Keyword */}
             <FormField
               control={form.control}

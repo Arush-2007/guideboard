@@ -9,7 +9,6 @@ import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 
 type AiReplyGeneratorData = {
-  variableName?: string;
   keyword?: string;
   replyToKeywordComments?: boolean;
   keywordPrompt?: string;
@@ -207,7 +206,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
 
       return {
         ...context,
-        [config.variableName!]: { text: generatedReply },
+        aiReply: { text: generatedReply },
       };
     } catch (error) {
       await publish(

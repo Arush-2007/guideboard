@@ -17,7 +17,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -26,13 +25,6 @@ import { useForm } from "react-hook-form";
 import z from "zod";
 
 const formSchema = z.object({
-  variableName: z
-    .string()
-    .min(1, { message: "Variable name is required" })
-    .regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, {
-      message:
-        "Variable name must start with a letter or underscore and contain only letters, numbers, and underscores",
-    }),
   replyMessage: z
     .string()
     .min(1, "Reply message is required"),
@@ -56,7 +48,6 @@ export const InstagramReplyDialog = ({
   const form = useForm<InstagramReplyFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      variableName: defaultValues.variableName ?? "",
       replyMessage: defaultValues.replyMessage ?? "",
     },
   });
@@ -64,13 +55,10 @@ export const InstagramReplyDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        variableName: defaultValues.variableName ?? "",
         replyMessage: defaultValues.replyMessage ?? "",
       });
     }
   }, [open, defaultValues, form]);
-
-  const watchVariableName = form.watch("variableName") || "instagramReply";
 
   const handleSubmit = (values: InstagramReplyFormValues) => {
     onSubmit(values);
@@ -84,7 +72,11 @@ export const InstagramReplyDialog = ({
           <DialogTitle>Instagram Reply Configuration</DialogTitle>
           <DialogDescription>
             Configure the reply to post on an Instagram comment. Uses the
-            Instagram account connected in Credentials.
+            Instagram account connected in Credentials. Use{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">
+              {"{{aiReply.text}}"}
+            </code>{" "}
+            after an AI Reply Generator step.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -92,26 +84,6 @@ export const InstagramReplyDialog = ({
             onSubmit={form.handleSubmit(handleSubmit)}
             className="space-y-8 mt-4"
           >
-            <FormField
-              control={form.control}
-              name="variableName"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Variable Name</FormLabel>
-                  <FormControl>
-                    <Input placeholder="instagramReply" {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    Reference the result in later nodes:{" "}
-                    <code className="bg-muted px-1 py-0.5 rounded text-xs">
-                      {`{{${watchVariableName}.replyText}}`}
-                    </code>
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
             <FormField
               control={form.control}
               name="replyMessage"

@@ -17,6 +17,7 @@ import {
 
 type YoutubeCommentTriggerData = {
   videoId?: string;
+  /** Legacy; no longer set from UI */
   keywordFilter?: string;
 };
 
@@ -49,7 +50,6 @@ export const YoutubeCommentTriggerNode = memo(
       try {
         await saveYoutubeCommentTriggerConfig(props.id, {
           videoId: values.videoId,
-          keywordFilter: values.keywordFilter,
         });
       } catch {
         toast.error(

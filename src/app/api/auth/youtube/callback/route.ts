@@ -21,7 +21,8 @@ type YoutubeChannelResponse = {
   }>;
 };
 
-function failRedirect(request: Request) {
+function failRedirect(request: Request, error?: unknown) {
+  console.error("[youtube-oauth-callback] youtube_auth_failed", error);
   return NextResponse.redirect(
     new URL("/credentials?error=youtube_auth_failed", request.url),
   );
@@ -84,13 +85,18 @@ export async function GET(request: Request) {
     channelsUrl.searchParams.set("part", "snippet");
     channelsUrl.searchParams.set("mine", "true");
 
-    const channelsResponse = await ky
-      .get(channelsUrl.toString(), {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      })
-      .json<YoutubeChannelResponse>();
+    const res = await fetch(channelsUrl.toString(), {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error("[youtube-channels-403]", res.status, body);
+      throw new Error("channels fetch failed");
+    }
+    const channelsResponse = (await res.json()) as YoutubeChannelResponse;
 
     const channel = channelsResponse.items?.[0];
     if (!channel) {
@@ -132,7 +138,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.redirect(new URL("/credentials", request.url));
-  } catch {
-    return failRedirect(request);
+  } catch (error) {
+    return failRedirect(request, error);
   }
 }

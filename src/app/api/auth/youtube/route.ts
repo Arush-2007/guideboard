@@ -28,7 +28,8 @@ export async function GET(request: Request) {
     response_type: "code",
     access_type: "offline",
     prompt: "consent",
-    scope: "https://www.googleapis.com/auth/youtube.force-ssl",
+    scope:
+      "https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/youtube.readonly",
   });
 
   const authorizeUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;

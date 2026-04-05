@@ -13,7 +13,6 @@ Handlebars.registerHelper("json", (context) => {
 });
 
 type YoutubeReplyData = {
-  variableName?: string;
   replyMessage?: string;
 };
 
@@ -81,20 +80,20 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
         })
         .json<YoutubeCommentResponse>();
 
-      if (!config.variableName) {
-        await publish(
-          youtubeReplyChannel().status({ nodeId, status: "error" }),
-        );
-        throw new NonRetriableError(
-          "YouTube Reply node: Variable name is missing",
-        );
-      }
+      const prevAi = context.aiReply;
+      const mergedAi =
+        typeof prevAi === "object" &&
+        prevAi !== null &&
+        !Array.isArray(prevAi)
+          ? {
+              ...(prevAi as Record<string, unknown>),
+              replyText: compiledReply,
+            }
+          : { replyText: compiledReply };
 
       return {
         ...context,
-        [config.variableName]: {
-          replyText: compiledReply,
-        },
+        aiReply: mergedAi,
       };
     });
 
