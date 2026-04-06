@@ -140,6 +140,16 @@ const notionActionSchema = z
   })
   .passthrough();
 
+const whatsappActionSchema = z
+  .object({
+    recipientPhone: z.string().min(1, "Recipient phone number is required"),
+    message: z
+      .string()
+      .min(1, "Message is required")
+      .max(4096, "WhatsApp messages cannot exceed 4096 characters"),
+  })
+  .passthrough();
+
 // One schema per NodeType (must not guess field names)
 const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.INITIAL]: emptyPassthroughSchema,
@@ -162,6 +172,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.NOTION_ACTION]: notionActionSchema,
   [NodeType.TELEGRAM_ACTION]: telegramActionSchema,
   [NodeType.TELEGRAM_TRIGGER]: emptyPassthroughSchema,
+  [NodeType.WHATSAPP_ACTION]: whatsappActionSchema,
 };
 
 export function parseNodeConfig(type: NodeType, data: unknown) {

@@ -31,6 +31,42 @@ const credentialBodySchema = z
           path: ["instagramAccountId"],
         });
       }
+    } else if (data.type === CredentialType.WHATSAPP) {
+      const value = data.value?.trim();
+      if (!value) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Value is required",
+          path: ["value"],
+        });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(value) as {
+          accessToken?: string;
+          phoneNumberId?: string;
+        };
+        if (!parsed.accessToken?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "accessToken is required in JSON value",
+            path: ["value"],
+          });
+        }
+        if (!parsed.phoneNumberId?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "phoneNumberId is required in JSON value",
+            path: ["value"],
+          });
+        }
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Value must be valid JSON: {\"accessToken\":\"...\",\"phoneNumberId\":\"...\"}",
+          path: ["value"],
+        });
+      }
     } else if (!data.value?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

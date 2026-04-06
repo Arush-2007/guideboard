@@ -106,6 +106,11 @@ const credentialTypeOptions = [
     logo: "/logos/telegram.svg",
   },
   {
+    value: CredentialType.WHATSAPP,
+    label: "WhatsApp",
+    logo: "/logos/whatsapp.svg",
+  },
+  {
     value: CredentialType.XAI,
     label: "xAI (Grok)",
     logo: "/logos/xai.svg",
@@ -339,6 +344,8 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                           ? "Bot token"
                           : watchedType === CredentialType.NOTION
                             ? "Internal integration token"
+                            : watchedType === CredentialType.WHATSAPP
+                              ? "Credential JSON"
                             : "API Key"}
                       </FormLabel>
                       <FormControl>
@@ -349,6 +356,8 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                               ? "123456789:AAH..."
                               : watchedType === CredentialType.NOTION
                                 ? "secret_..."
+                                : watchedType === CredentialType.WHATSAPP
+                                  ? "{\"accessToken\":\"EA...\",\"phoneNumberId\":\"123456789012345\"}"
                                 : watchedType === CredentialType.XAI
                                   ? "xai-..."
                                   : "sk-..."

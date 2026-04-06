@@ -19,6 +19,7 @@ import { slackChannel } from "./channels/slack";
 import { notionChannel } from "./channels/notion";
 import { telegramActionChannel } from "./channels/telegram-action";
 import { telegramTriggerChannel } from "./channels/telegram-trigger";
+import { whatsappActionChannel } from "./channels/whatsapp-action";
 import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
 import { instagramReplyChannel } from "./channels/instagram-reply-comment";
 import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
@@ -57,6 +58,7 @@ export const executeWorkflow = inngest.createFunction(
       notionChannel(),
       telegramActionChannel(),
       telegramTriggerChannel(),
+      whatsappActionChannel(),
       instagramCommentTriggerChannel(),
       instagramReplyChannel(),
       youtubeCommentTriggerChannel(),

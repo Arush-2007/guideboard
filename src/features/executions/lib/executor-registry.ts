@@ -19,6 +19,7 @@ import { slackExecutor } from "../components/slack/executor";
 import { notionExecutor } from "../components/notion/executor";
 import { telegramActionExecutor } from "../components/telegram-action/executor";
 import { telegramTriggerExecutor } from "@/features/triggers/components/telegram-trigger/executor";
+import { whatsappActionExecutor } from "../components/whatsapp-action/executor";
 
 export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.INITIAL]: manualTriggerExecutor,
@@ -41,6 +42,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.NOTION_ACTION]: notionExecutor,
   [NodeType.TELEGRAM_ACTION]: telegramActionExecutor,
   [NodeType.TELEGRAM_TRIGGER]: telegramTriggerExecutor,
+  [NodeType.WHATSAPP_ACTION]: whatsappActionExecutor,
 };
 
 export const getExecutor = (type: NodeType): NodeExecutor => {

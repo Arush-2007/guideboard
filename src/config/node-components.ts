@@ -21,6 +21,7 @@ import { SlackNode } from "@/features/executions/components/slack/node";
 import { NotionNode } from "@/features/executions/components/notion/node";
 import { TelegramActionNode } from "@/features/executions/components/telegram-action/node";
 import { TelegramTrigger } from "@/features/triggers/components/telegram-trigger/node";
+import { WhatsappActionNode } from "@/features/executions/components/whatsapp-action/node";
 
 export const nodeComponents = {
   [NodeType.INITIAL]: InitialNode,
@@ -43,6 +44,7 @@ export const nodeComponents = {
   [NodeType.NOTION_ACTION]: NotionNode,
   [NodeType.TELEGRAM_ACTION]: TelegramActionNode,
   [NodeType.TELEGRAM_TRIGGER]: TelegramTrigger,
+  [NodeType.WHATSAPP_ACTION]: WhatsappActionNode,
 } as const satisfies NodeTypes;
 
 export type RegisteredNodeType = keyof typeof nodeComponents;

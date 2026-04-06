@@ -128,6 +128,12 @@ const executionNodes: NodeTypeOption[] = [
     icon: "/logos/telegram.svg",
   },
   {
+    type: NodeType.WHATSAPP_ACTION,
+    label: "WhatsApp",
+    description: "Send a WhatsApp message via Meta Cloud API",
+    icon: "/logos/whatsapp.svg",
+  },
+  {
     type: NodeType.INSTAGRAM_REPLY_COMMENT,
     label: "Instagram Reply",
     description: "Reply to an Instagram comment using your connected account",

@@ -118,6 +118,9 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
 
   let token: string;
   try {
+    if (credential.type !== CredentialType.NOTION) {
+      throw new Error("Wrong credential type");
+    }
     token = decrypt(credential.value).trim();
   } catch {
     await publish(

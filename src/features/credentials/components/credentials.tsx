@@ -308,6 +308,7 @@ const credentialLogos: Record<CredentialType, string> = {
   [CredentialType.INSTAGRAM]: "/logos/instagram.svg",
   [CredentialType.NOTION]: "/logos/notion.svg",
   [CredentialType.TELEGRAM]: "/logos/telegram.svg",
+  [CredentialType.WHATSAPP]: "/logos/whatsapp.svg",
   [CredentialType.XAI]: "/logos/xai.svg",
 };
 
