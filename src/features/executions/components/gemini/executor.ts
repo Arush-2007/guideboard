@@ -17,7 +17,6 @@ Handlebars.registerHelper("json", (context) => {
 });
 
 type GeminiData = {
-  variableName?: string;
   credentialId?: string;
   systemPrompt?: string;
   userPrompt?: string;
@@ -57,6 +56,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
     ? Handlebars.compile(config.systemPrompt)(context)
     : "You are a helpful assistant.";
   const userPrompt = Handlebars.compile(config.userPrompt)(context);
+  const outputKey = `${NodeType.GEMINI.toLowerCase()}_${nodeId}`;
 
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
@@ -111,7 +111,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
 
     return {
       ...context,
-      [config.variableName!]: {
+      [outputKey]: {
         text,
       },
     }

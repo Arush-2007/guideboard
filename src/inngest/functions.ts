@@ -6,14 +6,19 @@ import { ExecutionStatus, NodeType } from "@/generated/prisma";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { httpRequestChannel } from "./channels/http-request";
+import { conditionChannel } from "./channels/condition";
 import { manualTriggerChannel } from "./channels/manual-trigger";
 import { googleFormTriggerChannel } from "./channels/google-form-trigger";
 import { stripeTriggerChannel } from "./channels/stripe-trigger";
+import { typeformTriggerChannel } from "./channels/typeform-trigger";
 import { geminiChannel } from "./channels/gemini";
 import { openAiChannel } from "./channels/openai";
 import { anthropicChannel } from "./channels/anthropic";
 import { discordChannel } from "./channels/discord";
 import { slackChannel } from "./channels/slack";
+import { notionChannel } from "./channels/notion";
+import { telegramActionChannel } from "./channels/telegram-action";
+import { telegramTriggerChannel } from "./channels/telegram-trigger";
 import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
 import { instagramReplyChannel } from "./channels/instagram-reply-comment";
 import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
@@ -39,14 +44,19 @@ export const executeWorkflow = inngest.createFunction(
     event: "workflows/execute.workflow",
     channels: [
       httpRequestChannel(),
+      conditionChannel(),
       manualTriggerChannel(),
       googleFormTriggerChannel(),
       stripeTriggerChannel(),
+      typeformTriggerChannel(),
       geminiChannel(),
       openAiChannel(),
       anthropicChannel(),
       discordChannel(),
       slackChannel(),
+      notionChannel(),
+      telegramActionChannel(),
+      telegramTriggerChannel(),
       instagramCommentTriggerChannel(),
       instagramReplyChannel(),
       youtubeCommentTriggerChannel(),

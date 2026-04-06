@@ -1,0 +1,47 @@
+import type { NodeExecutor } from "@/features/executions/types";
+import { telegramTriggerChannel } from "@/inngest/channels/telegram-trigger";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
+import { NonRetriableError } from "inngest";
+
+type TelegramTriggerData = Record<string, unknown>;
+
+export const telegramTriggerExecutor: NodeExecutor<TelegramTriggerData> = async ({
+  nodeId,
+  context,
+  step,
+  publish,
+  data,
+}) => {
+  await publish(
+    telegramTriggerChannel().status({
+      nodeId,
+      status: "loading",
+    }),
+  );
+
+  try {
+    parseNodeConfig(NodeType.TELEGRAM_TRIGGER, data);
+  } catch (error) {
+    await publish(
+      telegramTriggerChannel().status({
+        nodeId,
+        status: "error",
+      }),
+    );
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
+    );
+  }
+
+  const result = await step.run("telegram-trigger", async () => context);
+
+  await publish(
+    telegramTriggerChannel().status({
+      nodeId,
+      status: "success",
+    }),
+  );
+
+  return result;
+};

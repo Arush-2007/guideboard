@@ -15,7 +15,6 @@ Handlebars.registerHelper("json", (context) => {
 });
 
 type SlackData = {
-  variableName?: string;
   webhookUrl?: string;
   content?: string;
 };
@@ -51,6 +50,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
 
   const rawContent = Handlebars.compile(config.content)(context);
   const content = decode(rawContent);
+  const outputKey = `${NodeType.SLACK.toLowerCase()}_${nodeId}`;
 
   try {
     const result = await step.run("slack-webhook", async () => {
@@ -70,19 +70,9 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
         },
       });
 
-      if (!config.variableName) {
-        await publish(
-          slackChannel().status({
-            nodeId,
-            status: "error",
-          })
-        );
-        throw new NonRetriableError("Slack node: Variable name is missing");
-      }
-
       return {
         ...context,
-        [config.variableName]: {
+        [outputKey]: {
           messageContent: content.slice(0, 2000),
         },
       };

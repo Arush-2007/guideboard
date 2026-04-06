@@ -15,7 +15,6 @@ Handlebars.registerHelper("json", (context) => {
 });
 
 type DiscordData = {
-  variableName?: string;
   webhookUrl?: string;
   content?: string;
   username?: string;
@@ -55,6 +54,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
   const username = config.username
     ? decode(Handlebars.compile(config.username)(context))
     : undefined;
+  const outputKey = `${NodeType.DISCORD.toLowerCase()}_${nodeId}`;
 
   try {
     const result = await step.run("discord-webhook", async () => {
@@ -75,19 +75,9 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
         },
       });
 
-      if (!config.variableName) {
-        await publish(
-          discordChannel().status({
-            nodeId,
-            status: "error",
-          })
-        );
-        throw new NonRetriableError("Discord node: Variable name is missing");
-      }
-
       return {
         ...context,
-        [config.variableName]: {
+        [outputKey]: {
           messageContent: content.slice(0, 2000),
         },
       };

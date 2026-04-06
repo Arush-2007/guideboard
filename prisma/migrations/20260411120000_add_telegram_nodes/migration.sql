@@ -1,0 +1,8 @@
+-- AlterEnum
+ALTER TYPE "CredentialType" ADD VALUE 'TELEGRAM';
+
+-- AlterEnum
+ALTER TYPE "NodeType" ADD VALUE 'TELEGRAM_ACTION';
+
+-- AlterEnum
+ALTER TYPE "NodeType" ADD VALUE 'TELEGRAM_TRIGGER';

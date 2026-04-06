@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: guideboard-db
+    restart: unless-stopped
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: guideboard
+    volumes:
+      - guideboard_pgdata:/var/lib/postgresql/data
+
+volumes:
+  guideboard_pgdata:

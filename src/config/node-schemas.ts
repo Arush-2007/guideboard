@@ -6,24 +6,11 @@ type AnyZodSchema = z.ZodTypeAny;
 const emptyPassthroughSchema = z.object({}).passthrough();
 
 // Shared validation rules (copied from the corresponding dialog.tsx forms)
-const variableNameSchema = z
+const plainTextSchema = z
   .string()
-  .min(1, { message: "Variable name is required" })
-  .regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, {
-    message:
-      "Must start with a letter or underscore and contain only letters, numbers, and underscores",
-  });
-
-const discordVariableNameSchema = z
-  .string()
-  .min(1, { message: "Variable name is required" })
-  .regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/, {
-    message:
-      "Variable name must start with a letter or underscore and container only letters, numbers, and underscores",
-  });
+  .min(1, { message: "Field is required" });
 
 const apiPromptSchema = z.object({
-  variableName: variableNameSchema,
   credentialId: z.string().min(1, "Credential is required"),
   systemPrompt: z.string().optional(),
   userPrompt: z.string().min(1, "User prompt is required"),
@@ -31,7 +18,6 @@ const apiPromptSchema = z.object({
 
 const aiReplyGeneratorSchema = z
   .object({
-    variableName: variableNameSchema,
     keyword: z.string().optional(),
     replyToKeywordComments: z.boolean().optional(),
     keywordPrompt: z.string().optional(),
@@ -46,7 +32,6 @@ const aiReplyGeneratorSchema = z
 
 const httpRequestSchema = z
   .object({
-    variableName: variableNameSchema,
     endpoint: z
       .string()
       .min(1, { message: "Please enter a valid URL" }),
@@ -55,12 +40,29 @@ const httpRequestSchema = z
   })
   .passthrough();
 
+const conditionSchema = z
+  .object({
+    field: z.string().min(1, "Field path is required"),
+    operator: z.enum([
+      "contains",
+      "not_contains",
+      "equals",
+      "not_equals",
+      "greater_than",
+      "less_than",
+      "is_empty",
+      "is_not_empty",
+    ]),
+    value: z.string().optional(),
+    stopOnFail: z.boolean().default(true),
+  })
+  .passthrough();
+
 const openAiFamilySchema = apiPromptSchema.passthrough();
 
 const youtubeReplySchema = z
   .object({
     replyMessage: z.string().min(1, "Reply message is required"),
-    variableName: variableNameSchema,
   })
   .passthrough();
 
@@ -83,7 +85,6 @@ const instagramCommentTriggerSchema = z
 
 const discordSchema = z
   .object({
-    variableName: discordVariableNameSchema,
     username: z.string().optional(),
     content: z
       .string()
@@ -95,9 +96,47 @@ const discordSchema = z
 
 const slackSchema = z
   .object({
-    variableName: discordVariableNameSchema,
     content: z.string().min(1, "Message content is required"),
     webhookUrl: z.string().min(1, "Webhook URL is required"),
+  })
+  .passthrough();
+
+const telegramActionSchema = z
+  .object({
+    credentialId: z.string().min(1, "Credential is required"),
+    chatId: z.string().min(1, "Chat ID is required"),
+    message: z
+      .string()
+      .min(1, "Message is required")
+      .max(4096, "Telegram messages cannot exceed 4096 characters"),
+  })
+  .passthrough();
+
+const notionActionSchema = z
+  .object({
+    credentialId: z.string().min(1, "Credential is required"),
+    action: z.enum(["create_page", "append_to_database"]),
+    pageTitle: plainTextSchema.min(1, "Page title is required"),
+    content: plainTextSchema.min(1, "Content is required"),
+    parentPageId: z.string().optional(),
+    databaseId: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.action === "create_page") {
+      if (!data.parentPageId?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Parent page ID is required",
+          path: ["parentPageId"],
+        });
+      }
+    } else if (!data.databaseId?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Database ID is required",
+        path: ["databaseId"],
+      });
+    }
   })
   .passthrough();
 
@@ -108,16 +147,21 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.MANUAL_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GOOGLE_FORM_TRIGGER]: emptyPassthroughSchema,
   [NodeType.STRIPE_TRIGGER]: emptyPassthroughSchema,
+  [NodeType.TYPEFORM_TRIGGER]: emptyPassthroughSchema,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: instagramCommentTriggerSchema,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: instagramReplySchema,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: youtubeCommentTriggerSchema,
   [NodeType.YOUTUBE_REPLY_COMMENT]: youtubeReplySchema,
   [NodeType.AI_REPLY_GENERATOR]: aiReplyGeneratorSchema,
+  [NodeType.ANTHROPIC]: openAiFamilySchema,
+  [NodeType.CONDITION]: conditionSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
-  [NodeType.ANTHROPIC]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,
   [NodeType.SLACK]: slackSchema,
+  [NodeType.NOTION_ACTION]: notionActionSchema,
+  [NodeType.TELEGRAM_ACTION]: telegramActionSchema,
+  [NodeType.TELEGRAM_TRIGGER]: emptyPassthroughSchema,
 };
 
 export function parseNodeConfig(type: NodeType, data: unknown) {

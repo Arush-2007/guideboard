@@ -3,6 +3,7 @@
 import { createId } from "@paralleldrive/cuid2";
 import { useReactFlow } from "@xyflow/react";
 import {
+  Filter,
   GlobeIcon,
   MousePointerIcon,
 } from "lucide-react";
@@ -40,6 +41,12 @@ const triggerNodes: NodeTypeOption[] = [
     icon: "/logos/googleform.svg",
   },
   {
+    type: NodeType.TYPEFORM_TRIGGER,
+    label: "Typeform",
+    description: "Runs the flow when a Typeform response is submitted",
+    icon: "/logos/typeform.svg",
+  },
+  {
     type: NodeType.STRIPE_TRIGGER,
     label: "Stripe Event",
     description: "Runs the flow when a Stripe Event is captured",
@@ -57,6 +64,12 @@ const triggerNodes: NodeTypeOption[] = [
     description: "Runs the flow when a comment is posted on your YouTube video",
     icon: "/logos/youtube.svg",
   },
+  {
+    type: NodeType.TELEGRAM_TRIGGER,
+    label: "Telegram",
+    description: "Runs the flow when your bot receives a message",
+    icon: "/logos/telegram.svg",
+  },
 ];
 
 const executionNodes: NodeTypeOption[] = [
@@ -65,6 +78,12 @@ const executionNodes: NodeTypeOption[] = [
     label: "HTTP Request",
     description: "Makes an HTTP request",
     icon: GlobeIcon,
+  },
+  {
+    type: NodeType.CONDITION,
+    label: "Condition",
+    description: "Continue only when a context field matches a rule",
+    icon: Filter,
   },
   {
     type: NodeType.GEMINI,
@@ -95,6 +114,18 @@ const executionNodes: NodeTypeOption[] = [
     label: "Slack",
     description: "Send a message to Slack",
     icon: "/logos/slack.svg",
+  },
+  {
+    type: NodeType.NOTION_ACTION,
+    label: "Notion",
+    description: "Create a Notion page or append a row to a database",
+    icon: "/logos/notion.svg",
+  },
+  {
+    type: NodeType.TELEGRAM_ACTION,
+    label: "Telegram",
+    description: "Send a Telegram message with your bot",
+    icon: "/logos/telegram.svg",
   },
   {
     type: NodeType.INSTAGRAM_REPLY_COMMENT,

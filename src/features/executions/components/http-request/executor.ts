@@ -14,7 +14,6 @@ Handlebars.registerHelper("json", (context) => {
 });
 
 type HttpRequestData = {
-  variableName?: string;
   endpoint?: string;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: string;
@@ -48,6 +47,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
       error instanceof Error ? error.message : "Invalid node config",
     );
   }
+  const outputKey = `${NodeType.HTTP_REQUEST.toLowerCase()}_${nodeId}`;
 
   try {
     const result = await step.run("http-request", async () => {
@@ -59,16 +59,6 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
           }),
         );
         throw new NonRetriableError("HTTP Request node: No endpoint configured");
-      }
-
-      if (!config.variableName) {
-        await publish(
-          httpRequestChannel().status({
-            nodeId,
-            status: "error",
-          }),
-        );
-        throw new NonRetriableError("HTTP Request node: Variable name not configured");
       }
 
       if (!config.method) {
@@ -111,7 +101,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
 
       return {
         ...context,
-        [config.variableName]: responsePayload,
+        [outputKey]: responsePayload,
       }
     });
 

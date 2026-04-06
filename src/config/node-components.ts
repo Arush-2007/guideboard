@@ -3,9 +3,11 @@ import { NodeType } from "@/generated/prisma";
 import type { NodeTypes } from "@xyflow/react";
 
 import { HttpRequestNode } from "@/features/executions/components/http-request/node";
+import { ConditionNode } from "@/features/executions/components/condition/node";
 import { ManualTriggerNode } from "@/features/triggers/components/manual-trigger/node";
 import { GoogleFormTrigger } from "@/features/triggers/components/google-form-trigger/node";
 import { StripeTriggerNode } from "@/features/triggers/components/stripe-trigger/node";
+import { TypeformTrigger } from "@/features/triggers/components/typeform-trigger/node";
 import { InstagramCommentTriggerNode } from "@/features/triggers/components/instagram-comment-trigger/node";
 import { InstagramReplyNode } from "@/features/executions/components/instagram-reply-comment/node";
 import { YoutubeCommentTriggerNode } from "@/features/triggers/components/youtube-comment-trigger/node";
@@ -16,6 +18,9 @@ import { OpenAiNode } from "@/features/executions/components/openai/node";
 import { AnthropicNode } from "@/features/executions/components/anthropic/node";
 import { DiscordNode } from "@/features/executions/components/discord/node";
 import { SlackNode } from "@/features/executions/components/slack/node";
+import { NotionNode } from "@/features/executions/components/notion/node";
+import { TelegramActionNode } from "@/features/executions/components/telegram-action/node";
+import { TelegramTrigger } from "@/features/triggers/components/telegram-trigger/node";
 
 export const nodeComponents = {
   [NodeType.INITIAL]: InitialNode,
@@ -23,6 +28,7 @@ export const nodeComponents = {
   [NodeType.MANUAL_TRIGGER]: ManualTriggerNode,
   [NodeType.GOOGLE_FORM_TRIGGER]: GoogleFormTrigger,
   [NodeType.STRIPE_TRIGGER]: StripeTriggerNode,
+  [NodeType.TYPEFORM_TRIGGER]: TypeformTrigger,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: InstagramCommentTriggerNode,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: InstagramReplyNode,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: YoutubeCommentTriggerNode,
@@ -31,8 +37,12 @@ export const nodeComponents = {
   [NodeType.GEMINI]: GeminiNode,
   [NodeType.OPENAI]: OpenAiNode,
   [NodeType.ANTHROPIC]: AnthropicNode,
+  [NodeType.CONDITION]: ConditionNode,
   [NodeType.DISCORD]: DiscordNode,
   [NodeType.SLACK]: SlackNode,
+  [NodeType.NOTION_ACTION]: NotionNode,
+  [NodeType.TELEGRAM_ACTION]: TelegramActionNode,
+  [NodeType.TELEGRAM_TRIGGER]: TelegramTrigger,
 } as const satisfies NodeTypes;
 
 export type RegisteredNodeType = keyof typeof nodeComponents;

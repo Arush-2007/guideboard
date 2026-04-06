@@ -96,6 +96,16 @@ const credentialTypeOptions = [
     logo: "/logos/instagram.svg",
   },
   {
+    value: CredentialType.NOTION,
+    label: "Notion",
+    logo: "/logos/notion.svg",
+  },
+  {
+    value: CredentialType.TELEGRAM,
+    label: "Telegram",
+    logo: "/logos/telegram.svg",
+  },
+  {
     value: CredentialType.XAI,
     label: "xAI (Grok)",
     logo: "/logos/xai.svg",
@@ -324,14 +334,24 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                   name="value"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>API Key</FormLabel>
+                      <FormLabel>
+                        {watchedType === CredentialType.TELEGRAM
+                          ? "Bot token"
+                          : watchedType === CredentialType.NOTION
+                            ? "Internal integration token"
+                            : "API Key"}
+                      </FormLabel>
                       <FormControl>
                         <Input
                           type="password"
                           placeholder={
-                            watchedType === CredentialType.XAI
-                              ? "xai-..."
-                              : "sk-..."
+                            watchedType === CredentialType.TELEGRAM
+                              ? "123456789:AAH..."
+                              : watchedType === CredentialType.NOTION
+                                ? "secret_..."
+                                : watchedType === CredentialType.XAI
+                                  ? "xai-..."
+                                  : "sk-..."
                           }
                           {...field}
                         />
