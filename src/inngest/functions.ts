@@ -5,6 +5,8 @@ import { topologicalSort, sendWorkflowExecution } from "./utils";
 import { ExecutionStatus, NodeType } from "@/generated/prisma";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
+import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import ky from "ky";
 import { httpRequestChannel } from "./channels/http-request";
 import { conditionChannel } from "./channels/condition";
 import { manualTriggerChannel } from "./channels/manual-trigger";
@@ -20,6 +22,10 @@ import { notionChannel } from "./channels/notion";
 import { telegramActionChannel } from "./channels/telegram-action";
 import { telegramTriggerChannel } from "./channels/telegram-trigger";
 import { whatsappActionChannel } from "./channels/whatsapp-action";
+import { gmailActionChannel } from "./channels/gmail-action";
+import { gmailTriggerChannel } from "./channels/gmail-trigger";
+import { googleSheetsActionChannel } from "./channels/google-sheets-action";
+import { googleSheetsTriggerChannel } from "./channels/google-sheets-trigger";
 import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
 import { instagramReplyChannel } from "./channels/instagram-reply-comment";
 import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
@@ -59,6 +65,10 @@ export const executeWorkflow = inngest.createFunction(
       telegramActionChannel(),
       telegramTriggerChannel(),
       whatsappActionChannel(),
+      gmailActionChannel(),
+      gmailTriggerChannel(),
+      googleSheetsActionChannel(),
+      googleSheetsTriggerChannel(),
       instagramCommentTriggerChannel(),
       instagramReplyChannel(),
       youtubeCommentTriggerChannel(),
@@ -217,6 +227,233 @@ export const pollYoutubeComments = inngest.createFunction(
         await prisma.youtubeCommentPoll.update({
           where: { id: poll.id },
           data: { lastChecked: new Date() },
+        });
+      });
+    }
+  },
+);
+
+type GmailListResponse = {
+  messages?: Array<{ id: string }>;
+};
+
+type GmailMessageResponse = {
+  id: string;
+  snippet?: string;
+  payload?: {
+    headers?: Array<{
+      name?: string;
+      value?: string;
+    }>;
+  };
+};
+
+type GoogleSheetsValuesResponse = {
+  values?: string[][];
+};
+
+function getHeaderValue(
+  headers: Array<{ name?: string; value?: string }> | undefined,
+  name: string,
+): string {
+  if (!headers) return "";
+  const found = headers.find(
+    (h) => h.name?.toLowerCase() === name.toLowerCase(),
+  );
+  return found?.value ?? "";
+}
+
+export const pollGmail = inngest.createFunction(
+  { id: "poll-gmail", retries: 1 },
+  { cron: "*/5 * * * *" },
+  async ({ step }) => {
+    const workflows = await step.run("fetch-gmail-workflows", async () => {
+      return prisma.workflow.findMany({
+        where: {
+          nodes: {
+            some: {
+              type: NodeType.GMAIL_TRIGGER,
+            },
+          },
+        },
+        select: {
+          id: true,
+          userId: true,
+        },
+      });
+    });
+
+    await step.run("ensure-gmail-polls", async () => {
+      for (const workflow of workflows) {
+        await prisma.gmailPoll.upsert({
+          where: { workflowId: workflow.id },
+          create: {
+            workflowId: workflow.id,
+            userId: workflow.userId,
+          },
+          update: {
+            userId: workflow.userId,
+          },
+        });
+      }
+    });
+
+    const polls = await step.run("fetch-gmail-polls", async () => {
+      return prisma.gmailPoll.findMany({
+        select: {
+          id: true,
+          workflowId: true,
+          userId: true,
+        },
+      });
+    });
+
+    for (const poll of polls) {
+      await step.run(`poll-gmail-${poll.workflowId}`, async () => {
+        let accessToken: string;
+        try {
+          accessToken = await refreshGoogleTokenIfNeeded(poll.userId);
+        } catch {
+          return;
+        }
+
+        const headers = {
+          Authorization: `Bearer ${accessToken}`,
+        };
+
+        const list = await ky
+          .get("https://gmail.googleapis.com/gmail/v1/users/me/messages", {
+            headers,
+            searchParams: {
+              q: "is:unread",
+              maxResults: "10",
+            },
+          })
+          .json<GmailListResponse>();
+
+        for (const msg of list.messages ?? []) {
+          const metadataParams = new URLSearchParams();
+          metadataParams.set("format", "metadata");
+          metadataParams.append("metadataHeaders", "Subject");
+          metadataParams.append("metadataHeaders", "From");
+
+          const detail = await ky
+            .get(
+              `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
+              {
+                headers,
+                searchParams: metadataParams,
+              },
+            )
+            .json<GmailMessageResponse>();
+
+          const subject = getHeaderValue(detail.payload?.headers, "Subject");
+          const from = getHeaderValue(detail.payload?.headers, "From");
+          const snippet = detail.snippet ?? "";
+
+          await sendWorkflowExecution({
+            workflowId: poll.workflowId,
+            initialData: {
+              gmail: {
+                messageId: msg.id,
+                subject,
+                from,
+                snippet,
+              },
+            },
+            idempotencyKey: `gmail:${msg.id}`,
+          });
+
+          await ky.post(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`,
+            {
+              headers: {
+                ...headers,
+                "Content-Type": "application/json",
+              },
+              json: {
+                removeLabelIds: ["UNREAD"],
+              },
+            },
+          );
+        }
+
+        await prisma.gmailPoll.update({
+          where: { id: poll.id },
+          data: { lastChecked: new Date() },
+        });
+      });
+    }
+  },
+);
+
+export const pollGoogleSheets = inngest.createFunction(
+  { id: "poll-google-sheets", retries: 1 },
+  { cron: "*/5 * * * *" },
+  async ({ step }) => {
+    const polls = await step.run("fetch-google-sheets-polls", async () => {
+      return prisma.googleSheetsPoll.findMany({
+        select: {
+          id: true,
+          workflowId: true,
+          userId: true,
+          spreadsheetId: true,
+          sheetName: true,
+          lastRowCount: true,
+        },
+      });
+    });
+
+    for (const poll of polls) {
+      await step.run(`poll-google-sheets-${poll.workflowId}`, async () => {
+        let accessToken: string;
+        try {
+          accessToken = await refreshGoogleTokenIfNeeded(poll.userId);
+        } catch {
+          return;
+        }
+
+        const a1Range = `${poll.sheetName}!A:ZZ`;
+        const valuesResult = await ky
+          .get(
+            `https://sheets.googleapis.com/v4/spreadsheets/${poll.spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+            },
+          )
+          .json<GoogleSheetsValuesResponse>();
+
+        const rows = valuesResult.values ?? [];
+        const currentRowCount = rows.length;
+
+        if (currentRowCount > poll.lastRowCount) {
+          for (let i = poll.lastRowCount; i < currentRowCount; i++) {
+            const rowIndex = i + 1;
+            const row = rows[i] ?? [];
+
+            await sendWorkflowExecution({
+              workflowId: poll.workflowId,
+              initialData: {
+                googleSheets: {
+                  spreadsheetId: poll.spreadsheetId,
+                  sheetName: poll.sheetName,
+                  rowIndex,
+                  row,
+                },
+              },
+              idempotencyKey: `google_sheets:${poll.spreadsheetId}:${rowIndex}`,
+            });
+          }
+        }
+
+        await prisma.googleSheetsPoll.update({
+          where: { id: poll.id },
+          data: {
+            lastRowCount: currentRowCount,
+            lastChecked: new Date(),
+          },
         });
       });
     }

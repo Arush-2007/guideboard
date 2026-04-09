@@ -5,6 +5,7 @@ import { PAGINATION } from "@/config/constants";
 import { CredentialType } from "@/generated/prisma";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
+import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import ky from "ky";
 
 const credentialBodySchema = z
@@ -303,5 +304,34 @@ export const credentialsRouter = createTRPCRouter({
         title: item.snippet?.title ?? "Untitled video",
       }))
       .filter((item) => item.videoId.length > 0);
+  }),
+  getGoogleSheets: protectedProcedure.query(async ({ ctx }) => {
+    type GoogleSheetsResponse = {
+      files?: Array<{
+        id?: string;
+        name?: string;
+      }>;
+    };
+
+    const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
+    const data = await ky
+      .get("https://www.googleapis.com/drive/v3/files", {
+        searchParams: {
+          q: "mimeType='application/vnd.google-apps.spreadsheet'",
+          fields: "files(id,name)",
+          pageSize: "100",
+        },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      })
+      .json<GoogleSheetsResponse>();
+
+    return (data.files ?? [])
+      .map((file) => ({
+        id: file.id ?? "",
+        name: file.name ?? "Untitled spreadsheet",
+      }))
+      .filter((file) => file.id.length > 0);
   }),
 });

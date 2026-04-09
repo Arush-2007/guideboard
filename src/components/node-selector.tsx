@@ -47,6 +47,18 @@ const triggerNodes: NodeTypeOption[] = [
     icon: "/logos/typeform.svg",
   },
   {
+    type: NodeType.GMAIL_TRIGGER,
+    label: "Gmail",
+    description: "Runs the flow when a new unread email is detected",
+    icon: "/logos/gmail.svg",
+  },
+  {
+    type: NodeType.GOOGLE_SHEETS_TRIGGER,
+    label: "Google Sheets",
+    description: "Runs the flow when a new row is detected",
+    icon: "/logos/google-sheets.svg",
+  },
+  {
     type: NodeType.STRIPE_TRIGGER,
     label: "Stripe Event",
     description: "Runs the flow when a Stripe Event is captured",
@@ -132,6 +144,18 @@ const executionNodes: NodeTypeOption[] = [
     label: "WhatsApp",
     description: "Send a WhatsApp message via Meta Cloud API",
     icon: "/logos/whatsapp.svg",
+  },
+  {
+    type: NodeType.GMAIL_ACTION,
+    label: "Gmail",
+    description: "Send an email via your connected Google account",
+    icon: "/logos/gmail.svg",
+  },
+  {
+    type: NodeType.GOOGLE_SHEETS_ACTION,
+    label: "Google Sheets",
+    description: "Append or read rows in a spreadsheet",
+    icon: "/logos/google-sheets.svg",
   },
   {
     type: NodeType.INSTAGRAM_REPLY_COMMENT,

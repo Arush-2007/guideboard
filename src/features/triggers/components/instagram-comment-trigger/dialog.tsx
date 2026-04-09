@@ -19,7 +19,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
@@ -27,7 +26,6 @@ import z from "zod";
 
 const formSchema = z.object({
   postId: z.string().optional(),
-  replyMessage: z.string().min(1, "Reply message is required"),
 });
 
 export type InstagramCommentTriggerFormValues = z.infer<typeof formSchema>;
@@ -49,7 +47,6 @@ export const InstagramCommentTriggerDialog = ({
     resolver: zodResolver(formSchema),
     defaultValues: {
       postId: defaultValues.postId ?? "",
-      replyMessage: defaultValues.replyMessage ?? "",
     },
   });
 
@@ -57,7 +54,6 @@ export const InstagramCommentTriggerDialog = ({
     if (open) {
       form.reset({
         postId: defaultValues.postId ?? "",
-        replyMessage: defaultValues.replyMessage ?? "",
       });
     }
   }, [open, defaultValues, form]);
@@ -103,35 +99,6 @@ export const InstagramCommentTriggerDialog = ({
                   <FormDescription>
                     The Instagram post ID to watch. Leave blank to trigger on
                     any post.
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="replyMessage"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Reply Message</FormLabel>
-                  <FormControl>
-                    <Textarea
-                      placeholder="Your reply message... use {{commenterName}} and {{commentText}}"
-                      className="min-h-[90px] font-mono text-sm"
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    The reply to post. Use{" "}
-                    <code className="bg-muted px-1 py-0.5 rounded text-xs">
-                      {"{{commenterName}}"}
-                    </code>{" "}
-                    and{" "}
-                    <code className="bg-muted px-1 py-0.5 rounded text-xs">
-                      {"{{commentText}}"}
-                    </code>{" "}
-                    as placeholders.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

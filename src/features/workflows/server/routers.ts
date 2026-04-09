@@ -146,6 +146,37 @@ export const workflowsRouter = createTRPCRouter({
         });
       }
 
+      const googleSheetsTrigger = nodes.find(
+        (n) => n.type === "GOOGLE_SHEETS_TRIGGER",
+      );
+
+      if (googleSheetsTrigger) {
+        const triggerData = (googleSheetsTrigger.data as
+          | { spreadsheetId?: string; sheetName?: string }
+          | undefined) ?? { spreadsheetId: "", sheetName: "" };
+
+        if (triggerData.spreadsheetId && triggerData.sheetName) {
+          await prisma.googleSheetsPoll.upsert({
+            where: { workflowId: id },
+            update: {
+              userId: ctx.auth.user.id,
+              spreadsheetId: triggerData.spreadsheetId,
+              sheetName: triggerData.sheetName,
+            },
+            create: {
+              userId: ctx.auth.user.id,
+              workflowId: id,
+              spreadsheetId: triggerData.spreadsheetId,
+              sheetName: triggerData.sheetName,
+            },
+          });
+        }
+      } else {
+        await prisma.googleSheetsPoll.deleteMany({
+          where: { workflowId: id },
+        });
+      }
+
       return workflow;
     }),
   updateName: protectedProcedure

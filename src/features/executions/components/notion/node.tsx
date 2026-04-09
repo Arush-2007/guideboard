@@ -1,6 +1,7 @@
 "use client";
 
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
+import { Database } from "lucide-react";
 import { memo, useState } from "react";
 import { BaseExecutionNode } from "../base-execution-node";
 import { NotionDialog, type NotionFormValues } from "./dialog";
@@ -65,7 +66,7 @@ export const NotionNode = memo((props: NodeProps<NotionFlowNode>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/notion.svg"
+        icon={Database}
         name="Notion"
         status={nodeStatus}
         description={description}

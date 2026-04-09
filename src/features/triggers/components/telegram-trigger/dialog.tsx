@@ -44,22 +44,8 @@ export const TelegramTriggerDialog = ({
         <DialogHeader>
           <DialogTitle>Telegram Trigger Configuration</DialogTitle>
           <DialogDescription>
-            Call{" "}
-            <a
-              href="https://core.telegram.org/bots/api#setwebhook"
-              className="underline"
-              target="_blank"
-              rel="noreferrer"
-            >
-              setWebhook
-            </a>{" "}
-            with this URL and the same{" "}
-            <code className="text-xs bg-muted px-1 rounded">secret_token</code>{" "}
-            as{" "}
-            <code className="text-xs bg-muted px-1 rounded">
-              TELEGRAM_WEBHOOK_SECRET
-            </code>{" "}
-            in your server environment.
+            When someone messages your Telegram bot, this workflow fires. Make
+            sure your bot token credential is added under Credentials first.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -83,59 +69,6 @@ export const TelegramTriggerDialog = ({
                 <CopyIcon className="size-4" />
               </Button>
             </div>
-          </div>
-
-          <div className="rounded-lg bg-muted p-4 space-y-2">
-            <h4 className="font-medium text-sm">Example (replace TOKEN)</h4>
-            <p className="text-xs text-muted-foreground font-mono break-all">
-              curl -X POST &quot;https://api.telegram.org/botTOKEN/setWebhook&quot;
-              -d &quot;url=...&quot; -d
-              &quot;secret_token=YOUR_TELEGRAM_WEBHOOK_SECRET&quot;
-            </p>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                copyToClipboard(
-                  `curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=${encodeURIComponent(webhookUrl)}" -d "secret_token=<same as TELEGRAM_WEBHOOK_SECRET>"`,
-                  "Example curl copied",
-                )
-              }
-            >
-              <CopyIcon className="size-4 mr-2" />
-              Copy example
-            </Button>
-          </div>
-
-          <div className="rounded-lg bg-muted p-4 space-y-2">
-            <h4 className="font-medium text-sm">Available variables</h4>
-            <ul className="text-sm text-muted-foreground space-y-1">
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{telegram.text}}"}
-                </code>{" "}
-                — Message text
-              </li>
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{telegram.firstName}}"}
-                </code>{" "}
-                — Sender first name
-              </li>
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{telegram.chatId}}"}
-                </code>{" "}
-                — Chat id
-              </li>
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{json telegram.raw}}"}
-                </code>{" "}
-                — Full update payload
-              </li>
-            </ul>
           </div>
         </div>
       </DialogContent>

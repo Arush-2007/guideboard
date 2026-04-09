@@ -154,7 +154,8 @@ export const TelegramActionDialog = ({
                     />
                   </FormControl>
                   <FormDescription>
-                    Supports {"{{templates}}"} for dynamic chat id.
+                    Use {"{{telegram.chatId}}"} to reply to whoever triggered
+                    this workflow, or enter a fixed chat ID.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

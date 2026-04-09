@@ -26,7 +26,6 @@ export async function fetchInstagramCommentTriggerRealtimeToken(): Promise<Insta
 export type InstagramCommentTriggerConfig = {
   postId?: string;
   keywordFilter?: string;
-  replyMessage: string;
 };
 
 export async function saveInstagramCommentTriggerConfig(
@@ -45,14 +44,16 @@ export async function saveInstagramCommentTriggerConfig(
 
   const node = await prisma.node.findUniqueOrThrow({ where: { id: nodeId } });
 
+  const { replyMessage: _omitReplyMessage, ...restData } =
+    (node.data as Record<string, unknown>) ?? {};
+
   await prisma.node.update({
     where: { id: nodeId },
     data: {
       data: {
-        ...(node.data as Record<string, unknown>),
+        ...restData,
         postId: parsed.postId ?? "",
         keywordFilter: parsed.keywordFilter ?? "",
-        replyMessage: parsed.replyMessage,
       },
     },
   });

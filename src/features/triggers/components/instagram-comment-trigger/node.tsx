@@ -51,7 +51,6 @@ export const InstagramCommentTriggerNode = memo(
       try {
         await saveInstagramCommentTriggerConfig(props.id, {
           postId: values.postId,
-          replyMessage: values.replyMessage,
         });
       } catch {
         toast.error("Failed to save trigger config. Your changes are saved locally until you save the workflow.");

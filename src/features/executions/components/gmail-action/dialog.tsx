@@ -26,23 +26,21 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
-  recipientPhone: z.string().min(1, "Recipient phone number is required"),
-  message: z
-    .string()
-    .min(1, "Message is required")
-    .max(4096, "WhatsApp messages cannot exceed 4096 characters"),
+  to: z.string().min(1, "To is required"),
+  subject: z.string().min(1, "Subject is required"),
+  body: z.string().min(1, "Body is required"),
 });
 
-export type WhatsappActionFormValues = z.infer<typeof formSchema>;
+export type GmailActionFormValues = z.infer<typeof formSchema>;
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: z.infer<typeof formSchema>) => void;
-  defaultValues?: Partial<WhatsappActionFormValues>;
+  defaultValues?: Partial<GmailActionFormValues>;
 }
 
-export const WhatsappActionDialog = ({
+export const GmailActionDialog = ({
   open,
   onOpenChange,
   onSubmit,
@@ -51,8 +49,9 @@ export const WhatsappActionDialog = ({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      recipientPhone: defaultValues.recipientPhone || "",
-      message: defaultValues.message || "",
+      to: defaultValues.to || "",
+      subject: defaultValues.subject || "",
+      body: defaultValues.body || "",
     },
   });
 
@@ -60,8 +59,9 @@ export const WhatsappActionDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        recipientPhone: defaultValues.recipientPhone || "",
-        message: defaultValues.message || "",
+        to: defaultValues.to || "",
+        subject: defaultValues.subject || "",
+        body: defaultValues.body || "",
       });
     }
   }, [open, defaultValues, form]);
@@ -75,9 +75,9 @@ export const WhatsappActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>WhatsApp Configuration</DialogTitle>
+          <DialogTitle>Gmail Configuration</DialogTitle>
           <DialogDescription>
-            Configure the WhatsApp message details for this node.
+            Send an email using your connected Google account.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -87,20 +87,19 @@ export const WhatsappActionDialog = ({
           >
             <FormField
               control={form.control}
-              name="recipientPhone"
+              name="to"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Recipient Phone Number</FormLabel>
+                  <FormLabel>To</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="e.g. 911234567890"
+                      placeholder="recipient@example.com"
                       {...field}
                     />
                   </FormControl>
                   <FormDescription>
-                    Use {"{{variables}}"} to pull from a previous node, e.g.{" "}
-                    {"{{googleForm.responses['Phone']}}"} — or enter a fixed
-                    number with country code, no plus sign.
+                    Use {"{{variables}}"} from previous nodes, e.g.{" "}
+                    {"{{googleForm.respondentEmail}}"}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -109,24 +108,45 @@ export const WhatsappActionDialog = ({
 
             <FormField
               control={form.control}
-              name="message"
+              name="subject"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Subject</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="Subject line"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Supports {"{{variables}}"} for dynamic subjects.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="body"
               render={({ field }) => (
               <FormItem>
-                <FormLabel>Message</FormLabel>
+                <FormLabel>Body</FormLabel>
                 <FormControl>
                   <Textarea
-                    placeholder="Hello {{openai_abc123.text}}"
-                    className="min-h-[80px] font-mono text-sm"
+                    placeholder="Hello {{gmail_trigger_abc123.from}}"
+                    className="min-h-[120px] font-mono text-sm"
                     {...field}
                   />
                 </FormControl>
-                  <FormDescription>
-                    Supports {"{{variables}}"} from previous nodes.
-                  </FormDescription>
+                <FormDescription>
+                  Supports {"{{variables}}"} from previous nodes.
+                </FormDescription>
                 <FormMessage />
               </FormItem>
             )}
             />
+
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>
             </DialogFooter>

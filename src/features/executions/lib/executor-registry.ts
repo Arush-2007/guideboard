@@ -20,6 +20,10 @@ import { notionExecutor } from "../components/notion/executor";
 import { telegramActionExecutor } from "../components/telegram-action/executor";
 import { telegramTriggerExecutor } from "@/features/triggers/components/telegram-trigger/executor";
 import { whatsappActionExecutor } from "../components/whatsapp-action/executor";
+import { gmailActionExecutor } from "../components/gmail-action/executor";
+import { gmailTriggerExecutor } from "@/features/triggers/components/gmail-trigger/executor";
+import { googleSheetsActionExecutor } from "../components/google-sheets-action/executor";
+import { googleSheetsTriggerExecutor } from "@/features/triggers/components/google-sheets-trigger/executor";
 
 export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.INITIAL]: manualTriggerExecutor,
@@ -43,6 +47,10 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.TELEGRAM_ACTION]: telegramActionExecutor,
   [NodeType.TELEGRAM_TRIGGER]: telegramTriggerExecutor,
   [NodeType.WHATSAPP_ACTION]: whatsappActionExecutor,
+  [NodeType.GMAIL_ACTION]: gmailActionExecutor,
+  [NodeType.GMAIL_TRIGGER]: gmailTriggerExecutor,
+  [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionExecutor,
+  [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerExecutor,
 };
 
 export const getExecutor = (type: NodeType): NodeExecutor => {

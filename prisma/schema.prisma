@@ -30,6 +30,8 @@ model User {
   aiReplySettings      AiReplySettings?
   youtubeCredentials   YoutubeCredential[]
   youtubeCommentPolls  YoutubeCommentPoll[]
+  gmailPolls           GmailPoll[]
+  googleSheetsPolls    GoogleSheetsPoll[]
   googleCredential     GoogleCredential?
 
   @@unique([email])
@@ -166,6 +168,34 @@ model YoutubeCommentPoll {
   @@index([workflowId])
 }
 
+model GmailPoll {
+  id          String   @id @default(cuid())
+  userId      String
+  workflowId  String   @unique
+  lastChecked DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model GoogleSheetsPoll {
+  id            String   @id @default(cuid())
+  userId        String
+  workflowId    String   @unique
+  spreadsheetId String
+  sheetName     String
+  lastRowCount  Int      @default(0)
+  lastChecked   DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([workflowId, spreadsheetId])
+}
+
 enum CredentialType {
   OPENAI
   ANTHROPIC
@@ -187,6 +217,8 @@ model Workflow {
   connections Connection[]
   executions Execution[]
   youtubeCommentPolls YoutubeCommentPoll[]
+  gmailPolls GmailPoll[]
+  googleSheetsPolls GoogleSheetsPoll[]
 
   userId String
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -202,6 +234,8 @@ enum NodeType {
   GOOGLE_FORM_TRIGGER
   STRIPE_TRIGGER
   TYPEFORM_TRIGGER
+  GMAIL_TRIGGER
+  GOOGLE_SHEETS_TRIGGER
   INSTAGRAM_COMMENT_TRIGGER
   INSTAGRAM_REPLY_COMMENT
   YOUTUBE_COMMENT_TRIGGER
@@ -217,6 +251,8 @@ enum NodeType {
   TELEGRAM_ACTION
   TELEGRAM_TRIGGER
   WHATSAPP_ACTION
+  GMAIL_ACTION
+  GOOGLE_SHEETS_ACTION
 }
 
 model Node {

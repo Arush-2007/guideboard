@@ -79,7 +79,6 @@ const instagramCommentTriggerSchema = z
   .object({
     postId: z.string().optional(),
     keywordFilter: z.string().optional(),
-    replyMessage: z.string().min(1, "Reply message is required"),
   })
   .passthrough();
 
@@ -150,6 +149,40 @@ const whatsappActionSchema = z
   })
   .passthrough();
 
+const gmailActionSchema = z
+  .object({
+    to: z.string().min(1, "To is required"),
+    subject: z.string().min(1, "Subject is required"),
+    body: z.string().min(1, "Body is required"),
+  })
+  .passthrough();
+
+const googleSheetsTriggerSchema = z
+  .object({
+    spreadsheetId: z.string().min(1, "Spreadsheet is required"),
+    sheetName: z.string().min(1, "Sheet Name is required"),
+  })
+  .passthrough();
+
+const googleSheetsActionSchema = z
+  .object({
+    action: z.enum(["append_row", "read_rows"]),
+    spreadsheetId: z.string().min(1, "Spreadsheet is required"),
+    sheetName: z.string().min(1, "Sheet Name is required"),
+    range: z.string().min(1, "Range is required"),
+    values: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.action === "append_row" && !data.values?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Values are required for append_row",
+        path: ["values"],
+      });
+    }
+  })
+  .passthrough();
+
 // One schema per NodeType (must not guess field names)
 const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.INITIAL]: emptyPassthroughSchema,
@@ -158,6 +191,8 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.GOOGLE_FORM_TRIGGER]: emptyPassthroughSchema,
   [NodeType.STRIPE_TRIGGER]: emptyPassthroughSchema,
   [NodeType.TYPEFORM_TRIGGER]: emptyPassthroughSchema,
+  [NodeType.GMAIL_TRIGGER]: emptyPassthroughSchema,
+  [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerSchema,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: instagramCommentTriggerSchema,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: instagramReplySchema,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: youtubeCommentTriggerSchema,
@@ -173,6 +208,8 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.TELEGRAM_ACTION]: telegramActionSchema,
   [NodeType.TELEGRAM_TRIGGER]: emptyPassthroughSchema,
   [NodeType.WHATSAPP_ACTION]: whatsappActionSchema,
+  [NodeType.GMAIL_ACTION]: gmailActionSchema,
+  [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionSchema,
 };
 
 export function parseNodeConfig(type: NodeType, data: unknown) {
