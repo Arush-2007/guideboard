@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
   username: z.string().optional(),
+  avatarUrl: z.string().optional(),
   content: z
     .string()
     .min(1, "Message content is required")
@@ -56,7 +57,8 @@ export const DiscordDialog = ({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      username: defaultValues.username || "",
+      username: defaultValues.username ?? "Guideboard",
+      avatarUrl: defaultValues.avatarUrl ?? "",
       content: defaultValues.content || "",
       webhookUrl: defaultValues.webhookUrl || "",
     },
@@ -66,7 +68,8 @@ export const DiscordDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        username: defaultValues.username || "",
+        username: defaultValues.username ?? "Guideboard",
+        avatarUrl: defaultValues.avatarUrl ?? "",
         content: defaultValues.content || "",
         webhookUrl: defaultValues.webhookUrl || "",
       });
@@ -97,7 +100,7 @@ export const DiscordDialog = ({
               name="webhookUrl"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Webhook URL</FormLabel>
+                  <FormLabel>Discord Webhook URL</FormLabel>
                   <FormControl>
                     <Input
                       placeholder="https://discord.com/api/webhooks/..."
@@ -105,7 +108,8 @@ export const DiscordDialog = ({
                     />
                   </FormControl>
                   <FormDescription>
-                    Get this from Discord: Channel Settings → Integrations → Webhooks
+                    In Discord: right-click your channel → Edit Channel →
+                    Integrations → Webhooks → New Webhook → Copy Webhook URL
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -140,15 +144,34 @@ export const DiscordDialog = ({
               name="username"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Bot Username (Optional)</FormLabel>
+                  <FormLabel>Username Override</FormLabel>
+                  <FormControl>
+                    <Input placeholder="Guideboard" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Optional. What name the bot posts as (default: Guideboard).
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="avatarUrl"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Avatar URL</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="Workflow Bot"
+                      placeholder="https://…"
+                      type="url"
+                      className="font-mono text-sm"
                       {...field}
                     />
                   </FormControl>
                   <FormDescription>
-                    Override the webhook's default username
+                    Optional. Image URL for the webhook message avatar.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

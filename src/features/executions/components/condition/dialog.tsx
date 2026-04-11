@@ -17,7 +17,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
+import { VariableInput } from "@/components/variable-input";
 import {
   Select,
   SelectContent,
@@ -57,6 +57,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: ConditionFormValues) => void;
   defaultValues?: Partial<ConditionFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const ConditionDialog = ({
@@ -64,6 +66,8 @@ export const ConditionDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
   const form = useForm<ConditionFormValues>({
     resolver: zodResolver(formSchema),
@@ -116,7 +120,12 @@ export const ConditionDialog = ({
                 <FormItem>
                   <FormLabel>Field path</FormLabel>
                   <FormControl>
-                    <Input placeholder="commentText" {...field} />
+                    <VariableInput
+                      placeholder="commentText"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>
                     Dot path into workflow context (e.g. sheetsNewRow.0)
@@ -165,7 +174,12 @@ export const ConditionDialog = ({
                   <FormItem>
                     <FormLabel>Value</FormLabel>
                     <FormControl>
-                      <Input placeholder="Compare to…" {...field} />
+                      <VariableInput
+                        placeholder="Compare to…"
+                        currentNodeId={currentNodeId}
+                        workflowId={workflowId}
+                        {...field}
+                      />
                     </FormControl>
                     <FormDescription>
                       Compared as string unless both sides are valid numbers for

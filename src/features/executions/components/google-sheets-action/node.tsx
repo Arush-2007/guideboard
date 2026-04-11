@@ -2,6 +2,7 @@
 
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
+import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
 import {
   GoogleSheetsActionDialog,
@@ -25,6 +26,9 @@ export const GoogleSheetsActionNode = memo(
   (props: NodeProps<GoogleSheetsActionFlowNode>) => {
     const [dialogOpen, setDialogOpen] = useState(false);
     const { setNodes } = useReactFlow();
+    const params = useParams();
+    const workflowId =
+      typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
     const nodeStatus = useNodeStatus({
       nodeId: props.id,
@@ -64,6 +68,8 @@ export const GoogleSheetsActionNode = memo(
           onOpenChange={setDialogOpen}
           onSubmit={handleSubmit}
           defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
         />
         <BaseExecutionNode
           {...props}

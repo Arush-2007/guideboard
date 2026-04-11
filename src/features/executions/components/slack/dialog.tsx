@@ -26,6 +26,7 @@ import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
+  channelOverride: z.string().optional(),
   content: z
     .string()
     .min(1, "Message content is required"),
@@ -54,6 +55,7 @@ export const SlackDialog = ({
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
+      channelOverride: defaultValues.channelOverride ?? "",
       content: defaultValues.content || "",
       webhookUrl: defaultValues.webhookUrl || "",
     },
@@ -63,6 +65,7 @@ export const SlackDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
+        channelOverride: defaultValues.channelOverride ?? "",
         content: defaultValues.content || "",
         webhookUrl: defaultValues.webhookUrl || "",
       });
@@ -93,18 +96,16 @@ export const SlackDialog = ({
               name="webhookUrl"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Webhook URL</FormLabel>
+                  <FormLabel>Slack Webhook URL</FormLabel>
                   <FormControl>
                     <Input
-                      placeholder="https://discord.com/api/webhooks/..."
+                      placeholder="https://hooks.slack.com/services/..."
                       {...field}
                     />
                   </FormControl>
                   <FormDescription>
-                    Get this from Slack: Workspace Settings → Workflows → Webhooks
-                  </FormDescription>
-                  <FormDescription>
-                    Make sure you have "content" variable
+                    In Slack: go to api.slack.com/apps → your app → Incoming
+                    Webhooks → Add New Webhook → Copy URL
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -134,6 +135,24 @@ export const SlackDialog = ({
               </FormItem>
             )}
             />
+
+            <FormField
+              control={form.control}
+              name="channelOverride"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Channel Override</FormLabel>
+                  <FormControl>
+                    <Input placeholder="#general" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    Leave blank to use the webhook&apos;s default channel
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>
             </DialogFooter>

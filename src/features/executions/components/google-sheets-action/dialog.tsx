@@ -19,6 +19,8 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { VariableInput } from "@/components/variable-input";
+import { VariableTextarea } from "@/components/variable-textarea";
 import {
   Select,
   SelectContent,
@@ -26,7 +28,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { useTRPC } from "@/trpc/client";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
@@ -59,6 +60,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: GoogleSheetsActionFormValues) => void;
   defaultValues?: Partial<GoogleSheetsActionFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const GoogleSheetsActionDialog = ({
@@ -66,6 +69,8 @@ export const GoogleSheetsActionDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
   const trpc = useTRPC();
   const { data: sheets = [], isLoading } = useQuery(
@@ -198,10 +203,16 @@ export const GoogleSheetsActionDialog = ({
                 <FormItem>
                   <FormLabel>Range</FormLabel>
                   <FormControl>
-                    <Input placeholder="A1:D1" {...field} />
+                    <VariableInput
+                      placeholder="A1:D1"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>
-                    Use A1 notation, e.g. A1:D1 or A:Z.
+                    e.g. A1:C1 — must match the number of values you are
+                    appending
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -216,15 +227,20 @@ export const GoogleSheetsActionDialog = ({
                   <FormItem>
                     <FormLabel>Values (JSON)</FormLabel>
                     <FormControl>
-                      <Textarea
+                      <VariableTextarea
                         placeholder='["Alice","alice@example.com","new"]'
                         className="min-h-[100px] font-mono text-sm"
+                        currentNodeId={currentNodeId}
+                        workflowId={workflowId}
                         {...field}
                       />
                     </FormControl>
                     <FormDescription>
-                      JSON array for one row, or array of arrays for multiple
-                      rows.
+                      Enter values as JSON array e.g.{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">
+                        {`["Name", "Email"]`}
+                      </code>{" "}
+                      or use {"{{variables}}"} from previous nodes
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
