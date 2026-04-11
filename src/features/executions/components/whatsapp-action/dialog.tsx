@@ -17,8 +17,8 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { VariableInput } from "@/components/variable-input";
+import { VariableTextarea } from "@/components/variable-textarea";
 import z from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -40,6 +40,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: z.infer<typeof formSchema>) => void;
   defaultValues?: Partial<WhatsappActionFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const WhatsappActionDialog = ({
@@ -47,6 +49,8 @@ export const WhatsappActionDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -92,8 +96,10 @@ export const WhatsappActionDialog = ({
                 <FormItem>
                   <FormLabel>Recipient Phone Number</FormLabel>
                   <FormControl>
-                    <Input
+                    <VariableInput
                       placeholder="e.g. 911234567890"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>
@@ -114,9 +120,11 @@ export const WhatsappActionDialog = ({
               <FormItem>
                 <FormLabel>Message</FormLabel>
                 <FormControl>
-                  <Textarea
+                  <VariableTextarea
                     placeholder="Hello {{openai_abc123.text}}"
                     className="min-h-[80px] font-mono text-sm"
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
                     {...field}
                   />
                 </FormControl>

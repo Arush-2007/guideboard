@@ -17,13 +17,13 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Textarea } from "@/components/ui/textarea";
+import { VariableTextarea } from "@/components/variable-textarea";
 import z from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
+import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
 import { CredentialType } from "@/generated/prisma";
 import {
   Select,
@@ -47,6 +47,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: z.infer<typeof formSchema>) => void;
   defaultValues?: Partial<AnthropicFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 };
 
 export const AnthropicDialog = ({
@@ -54,11 +56,12 @@ export const AnthropicDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
-  const { 
-    data: credentials,
-    isLoading: isLoadingCredentials,
-  } = useCredentialsByType(CredentialType.ANTHROPIC);
+  const { credentials, isLoading, autoSelected } = useSmartCredential(
+    CredentialType.ANTHROPIC,
+  );
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -79,6 +82,14 @@ export const AnthropicDialog = ({
       });
     }
   }, [open, defaultValues, form]);
+
+  useEffect(() => {
+    if (autoSelected) {
+      form.setValue("credentialId", autoSelected.id, {
+        shouldValidate: true,
+      });
+    }
+  }, [autoSelected, form]);
 
   const handleSubmit = (values: z.infer<typeof formSchema>) => {
     onSubmit(values);
@@ -105,38 +116,65 @@ export const AnthropicDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Anthropic Credential</FormLabel>
-                  <Select
-                    onValueChange={field.onChange}
-                    defaultValue={field.value}
-                    disabled={
-                      isLoadingCredentials
-                      || !credentials?.length
-                    }
-                  >
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select a credential" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {credentials?.map((credential) => (
-                        <SelectItem
-                          key={credential.id}
-                          value={credential.id}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Image
-                              src="/logos/anthropic.svg"
-                              alt="Anthropic"
-                              width={16}
-                              height={16}
-                            />
-                            {credential.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {isLoading ? (
+                    <Select value="" disabled>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Loading credentials..." />
+                        </SelectTrigger>
+                      </FormControl>
+                    </Select>
+                  ) : credentials.length === 0 ? (
+                    <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
+                      <p>
+                        No ANTHROPIC credential found. Set one up first.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-2"
+                        onClick={() =>
+                          window.open("/credentials/new", "_blank")
+                        }
+                      >
+                        Add Credential
+                      </Button>
+                    </div>
+                  ) : autoSelected ? (
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      Using: {autoSelected.name}
+                    </div>
+                  ) : (
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select a credential" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {credentials.map((credential) => (
+                          <SelectItem
+                            key={credential.id}
+                            value={credential.id}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Image
+                                src="/logos/anthropic.svg"
+                                alt="Anthropic"
+                                width={16}
+                                height={16}
+                              />
+                              {credential.name}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   <FormMessage />
                 </FormItem>
               )}
@@ -149,9 +187,11 @@ export const AnthropicDialog = ({
               <FormItem>
                 <FormLabel>System Prompt (Optional)</FormLabel>
                 <FormControl>
-                  <Textarea
+                  <VariableTextarea
                     placeholder="You are a helpful assistant."
                     className="min-h-[80px] font-mono text-sm"
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
                     {...field}
                   />
                 </FormControl>
@@ -169,9 +209,11 @@ export const AnthropicDialog = ({
               <FormItem>
                 <FormLabel>User Prompt</FormLabel>
                 <FormControl>
-                  <Textarea
+                  <VariableTextarea
                      placeholder="Summarize this text: {{json httpResponse.data}}"
                     className="min-h-[120px] font-mono text-sm"
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
                     {...field}
                   />
                 </FormControl>

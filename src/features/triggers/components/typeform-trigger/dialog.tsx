@@ -84,35 +84,6 @@ export const TypeformTriggerDialog = ({
             </ol>
           </div>
 
-          <div className="rounded-lg bg-muted p-4 space-y-2">
-            <h4 className="font-medium text-sm">Available variables</h4>
-            <ul className="text-sm text-muted-foreground space-y-1">
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{typeform.formId}}"}
-                </code>{" "}
-                — Form id
-              </li>
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{typeform.submittedAt}}"}
-                </code>{" "}
-                — Submission time (ISO string from Typeform)
-              </li>
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{typeform.answers}}"}
-                </code>{" "}
-                — Answers array as a JSON string
-              </li>
-              <li>
-                <code className="bg-background px-1 py-0.5 rounded">
-                  {"{{json typeform.raw}}"}
-                </code>{" "}
-                — Full webhook payload
-              </li>
-            </ul>
-          </div>
         </div>
       </DialogContent>
     </Dialog>

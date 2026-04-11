@@ -21,10 +21,10 @@ import { VariableTextarea } from "@/components/variable-textarea";
 import z from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
-import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
 import { CredentialType } from "@/generated/prisma";
+import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import {
   Select,
   SelectContent,
@@ -34,24 +34,40 @@ import {
 } from "@/components/ui/select";
 import Image from "next/image";
 
+const providerSchema = z.enum(["openai", "anthropic", "gemini"]);
+
 const formSchema = z.object({
+  provider: providerSchema,
   credentialId: z.string().min(1, "Credential is required"),
   systemPrompt: z.string().optional(),
-  userPrompt: z.string().min(1, "User prompt is required"),
+  prompt: z.string().min(1, "Prompt is required"),
 });
 
-export type OpenAiFormValues = z.infer<typeof formSchema>;
+export type AiTextFormValues = z.infer<typeof formSchema>;
+
+function credentialTypeForProvider(
+  p: z.infer<typeof providerSchema>,
+): CredentialType {
+  switch (p) {
+    case "openai":
+      return CredentialType.OPENAI;
+    case "anthropic":
+      return CredentialType.ANTHROPIC;
+    case "gemini":
+      return CredentialType.GEMINI;
+  }
+}
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (values: z.infer<typeof formSchema>) => void;
-  defaultValues?: Partial<OpenAiFormValues>;
+  onSubmit: (values: AiTextFormValues) => void;
+  defaultValues?: Partial<AiTextFormValues>;
   currentNodeId: string;
   workflowId?: string;
-};
+}
 
-export const OpenAiDialog = ({
+export const AiTextDialog = ({
   open,
   onOpenChange,
   onSubmit,
@@ -59,29 +75,42 @@ export const OpenAiDialog = ({
   currentNodeId,
   workflowId,
 }: Props) => {
-  const { credentials, isLoading, autoSelected } = useSmartCredential(
-    CredentialType.OPENAI,
-  );
-
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm<AiTextFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      credentialId: defaultValues.credentialId || "",
-      systemPrompt: defaultValues.systemPrompt || "",
-      userPrompt: defaultValues.userPrompt || "",
+      provider: defaultValues.provider ?? "openai",
+      credentialId: defaultValues.credentialId ?? "",
+      systemPrompt: defaultValues.systemPrompt ?? "",
+      prompt: defaultValues.prompt ?? "",
     },
   });
 
-  // Reset form values when dialog opens with new defaults
+  const provider = form.watch("provider");
+  const credentialType = credentialTypeForProvider(provider);
+  const { data: credentials = [], isLoading } =
+    useCredentialsByType(credentialType);
+  const autoSelected = credentials.length === 1 ? credentials[0] : null;
+
+  const prevProviderRef = useRef(provider);
+
   useEffect(() => {
     if (open) {
       form.reset({
-        credentialId: defaultValues.credentialId || "",
-        systemPrompt: defaultValues.systemPrompt || "",
-        userPrompt: defaultValues.userPrompt || "",
+        provider: defaultValues.provider ?? "openai",
+        credentialId: defaultValues.credentialId ?? "",
+        systemPrompt: defaultValues.systemPrompt ?? "",
+        prompt: defaultValues.prompt ?? "",
       });
+      prevProviderRef.current = defaultValues.provider ?? "openai";
     }
   }, [open, defaultValues, form]);
+
+  useEffect(() => {
+    if (prevProviderRef.current !== provider) {
+      form.setValue("credentialId", "");
+      prevProviderRef.current = provider;
+    }
+  }, [provider, form]);
 
   useEffect(() => {
     if (autoSelected) {
@@ -91,18 +120,32 @@ export const OpenAiDialog = ({
     }
   }, [autoSelected, form]);
 
-  const handleSubmit = (values: z.infer<typeof formSchema>) => {
+  const handleSubmit = (values: AiTextFormValues) => {
     onSubmit(values);
     onOpenChange(false);
   };
+
+  const credentialLabel =
+    provider === "openai"
+      ? "OPENAI"
+      : provider === "anthropic"
+        ? "ANTHROPIC"
+        : "GEMINI";
+
+  const logoSrc =
+    provider === "openai"
+      ? "/logos/openai.svg"
+      : provider === "anthropic"
+        ? "/logos/anthropic.svg"
+        : "/logos/gemini.svg";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>OpenAI Configuration</DialogTitle>
+          <DialogTitle>AI</DialogTitle>
           <DialogDescription>
-            Configure the AI model and prompts for this node.
+            Choose a provider, connect a credential, and set your prompts.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -112,10 +155,36 @@ export const OpenAiDialog = ({
           >
             <FormField
               control={form.control}
+              name="provider"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Provider</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select provider" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value="openai">OpenAI</SelectItem>
+                      <SelectItem value="anthropic">Anthropic</SelectItem>
+                      <SelectItem value="gemini">Gemini</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
               name="credentialId"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>OpenAI Credential</FormLabel>
+                  <FormLabel>Credential</FormLabel>
                   {isLoading ? (
                     <Select value="" disabled>
                       <FormControl>
@@ -127,7 +196,7 @@ export const OpenAiDialog = ({
                   ) : credentials.length === 0 ? (
                     <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
                       <p>
-                        No OPENAI credential found. Set one up first.
+                        No {credentialLabel} credential found. Set one up first.
                       </p>
                       <Button
                         type="button"
@@ -163,8 +232,8 @@ export const OpenAiDialog = ({
                           >
                             <div className="flex items-center gap-2">
                               <Image
-                                src="/logos/openai.svg"
-                                alt="OpenAI"
+                                src={logoSrc}
+                                alt={credentialLabel}
                                 width={16}
                                 height={16}
                               />
@@ -184,46 +253,48 @@ export const OpenAiDialog = ({
               control={form.control}
               name="systemPrompt"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>System Prompt (Optional)</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                    placeholder="You are a helpful assistant."
-                    className="min-h-[80px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
+                <FormItem>
+                  <FormLabel>System Prompt (optional)</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="You are a helpful assistant."
+                      className="min-h-[80px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
                   <FormDescription>
-                    Sets the behavior of the assistant. Use {"{{variables}}"} for simple values or {"{{json variable}}"} to stringify objects
+                    Sets the AI behavior and tone
                   </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  <FormMessage />
+                </FormItem>
+              )}
             />
+
             <FormField
               control={form.control}
-              name="userPrompt"
+              name="prompt"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>User Prompt</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                     placeholder="Summarize this text: {{json httpResponse.data}}"
-                    className="min-h-[120px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
+                <FormItem>
+                  <FormLabel>Prompt</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="Summarize this text: {{json httpResponse.data}}"
+                      className="min-h-[120px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
                   <FormDescription>
-                    The prompt to send to the AI. Use {"{{variables}}"} for simple values or {"{{json variable}}"} to stringify objects
+                    Supports {"{{variables}}"} from previous nodes
                   </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  <FormMessage />
+                </FormItem>
+              )}
             />
+
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>
             </DialogFooter>

@@ -3,6 +3,7 @@
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { Database } from "lucide-react";
 import { memo, useState } from "react";
+import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
 import { NotionDialog, type NotionFormValues } from "./dialog";
 import { useNodeStatus } from "../../hooks/use-node-status";
@@ -23,6 +24,9 @@ type NotionFlowNode = Node<NotionNodeData>;
 export const NotionNode = memo((props: NodeProps<NotionFlowNode>) => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const { setNodes } = useReactFlow();
+  const params = useParams();
+  const workflowId =
+    typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
   const nodeStatus = useNodeStatus({
     nodeId: props.id,
@@ -62,6 +66,8 @@ export const NotionNode = memo((props: NodeProps<NotionFlowNode>) => {
         onOpenChange={setDialogOpen}
         onSubmit={handleSubmit}
         defaultValues={nodeData}
+        currentNodeId={props.id}
+        workflowId={workflowId}
       />
       <BaseExecutionNode
         {...props}

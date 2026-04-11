@@ -70,6 +70,24 @@ export const TelegramTriggerDialog = ({
               </Button>
             </div>
           </div>
+
+          <div className="rounded-lg bg-muted p-4 space-y-2">
+            <h4 className="font-medium text-sm">
+              How to register this webhook with Telegram:
+            </h4>
+            <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
+              <li>Open Telegram and message @BotFather</li>
+              <li>Send /mybots and select your bot</li>
+              <li>Go to Bot Settings → API Token to get your token</li>
+              <li>
+                Run this command replacing TOKEN and SECRET:
+              </li>
+            </ol>
+            <p className="text-xs text-muted-foreground font-mono break-all">
+              curl -X POST https://api.telegram.org/bot{"{TOKEN}"}/setWebhook
+              -d url={webhookUrl} -d secret_token={"{TELEGRAM_WEBHOOK_SECRET}"}
+            </p>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

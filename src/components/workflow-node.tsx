@@ -41,14 +41,9 @@ export function WorkflowNode({
           isVisible
           className="max-w-[200px] text-center"
         >
-          <p className="font-medium">
+          <p className="text-xs font-medium">
             {name}
           </p>
-          {description && (
-            <p className="text-muted-foreground truncate text-sm">
-              {description}
-            </p>
-          )}
         </NodeToolbar>
       )}
     </>

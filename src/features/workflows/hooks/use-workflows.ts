@@ -130,3 +130,19 @@ export const useExecuteWorkflow = () => {
     }),
   );
 };
+
+/**
+ * Generate a workflow from a natural-language prompt (Anthropic)
+ */
+export const useGenerateWorkflowFromPrompt = () => {
+  const queryClient = useQueryClient();
+  const trpc = useTRPC();
+
+  return useMutation(
+    trpc.workflows.generateFromPrompt.mutationOptions({
+      onSuccess: () => {
+        queryClient.invalidateQueries(trpc.workflows.getMany.queryOptions({}));
+      },
+    }),
+  );
+};

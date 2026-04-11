@@ -3,20 +3,23 @@
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
+import { BrainCircuit } from "lucide-react";
 import { BaseExecutionNode } from "../base-execution-node";
-import { WhatsappActionDialog, WhatsappActionFormValues } from "./dialog";
+import { AiTextDialog, type AiTextFormValues } from "./dialog";
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchWhatsappActionRealtimeToken } from "./actions";
-import { WHATSAPP_ACTION_CHANNEL_NAME } from "@/inngest/channels/whatsapp-action";
+import { fetchAiTextRealtimeToken } from "./actions";
+import { AI_TEXT_CHANNEL_NAME } from "@/inngest/channels/ai-text";
 
-type WhatsappActionNodeData = {
-  recipientPhone?: string;
-  message?: string;
+type AiTextNodeData = {
+  provider?: "openai" | "anthropic" | "gemini";
+  credentialId?: string;
+  systemPrompt?: string;
+  prompt?: string;
 };
 
-type WhatsappActionNodeType = Node<WhatsappActionNodeData>;
+type AiTextNodeType = Node<AiTextNodeData>;
 
-export const WhatsappActionNode = memo((props: NodeProps<WhatsappActionNodeType>) => {
+export const AiTextNode = memo((props: NodeProps<AiTextNodeType>) => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const { setNodes } = useReactFlow();
   const params = useParams();
@@ -25,36 +28,38 @@ export const WhatsappActionNode = memo((props: NodeProps<WhatsappActionNodeType>
 
   const nodeStatus = useNodeStatus({
     nodeId: props.id,
-    channel: WHATSAPP_ACTION_CHANNEL_NAME,
+    channel: AI_TEXT_CHANNEL_NAME,
     topic: "status",
-    refreshToken: fetchWhatsappActionRealtimeToken,
+    refreshToken: fetchAiTextRealtimeToken,
   });
 
   const handleOpenSettings = () => setDialogOpen(true);
 
-  const handleSubmit = (values: WhatsappActionFormValues) => {
-    setNodes((nodes) => nodes.map((node) => {
-      if (node.id === props.id) {
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            ...values,
-          }
+  const handleSubmit = (values: AiTextFormValues) => {
+    setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id === props.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              ...values,
+            },
+          };
         }
-      }
-      return node;
-    }))
+        return node;
+      }),
+    );
   };
 
   const nodeData = props.data;
-  const description = nodeData?.message
-    ? `Send: ${nodeData.message.slice(0, 50)}...`
+  const description = nodeData?.prompt
+    ? `${nodeData.provider ?? "openai"}: ${nodeData.prompt.slice(0, 50)}...`
     : "Not configured";
 
   return (
     <>
-      <WhatsappActionDialog
+      <AiTextDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
         onSubmit={handleSubmit}
@@ -65,15 +70,15 @@ export const WhatsappActionNode = memo((props: NodeProps<WhatsappActionNodeType>
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/whatsapp.svg"
-        name="WhatsApp"
+        icon={BrainCircuit}
+        name="AI"
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });
 
-WhatsappActionNode.displayName = "WhatsappActionNode";
+AiTextNode.displayName = "AiTextNode";

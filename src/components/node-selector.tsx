@@ -3,6 +3,7 @@
 import { createId } from "@paralleldrive/cuid2";
 import { useReactFlow } from "@xyflow/react";
 import {
+  BrainCircuit,
   Filter,
   GlobeIcon,
   MousePointerIcon,
@@ -98,22 +99,10 @@ const executionNodes: NodeTypeOption[] = [
     icon: Filter,
   },
   {
-    type: NodeType.GEMINI,
-    label: "Gemini",
-    description: "Uses Google Gemini to generate text",
-    icon: "/logos/gemini.svg",
-  },
-  {
-    type: NodeType.OPENAI,
-    label: "OpenAI",
-    description: "Uses OpenAI to generate text",
-    icon: "/logos/openai.svg",
-  },
-  {
-    type: NodeType.ANTHROPIC,
-    label: "Anthropic",
-    description: "Uses Anthropic to generate text",
-    icon: "/logos/anthropic.svg",
+    type: NodeType.AI_TEXT,
+    label: "AI",
+    description: "Generate text with OpenAI, Anthropic, or Gemini",
+    icon: BrainCircuit,
   },
   {
     type: NodeType.DISCORD,

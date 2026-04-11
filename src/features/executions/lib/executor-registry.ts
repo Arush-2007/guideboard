@@ -24,6 +24,7 @@ import { gmailActionExecutor } from "../components/gmail-action/executor";
 import { gmailTriggerExecutor } from "@/features/triggers/components/gmail-trigger/executor";
 import { googleSheetsActionExecutor } from "../components/google-sheets-action/executor";
 import { googleSheetsTriggerExecutor } from "@/features/triggers/components/google-sheets-trigger/executor";
+import { aiTextExecutor } from "../components/ai-text/executor";
 
 export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.INITIAL]: manualTriggerExecutor,
@@ -37,6 +38,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: youtubeCommentTriggerExecutor,
   [NodeType.YOUTUBE_REPLY_COMMENT]: youtubeReplyExecutor,
   [NodeType.AI_REPLY_GENERATOR]: aiReplyGeneratorExecutor,
+  [NodeType.AI_TEXT]: aiTextExecutor,
   [NodeType.GEMINI]: geminiExecutor,
   [NodeType.ANTHROPIC]: anthropicExecutor,
   [NodeType.CONDITION]: conditionExecutor,

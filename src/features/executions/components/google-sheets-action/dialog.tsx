@@ -38,7 +38,7 @@ const formSchema = z
   .object({
     action: z.enum(["append_row", "read_rows"]),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
-    sheetName: z.string().min(1, "Sheet Name is required"),
+    sheetName: z.string().min(1, "Tab Name is required"),
     range: z.string().min(1, "Range is required"),
     values: z.string().optional(),
   })
@@ -178,10 +178,14 @@ export const GoogleSheetsActionDialog = ({
               name="sheetName"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Sheet Name</FormLabel>
+                  <FormLabel>Tab Name</FormLabel>
                   <FormControl>
                     <Input placeholder="Sheet1" {...field} />
                   </FormControl>
+                  <FormDescription>
+                    The tab name inside your spreadsheet (shown at the bottom
+                    of Google Sheets).
+                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}

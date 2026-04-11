@@ -17,14 +17,14 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { VariableInput } from "@/components/variable-input";
+import { VariableTextarea } from "@/components/variable-textarea";
 import z from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
+import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
 import { CredentialType } from "@/generated/prisma";
 import {
   Select,
@@ -51,6 +51,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: TelegramActionFormValues) => void;
   defaultValues?: Partial<TelegramActionFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const TelegramActionDialog = ({
@@ -58,9 +60,12 @@ export const TelegramActionDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
-  const { data: credentials, isLoading: isLoadingCredentials } =
-    useCredentialsByType(CredentialType.TELEGRAM);
+  const { credentials, isLoading, autoSelected } = useSmartCredential(
+    CredentialType.TELEGRAM,
+  );
 
   const form = useForm<TelegramActionFormValues>({
     resolver: zodResolver(formSchema),
@@ -80,6 +85,14 @@ export const TelegramActionDialog = ({
       });
     }
   }, [open, defaultValues, form]);
+
+  useEffect(() => {
+    if (autoSelected) {
+      form.setValue("credentialId", autoSelected.id, {
+        shouldValidate: true,
+      });
+    }
+  }, [autoSelected, form]);
 
   const handleSubmit = (values: TelegramActionFormValues) => {
     onSubmit(values);
@@ -106,32 +119,62 @@ export const TelegramActionDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Bot credential</FormLabel>
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value}
-                    disabled={isLoadingCredentials}
-                  >
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select a Telegram bot token" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {(credentials ?? []).map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          <div className="flex items-center gap-2">
-                            <Image
-                              src="/logos/telegram.svg"
-                              alt=""
-                              width={16}
-                              height={16}
-                            />
-                            {c.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {isLoading ? (
+                    <Select value="" disabled>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Loading credentials..." />
+                        </SelectTrigger>
+                      </FormControl>
+                    </Select>
+                  ) : credentials.length === 0 ? (
+                    <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
+                      <p>
+                        No TELEGRAM credential found. Set one up first.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-2"
+                        onClick={() =>
+                          window.open("/credentials/new", "_blank")
+                        }
+                      >
+                        Add Credential
+                      </Button>
+                    </div>
+                  ) : autoSelected ? (
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      Using: {autoSelected.name}
+                    </div>
+                  ) : (
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select a Telegram bot token" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {credentials.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            <div className="flex items-center gap-2">
+                              <Image
+                                src="/logos/telegram.svg"
+                                alt=""
+                                width={16}
+                                height={16}
+                              />
+                              {c.name}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   <FormDescription>
                     Add a Telegram bot token under Credentials.
                   </FormDescription>
@@ -147,9 +190,11 @@ export const TelegramActionDialog = ({
                 <FormItem>
                   <FormLabel>Chat ID</FormLabel>
                   <FormControl>
-                    <Input
+                    <VariableInput
                       placeholder="{{telegram.chatId}} or numeric id"
                       className="font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>
@@ -169,9 +214,11 @@ export const TelegramActionDialog = ({
                 <FormItem>
                   <FormLabel>Message</FormLabel>
                   <FormControl>
-                    <Textarea
+                    <VariableTextarea
                       placeholder="Hello {{telegram.firstName}}"
                       className="min-h-[80px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>

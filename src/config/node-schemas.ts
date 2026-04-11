@@ -60,6 +60,15 @@ const conditionSchema = z
 
 const openAiFamilySchema = apiPromptSchema.passthrough();
 
+const aiTextSchema = z
+  .object({
+    provider: z.enum(["openai", "anthropic", "gemini"]),
+    credentialId: z.string().min(1, "Credential is required"),
+    systemPrompt: z.string().optional(),
+    prompt: z.string().min(1, "Prompt is required"),
+  })
+  .passthrough();
+
 const youtubeReplySchema = z
   .object({
     replyMessage: z.string().min(1, "Reply message is required"),
@@ -198,6 +207,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: youtubeCommentTriggerSchema,
   [NodeType.YOUTUBE_REPLY_COMMENT]: youtubeReplySchema,
   [NodeType.AI_REPLY_GENERATOR]: aiReplyGeneratorSchema,
+  [NodeType.AI_TEXT]: aiTextSchema,
   [NodeType.ANTHROPIC]: openAiFamilySchema,
   [NodeType.CONDITION]: conditionSchema,
   [NodeType.GEMINI]: openAiFamilySchema,

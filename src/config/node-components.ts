@@ -26,6 +26,7 @@ import { TelegramTrigger } from "@/features/triggers/components/telegram-trigger
 import { WhatsappActionNode } from "@/features/executions/components/whatsapp-action/node";
 import { GmailActionNode } from "@/features/executions/components/gmail-action/node";
 import { GoogleSheetsActionNode } from "@/features/executions/components/google-sheets-action/node";
+import { AiTextNode } from "@/features/executions/components/ai-text/node";
 
 export const nodeComponents = {
   [NodeType.INITIAL]: InitialNode,
@@ -41,6 +42,7 @@ export const nodeComponents = {
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: YoutubeCommentTriggerNode,
   [NodeType.YOUTUBE_REPLY_COMMENT]: YoutubeReplyNode,
   [NodeType.AI_REPLY_GENERATOR]: AiReplyGeneratorNode,
+  [NodeType.AI_TEXT]: AiTextNode,
   [NodeType.GEMINI]: GeminiNode,
   [NodeType.OPENAI]: OpenAiNode,
   [NodeType.ANTHROPIC]: AnthropicNode,

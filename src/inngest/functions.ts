@@ -31,6 +31,7 @@ import { instagramReplyChannel } from "./channels/instagram-reply-comment";
 import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
 import { youtubeReplyChannel } from "./channels/youtube-reply-comment";
 import { aiReplyGeneratorChannel } from "./channels/ai-reply-generator";
+import { aiTextChannel } from "./channels/ai-text";
 
 export const executeWorkflow = inngest.createFunction(
   { 
@@ -74,6 +75,7 @@ export const executeWorkflow = inngest.createFunction(
       youtubeCommentTriggerChannel(),
       youtubeReplyChannel(),
       aiReplyGeneratorChannel(),
+      aiTextChannel(),
     ],
   },
   async ({ event, step, publish }) => {

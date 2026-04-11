@@ -79,6 +79,11 @@ export const InstagramCommentTriggerDialog = ({
           </DialogDescription>
         </DialogHeader>
 
+        <p className="text-sm text-muted-foreground">
+          Make sure your Instagram account is connected under Credentials
+          before configuring this node.
+        </p>
+
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(handleSubmit)}

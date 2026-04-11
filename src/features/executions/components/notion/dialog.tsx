@@ -18,13 +18,14 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { VariableInput } from "@/components/variable-input";
+import { VariableTextarea } from "@/components/variable-textarea";
 import z from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
+import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
 import { CredentialType } from "@/generated/prisma";
 import {
   Select,
@@ -34,6 +35,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import Image from "next/image";
+import { useTRPC } from "@/trpc/client";
+import { useQuery } from "@tanstack/react-query";
 
 const formSchema = z
   .object({
@@ -69,6 +72,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: NotionFormValues) => void;
   defaultValues?: Partial<NotionFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const NotionDialog = ({
@@ -76,9 +81,16 @@ export const NotionDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
-  const { data: credentials, isLoading: isLoadingCredentials } =
-    useCredentialsByType(CredentialType.NOTION);
+  const trpc = useTRPC();
+  const { credentials, isLoading, autoSelected } = useSmartCredential(
+    CredentialType.NOTION,
+  );
+  const { data: notionPages = [], isLoading: isLoadingPages } = useQuery(
+    trpc.credentials.getNotionPages.queryOptions(),
+  );
 
   const form = useForm<NotionFormValues>({
     resolver: zodResolver(formSchema),
@@ -104,6 +116,14 @@ export const NotionDialog = ({
       });
     }
   }, [open, defaultValues, form]);
+
+  useEffect(() => {
+    if (autoSelected) {
+      form.setValue("credentialId", autoSelected.id, {
+        shouldValidate: true,
+      });
+    }
+  }, [autoSelected, form]);
 
   const watchAction = form.watch("action");
 
@@ -132,32 +152,62 @@ export const NotionDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Notion credential</FormLabel>
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value}
-                    disabled={isLoadingCredentials}
-                  >
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Select integration token" />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {(credentials ?? []).map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          <div className="flex items-center gap-2">
-                            <Image
-                              src="/logos/notion.svg"
-                              alt=""
-                              width={16}
-                              height={16}
-                            />
-                            {c.name}
-                          </div>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  {isLoading ? (
+                    <Select value="" disabled>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Loading credentials..." />
+                        </SelectTrigger>
+                      </FormControl>
+                    </Select>
+                  ) : credentials.length === 0 ? (
+                    <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
+                      <p>
+                        No NOTION credential found. Set one up first.
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-2"
+                        onClick={() =>
+                          window.open("/credentials/new", "_blank")
+                        }
+                      >
+                        Add Credential
+                      </Button>
+                    </div>
+                  ) : autoSelected ? (
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      Using: {autoSelected.name}
+                    </div>
+                  ) : (
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select integration token" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {credentials.map((c) => (
+                          <SelectItem key={c.id} value={c.id}>
+                            <div className="flex items-center gap-2">
+                              <Image
+                                src="/logos/notion.svg"
+                                alt=""
+                                width={16}
+                                height={16}
+                              />
+                              {c.name}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
                   <FormDescription>
                     Internal integration token from Notion (Credentials).
                   </FormDescription>
@@ -201,17 +251,33 @@ export const NotionDialog = ({
                 name="parentPageId"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Parent page ID</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder="UUID of the parent page"
-                        className="font-mono text-sm"
-                        {...field}
-                      />
-                    </FormControl>
+                    <FormLabel>Parent page</FormLabel>
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value}
+                      disabled={isLoadingPages}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue
+                            placeholder={
+                              isLoadingPages
+                                ? "Loading pages..."
+                                : "Select a parent page"
+                            }
+                          />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {notionPages.map((page) => (
+                          <SelectItem key={page.id} value={page.id}>
+                            {page.title}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                     <FormDescription>
-                      Supports {"{{templates}}"}. From page → Share → Copy link
-                      (ID in URL).
+                      Choose one of your accessible Notion pages.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -249,9 +315,11 @@ export const NotionDialog = ({
                 <FormItem>
                   <FormLabel>Page / row title</FormLabel>
                   <FormControl>
-                    <Input
+                    <VariableInput
                       placeholder="{{myTrigger.title}}"
                       className="font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>
@@ -267,9 +335,11 @@ export const NotionDialog = ({
                 <FormItem>
                   <FormLabel>Content</FormLabel>
                   <FormControl>
-                    <Textarea
+                    <VariableTextarea
                       placeholder="Paragraphs (blank lines split blocks)"
                       className="min-h-[100px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>

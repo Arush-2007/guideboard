@@ -17,7 +17,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Textarea } from "@/components/ui/textarea";
+import { VariableTextarea } from "@/components/variable-textarea";
 import { Button } from "@/components/ui/button";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
@@ -35,6 +35,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: YoutubeReplyFormValues) => void;
   defaultValues?: Partial<YoutubeReplyFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const YoutubeReplyDialog = ({
@@ -42,6 +44,8 @@ export const YoutubeReplyDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
   const form = useForm<YoutubeReplyFormValues>({
     resolver: zodResolver(formSchema),
@@ -89,9 +93,11 @@ export const YoutubeReplyDialog = ({
                 <FormItem>
                   <FormLabel>Reply Message</FormLabel>
                   <FormControl>
-                    <Textarea
+                    <VariableTextarea
                       placeholder="Your reply... use {{commenterName}} and {{commentText}}"
                       className="min-h-[90px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>

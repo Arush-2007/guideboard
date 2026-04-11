@@ -84,16 +84,6 @@ export const StripeTriggerDialog = ({
             </ol>
           </div>
 
-          <div className="rounded-lg bg-muted p-4 space-y-2">
-            <h4 className="font-medium text-sm">Available Variables</h4>
-            <ul className="text-sm text-muted-foreground space-y-1">
-              <li><code className="bg-background px-1 py-0.5 rounded">{"{{stripe.amount}}"}</code> - Payment amount</li>
-              <li><code className="bg-background px-1 py-0.5 rounded">{"{{stripe.currency}}"}</code> - Currency code</li>
-              <li><code className="bg-background px-1 py-0.5 rounded">{"{{stripe.customerId}}"}</code> - Customer ID</li>
-              <li><code className="bg-background px-1 py-0.5 rounded">{"{{json stripe}}"}</code> - Full event data as JSON</li>
-              <li><code className="bg-background px-1 py-0.5 rounded">{"{{stripe.eventType}}"}</code> - Event type (e.g., payment_intent.succeeded)</li>
-            </ul>
-          </div>
         </div>
       </DialogContent>
     </Dialog>

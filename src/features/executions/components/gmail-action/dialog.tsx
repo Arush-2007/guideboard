@@ -17,8 +17,8 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { VariableInput } from "@/components/variable-input";
+import { VariableTextarea } from "@/components/variable-textarea";
 import z from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
@@ -38,6 +38,8 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: z.infer<typeof formSchema>) => void;
   defaultValues?: Partial<GmailActionFormValues>;
+  currentNodeId: string;
+  workflowId?: string;
 }
 
 export const GmailActionDialog = ({
@@ -45,6 +47,8 @@ export const GmailActionDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
+  workflowId,
 }: Props) => {
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
@@ -92,8 +96,10 @@ export const GmailActionDialog = ({
                 <FormItem>
                   <FormLabel>To</FormLabel>
                   <FormControl>
-                    <Input
+                    <VariableInput
                       placeholder="recipient@example.com"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>
@@ -113,8 +119,10 @@ export const GmailActionDialog = ({
                 <FormItem>
                   <FormLabel>Subject</FormLabel>
                   <FormControl>
-                    <Input
+                    <VariableInput
                       placeholder="Subject line"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       {...field}
                     />
                   </FormControl>
@@ -133,9 +141,11 @@ export const GmailActionDialog = ({
               <FormItem>
                 <FormLabel>Body</FormLabel>
                 <FormControl>
-                  <Textarea
+                  <VariableTextarea
                     placeholder="Hello {{gmail_trigger_abc123.from}}"
                     className="min-h-[120px] font-mono text-sm"
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
                     {...field}
                   />
                 </FormControl>

@@ -48,22 +48,25 @@ export const BaseExecutionNode = memo(
     return (
       <WorkflowNode
         name={name}
-        description={description}
         onDelete={handleDelete}
         onSettings={onSettings}
       >
         <NodeStatusIndicator
           status={status}
           variant="border"
+          className="rounded-full"
         >
-          <BaseNode status={status} onDoubleClick={onDoubleClick}>
-            <BaseNodeContent>
+          <BaseNode
+            status={status}
+            onDoubleClick={onDoubleClick}
+            className="relative size-20 rounded-full"
+          >
+            <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
-                <Image src={Icon} alt={name} width={16} height={16} />
+                <Image src={Icon} alt={name} width={32} height={32} />
               ) : (
-                <Icon className="size-4 text-muted-foreground" />
+                <Icon className="size-8 text-muted-foreground" />
               )}
-              {children}
               <BaseHandle
                 id="target-1"
                 type="target"

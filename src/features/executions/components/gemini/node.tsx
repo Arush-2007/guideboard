@@ -2,6 +2,7 @@
 
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
+import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
 import { GeminiDialog, GeminiFormValues } from "./dialog";
 import { useNodeStatus } from "../../hooks/use-node-status";
@@ -20,6 +21,9 @@ type GeminiNodeType = Node<GeminiNodeData>;
 export const GeminiNode = memo((props: NodeProps<GeminiNodeType>) => {
   const [dialogOpen, setDialogOpen] = useState(false);
   const { setNodes } = useReactFlow();
+  const params = useParams();
+  const workflowId =
+    typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
   const nodeStatus = useNodeStatus({
     nodeId: props.id,
@@ -57,6 +61,8 @@ export const GeminiNode = memo((props: NodeProps<GeminiNodeType>) => {
         onOpenChange={setDialogOpen}
         onSubmit={handleSubmit}
         defaultValues={nodeData}
+        currentNodeId={props.id}
+        workflowId={workflowId}
       />
       <BaseExecutionNode
         {...props}

@@ -12,13 +12,28 @@ import {
   ErrorView,
   LoadingView
 } from "@/components/entity-components";
-import { useCreateWorkflow, useRemoveWorkflow, useSuspenseWorkflows } from "../hooks/use-workflows"
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  useCreateWorkflow,
+  useGenerateWorkflowFromPrompt,
+  useRemoveWorkflow,
+  useSuspenseWorkflows,
+} from "../hooks/use-workflows";
 import { useUpgradeModal } from "@/hooks/use-upgrade-modal";
 import { useRouter } from "next/navigation";
 import { useWorkflowsParams } from "../hooks/use-workflows-params";
 import { useEntitySearch } from "@/hooks/use-entity-search";
 import type { Workflow } from "@/generated/prisma";
-import { WorkflowIcon } from "lucide-react";
+import { Loader2Icon, SparklesIcon, WorkflowIcon } from "lucide-react";
+import { useState } from "react";
+import { toast } from "sonner";
 
 export const WorkflowsSearch = () => {
   const [params, setParams] = useWorkflowsParams();
@@ -33,6 +48,69 @@ export const WorkflowsSearch = () => {
       onChange={onSearchChange}
       placeholder="Search workflows"
     />
+  );
+};
+
+export const WorkflowsAiGenerator = () => {
+  const router = useRouter();
+  const [prompt, setPrompt] = useState("");
+  const generate = useGenerateWorkflowFromPrompt();
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+
+    generate.mutate(
+      { prompt: trimmed },
+      {
+        onSuccess: (data) => {
+          setPrompt("");
+          router.push(`/workflows/${data.workflowId}`);
+        },
+        onError: (error) => {
+          toast.error(error.message);
+        },
+      },
+    );
+  };
+
+  return (
+    <Card className="rounded-3xl border border-border/70 bg-card/90 py-5 shadow-sm">
+      <CardHeader className="px-6 pb-4">
+        <CardTitle className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+          <SparklesIcon className="size-5 text-muted-foreground" />
+          Generate with AI
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="px-6 pt-0">
+        <form
+          onSubmit={handleSubmit}
+          className="flex flex-col gap-3 sm:flex-row sm:items-center"
+        >
+          <Input
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder='Describe your automation... e.g. When someone comments on my YouTube video, reply with AI'
+            className="h-10 flex-1 rounded-xl border-border/70 bg-background/80"
+            disabled={generate.isPending}
+          />
+          <Button
+            type="submit"
+            size="sm"
+            className="h-10 shrink-0 rounded-full px-5"
+            disabled={generate.isPending}
+          >
+            {generate.isPending ? (
+              <Loader2Icon className="size-4 animate-spin" />
+            ) : (
+              <SparklesIcon className="size-4" />
+            )}
+            Generate
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   );
 };
 
@@ -105,7 +183,10 @@ export const WorkflowsContainer = ({
       search={<WorkflowsSearch />}
       pagination={<WorkflowsPagination />}
     >
-      {children}
+      <>
+        <WorkflowsAiGenerator />
+        {children}
+      </>
     </EntityContainer>
   );
 };
