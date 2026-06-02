@@ -6,7 +6,6 @@ import { HttpRequestNode } from "@/features/executions/components/http-request/n
 import { ConditionNode } from "@/features/executions/components/condition/node";
 import { ManualTriggerNode } from "@/features/triggers/components/manual-trigger/node";
 import { GoogleFormTrigger } from "@/features/triggers/components/google-form-trigger/node";
-import { StripeTriggerNode } from "@/features/triggers/components/stripe-trigger/node";
 import { TypeformTrigger } from "@/features/triggers/components/typeform-trigger/node";
 import { GmailTriggerNode } from "@/features/triggers/components/gmail-trigger/node";
 import { GoogleSheetsTriggerNode } from "@/features/triggers/components/google-sheets-trigger/node";
@@ -33,7 +32,6 @@ export const nodeComponents = {
   [NodeType.HTTP_REQUEST]: HttpRequestNode,
   [NodeType.MANUAL_TRIGGER]: ManualTriggerNode,
   [NodeType.GOOGLE_FORM_TRIGGER]: GoogleFormTrigger,
-  [NodeType.STRIPE_TRIGGER]: StripeTriggerNode,
   [NodeType.TYPEFORM_TRIGGER]: TypeformTrigger,
   [NodeType.GMAIL_TRIGGER]: GmailTriggerNode,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: GoogleSheetsTriggerNode,

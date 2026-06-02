@@ -60,12 +60,6 @@ const triggerNodes: NodeTypeOption[] = [
     icon: "/logos/google-sheets.svg",
   },
   {
-    type: NodeType.STRIPE_TRIGGER,
-    label: "Stripe Event",
-    description: "Runs the flow when a Stripe Event is captured",
-    icon: "/logos/stripe.svg",
-  },
-  {
     type: NodeType.INSTAGRAM_COMMENT_TRIGGER,
     label: "Instagram Comment",
     description: "Runs the flow when a comment is posted on your Instagram post",

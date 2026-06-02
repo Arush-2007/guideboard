@@ -198,7 +198,6 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.HTTP_REQUEST]: httpRequestSchema,
   [NodeType.MANUAL_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GOOGLE_FORM_TRIGGER]: emptyPassthroughSchema,
-  [NodeType.STRIPE_TRIGGER]: emptyPassthroughSchema,
   [NodeType.TYPEFORM_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GMAIL_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerSchema,

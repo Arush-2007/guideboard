@@ -38,7 +38,6 @@
 The app currently supports:
 - **Instagram** (OAuth, comment triggers, automated replies, AI-generated replies)
 - **YouTube** (OAuth, comment triggers, automated replies)
-- **Stripe** (webhook triggers)
 - **Google Forms** (webhook triggers)
 - **AI providers** — OpenAI, Anthropic (Claude), Google Gemini, xAI (Grok)
 - **Messaging** — Discord, Slack
@@ -96,11 +95,11 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
                            │
           External APIs    ▼
    ┌───────────┬───────────┬───────────┬──────────┬──────────┐
-   │ Instagram │  YouTube  │  OpenAI   │ Discord  │  Stripe  │
-   │ Graph API │  Data API │  + xAI    │ Webhook  │  Webhook │
+   │ Instagram │  YouTube  │  OpenAI   │ Discord  │  Google  │
+   │ Graph API │  Data API │  + xAI    │ Webhook  │  Forms   │
    │           │           │  + Gemini │          │          │
-   │           │           │  + Claude │  Slack   │ Google   │
-   │           │           │           │ Webhook  │ Forms    │
+   │           │           │  + Claude │  Slack   │          │
+   │           │           │           │ Webhook  │          │
    └───────────┴───────────┴───────────┴──────────┴──────────┘
 ```
 
@@ -167,7 +166,7 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
 | Enum | Values |
 |------|--------|
 | `CredentialType` | `OPENAI`, `ANTHROPIC`, `GEMINI`, `INSTAGRAM`, `XAI` |
-| `NodeType` | `INITIAL`, `MANUAL_TRIGGER`, `HTTP_REQUEST`, `GOOGLE_FORM_TRIGGER`, `STRIPE_TRIGGER`, `INSTAGRAM_COMMENT_TRIGGER`, `INSTAGRAM_REPLY_COMMENT`, `YOUTUBE_COMMENT_TRIGGER`, `YOUTUBE_REPLY_COMMENT`, `AI_REPLY_GENERATOR`, `ANTHROPIC`, `GEMINI`, `OPENAI`, `DISCORD`, `SLACK` |
+| `NodeType` | `INITIAL`, `MANUAL_TRIGGER`, `HTTP_REQUEST`, `GOOGLE_FORM_TRIGGER`, `INSTAGRAM_COMMENT_TRIGGER`, `INSTAGRAM_REPLY_COMMENT`, `YOUTUBE_COMMENT_TRIGGER`, `YOUTUBE_REPLY_COMMENT`, `AI_REPLY_GENERATOR`, `ANTHROPIC`, `GEMINI`, `OPENAI`, `DISCORD`, `SLACK` |
 | `ExecutionStatus` | `RUNNING`, `SUCCESS`, `FAILED` |
 
 ---
@@ -248,7 +247,6 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
 | `/api/inngest` | GET, POST, PUT | Inngest function serve endpoint |
 | `/api/webhooks/instagram` | GET (verify), POST (events) | Meta webhook subscription + comment event processing |
 | `/api/webhooks/youtube` | GET (verify), POST (events) | PubSubHubbub verification + Atom XML notifications |
-| `/api/webhooks/stripe` | POST | Stripe signed webhook → trigger workflow |
 | `/api/webhooks/google-form` | POST | Google Form submission → trigger workflow |
 
 ---
@@ -280,7 +278,7 @@ Event received → Create Execution (RUNNING)
 
 Each node type has a dedicated Inngest realtime channel for pushing status updates to the browser:
 
-`ai-reply-generator`, `anthropic`, `discord`, `gemini`, `google-form-trigger`, `http-request`, `instagram-comment-trigger`, `instagram-reply-comment`, `manual-trigger`, `openai`, `slack`, `stripe-trigger`, `youtube-comment-trigger`, `youtube-reply-comment`
+`ai-reply-generator`, `anthropic`, `discord`, `gemini`, `google-form-trigger`, `http-request`, `instagram-comment-trigger`, `instagram-reply-comment`, `manual-trigger`, `openai`, `slack`, `youtube-comment-trigger`, `youtube-reply-comment`
 
 ### Retry Policy
 
@@ -307,7 +305,6 @@ Every node type follows a consistent 4-file pattern:
 |-----------|----------|-------------|----------------|
 | `MANUAL_TRIGGER` | `triggers/manual-trigger/` | Click-to-run trigger | None (user-initiated) |
 | `GOOGLE_FORM_TRIGGER` | `triggers/google-form-trigger/` | Fires on form submission | `/api/webhooks/google-form` |
-| `STRIPE_TRIGGER` | `triggers/stripe-trigger/` | Fires on Stripe events | `/api/webhooks/stripe` |
 | `INSTAGRAM_COMMENT_TRIGGER` | `triggers/instagram-comment-trigger/` | Fires on Instagram comments, filterable by `postId` + `keywordFilter` | `/api/webhooks/instagram` |
 | `YOUTUBE_COMMENT_TRIGGER` | `triggers/youtube-comment-trigger/` | Fires on YouTube comments, filterable by `videoId` + `keywordFilter` | `/api/webhooks/youtube` |
 
@@ -400,7 +397,7 @@ This is the most complex action node. It:
 | **Biome** | `biome.json` — formatter + linter | Active; `npm run lint` |
 | **Vitest** | `vitest.config.ts` — Node env, `@` alias | Active; `npm test` |
 | **TypeScript** | `tsconfig.json` — strict mode | `npx tsc --noEmit` passes cleanly |
-| **Test files** | `src/lib/webhook-verify.test.ts` (6 tests for Stripe + Instagram signature verification) | Only webhook-verify has tests |
+| **Test files** | `src/lib/webhook-verify.test.ts` (signature verification for Instagram, Typeform & Telegram) | Only webhook-verify has tests |
 
 ---
 
@@ -416,7 +413,6 @@ This is the most complex action node. It:
 | `GITHUB_CLIENT_ID` / `_SECRET` | No | GitHub OAuth (conditional) |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | No | Google OAuth (conditional) |
 | `INNGEST_APP_ID` | Yes | Inngest app identifier |
-| `STRIPE_WEBHOOK_SECRET` | No | Stripe signature verification |
 | `INSTAGRAM_APP_ID` / `_SECRET` | No | Instagram OAuth |
 | `INSTAGRAM_REDIRECT_URI` | No | Instagram callback URL |
 | `INSTAGRAM_VERIFY_TOKEN` | No | Instagram webhook verification token |
@@ -441,7 +437,6 @@ These features are fully implemented and type-checked (zero `tsc` errors):
 - [x] **YouTube OAuth** — Full flow: initiation → callback → channel info fetch → encrypted storage → connect/disconnect UI
 - [x] **Instagram Comment Webhook** — Signature-verified webhook handler with postId/keyword filtering → Inngest workflow trigger
 - [x] **YouTube Webhook** — PubSubHubbub verification + Atom XML parsing → Inngest workflow trigger
-- [x] **Stripe Webhook** — Signature-verified webhook → workflow trigger
 - [x] **Google Form Webhook** — JSON webhook → workflow trigger
 - [x] **Instagram Reply Action** — Handlebars-compiled reply → Graph API POST
 - [x] **YouTube Reply Action** — Handlebars-compiled reply → YouTube Data API POST with Bearer auth
@@ -452,7 +447,7 @@ These features are fully implemented and type-checked (zero `tsc` errors):
 - [x] **Instagram Settings** — Per-user AI context (accountDescription, replyTone, replyGoal) with upsert
 - [x] **Theme System** — Light/dark/system via next-themes, OS-preference-aware
 - [x] **Error Boundaries** — Global, dashboard-level, and per-page error/loading/not-found handling
-- [x] **Webhook Security** — HMAC signature verification for Stripe and Instagram, with unit tests
+- [x] **Webhook Security** — HMAC signature verification for Instagram, Typeform, and Telegram, with unit tests
 - [x] **Hydration Safety** — SSR-safe hooks (`useIsMobile`, `SidebarMenuSkeleton`)
 
 ---
@@ -540,7 +535,7 @@ guideboard/
 │   │       ├── auth/              # Better Auth + Instagram/YouTube OAuth
 │   │       ├── inngest/           # Inngest serve endpoint
 │   │       ├── trpc/              # tRPC adapter
-│   │       └── webhooks/          # Instagram, YouTube, Stripe, Google Form
+│   │       └── webhooks/          # Instagram, YouTube, Google Form
 │   ├── components/
 │   │   ├── ui/                    # 50+ shadcn/ui components
 │   │   ├── react-flow/            # Base node/handle components
@@ -575,7 +570,7 @@ guideboard/
 │   │   ├── db.ts                  # Prisma singleton
 │   │   ├── encryption.ts          # encrypt / decrypt (Cryptr)
 │   │   ├── utils.ts               # cn() helper (clsx + tailwind-merge)
-│   │   ├── webhook-verify.ts      # HMAC verification (Stripe, Instagram)
+│   │   ├── webhook-verify.ts      # HMAC verification (Instagram, Typeform, Telegram)
 │   │   └── webhook-verify.test.ts # Vitest unit tests
 │   └── trpc/
 │       ├── client.tsx             # React tRPC client + QueryClient

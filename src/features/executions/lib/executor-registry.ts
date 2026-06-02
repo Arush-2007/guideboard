@@ -4,7 +4,6 @@ import { manualTriggerExecutor } from "@/features/triggers/components/manual-tri
 import { httpRequestExecutor } from "../components/http-request/executor";
 import { conditionExecutor } from "../components/condition/executor";
 import { googleFormTriggerExecutor } from "@/features/triggers/components/google-form-trigger/executor";
-import { stripeTriggerExecutor } from "@/features/triggers/components/stripe-trigger/executor";
 import { typeformTriggerExecutor } from "@/features/triggers/components/typeform-trigger/executor";
 import { instagramCommentTriggerExecutor } from "@/features/triggers/components/instagram-comment-trigger/executor";
 import { instagramReplyExecutor } from "../components/instagram-reply-comment/executor";
@@ -31,7 +30,6 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.MANUAL_TRIGGER]: manualTriggerExecutor,
   [NodeType.HTTP_REQUEST]: httpRequestExecutor,
   [NodeType.GOOGLE_FORM_TRIGGER]: googleFormTriggerExecutor,
-  [NodeType.STRIPE_TRIGGER]: stripeTriggerExecutor,
   [NodeType.TYPEFORM_TRIGGER]: typeformTriggerExecutor,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: instagramCommentTriggerExecutor,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: instagramReplyExecutor,
