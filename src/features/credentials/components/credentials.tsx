@@ -26,17 +26,17 @@ import { useEntitySearch } from "@/hooks/use-entity-search";
 import type { Credential } from "@/generated/prisma";
 import { CredentialType } from "@/generated/prisma";
 import Image from "next/image";
-import { cn } from "@/lib/utils";
 import { useEffect } from "react";
 import { toast } from "sonner";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { MoreVerticalIcon, TrashIcon } from "lucide-react";
 import Link from "next/link";
 
 export const CredentialsInstagramAuthErrorToast = () => {
@@ -70,64 +70,51 @@ export const CredentialsInstagramSection = () => {
     new Date(data.tokenExpiresAt).getTime() < Date.now() + INSTAGRAM_TOKEN_WARNING_MS;
 
   return (
-    <Card className="rounded-3xl border border-[#E1306C]/25 bg-card/90 shadow-sm">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-[#E1306C]/15">
-            <Image
-              src="/logos/instagram.svg"
-              alt="Instagram"
-              width={22}
-              height={22}
-            />
-          </span>
-          Instagram
-        </CardTitle>
-        <CardDescription>
-          Connect your Instagram account with OAuth to use Instagram features.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3">
-        {isPending ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : data ? (
-          <>
-            {isExpiringSoon && (
-              <div
-                role="alert"
-                className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-400"
-              >
-                Your Instagram token expires on{" "}
-                <span className="font-medium">
-                  {new Date(data.tokenExpiresAt!).toLocaleDateString()}
-                </span>
-                . Reconnect Instagram to reset the 60-day window.
-              </div>
-            )}
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-foreground">
-                Connected as{" "}
-                <span className="font-medium">@{data.instagramUsername}</span>
-              </p>
-              <Button
-                type="button"
-                variant="outline"
-                className="w-full shrink-0 border-[#E1306C]/30 sm:w-auto"
-                disabled={disconnect.isPending}
-                onClick={() => disconnect.mutate()}
-              >
-                Disconnect
-              </Button>
-            </div>
-          </>
-        ) : (
-          <Button
-            asChild
-            className="w-full border-[#E1306C]/30 bg-[#E1306C] text-white hover:bg-[#E1306C]/90 sm:w-auto"
-          >
-            <Link href="/api/auth/instagram">Connect Instagram</Link>
-          </Button>
-        )}
+    <Card className="rounded-2xl border-border/70 p-4 shadow-sm">
+      <CardContent className="flex flex-row items-center justify-between p-0">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+            <Image src="/logos/instagram.svg" alt="Instagram" width={20} height={20} />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-base font-medium">Instagram</p>
+            <p className="truncate text-xs text-muted-foreground">
+              {isPending
+                ? "Loading…"
+                : data
+                  ? `Connected as @${data.instagramUsername}${isExpiringSoon ? " · Token expiring soon — reconnect to refresh" : ""}`
+                  : "Connect your Instagram account via OAuth"}
+            </p>
+          </div>
+        </div>
+        <div className="ml-4 shrink-0">
+          {!isPending && !data && (
+            <Button variant="outline" size="sm" className="rounded-full px-4" asChild>
+              <Link href="/api/auth/instagram">Connect</Link>
+            </Button>
+          )}
+          {!isPending && data && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" className="rounded-full">
+                  <MoreVerticalIcon className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem asChild>
+                  <Link href="/api/auth/instagram">Reconnect</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={disconnect.isPending}
+                  onClick={() => disconnect.mutate()}
+                >
+                  <TrashIcon className="size-4" />
+                  Disconnect
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
@@ -158,50 +145,51 @@ export const CredentialsYoutubeSection = () => {
   const disconnect = useDisconnectYoutube();
 
   return (
-    <Card className="rounded-3xl border border-[#FF0000]/25 bg-card/90 shadow-sm">
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <span className="flex size-9 items-center justify-center rounded-xl bg-[#FF0000]/10">
-            <Image
-              src="/logos/youtube.svg"
-              alt="YouTube"
-              width={22}
-              height={22}
-            />
-          </span>
-          YouTube
-        </CardTitle>
-        <CardDescription>
-          Connect your YouTube channel with OAuth to use YouTube features.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        {isPending ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        ) : data ? (
-          <>
-            <p className="text-sm text-foreground">
-              Connected as{" "}
-              <span className="font-medium">{data.channelTitle}</span>
+    <Card className="rounded-2xl border-border/70 p-4 shadow-sm">
+      <CardContent className="flex flex-row items-center justify-between p-0">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+            <Image src="/logos/youtube.svg" alt="YouTube" width={20} height={20} />
+          </div>
+          <div className="min-w-0">
+            <p className="truncate text-base font-medium">YouTube</p>
+            <p className="truncate text-xs text-muted-foreground">
+              {isPending
+                ? "Loading…"
+                : data
+                  ? `Connected as ${data.channelTitle}`
+                  : "Connect your YouTube channel via OAuth"}
             </p>
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full shrink-0 border-[#FF0000]/30 sm:w-auto"
-              disabled={disconnect.isPending}
-              onClick={() => disconnect.mutate()}
-            >
-              Disconnect
+          </div>
+        </div>
+        <div className="ml-4 shrink-0">
+          {!isPending && !data && (
+            <Button variant="outline" size="sm" className="rounded-full px-4" asChild>
+              <Link href="/api/auth/youtube">Connect</Link>
             </Button>
-          </>
-        ) : (
-          <Button
-            asChild
-            className="w-full border-[#FF0000]/30 bg-[#FF0000] text-white hover:bg-[#FF0000]/90 sm:w-auto"
-          >
-            <Link href="/api/auth/youtube">Connect YouTube</Link>
-          </Button>
-        )}
+          )}
+          {!isPending && data && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="icon" variant="ghost" className="rounded-full">
+                  <MoreVerticalIcon className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem asChild>
+                  <Link href="/api/auth/youtube">Reconnect</Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={disconnect.isPending}
+                  onClick={() => disconnect.mutate()}
+                >
+                  <TrashIcon className="size-4" />
+                  Disconnect
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
@@ -320,7 +308,6 @@ export const CredentialItem = ({ data }: { data: Credential }) => {
   };
 
   const logo = credentialLogos[data.type] || "/logos/openai.svg";
-  const isInstagram = data.type === CredentialType.INSTAGRAM;
 
   return (
     <EntityItem
@@ -334,12 +321,7 @@ export const CredentialItem = ({ data }: { data: Credential }) => {
         </>
       }
       image={
-        <div
-          className={cn(
-            "flex size-9 items-center justify-center rounded-xl",
-            isInstagram ? "bg-[#E1306C]/15" : "bg-primary/10",
-          )}
-        >
+        <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10">
           <Image src={logo} alt={data.type} width={20} height={20} />
         </div>
       }

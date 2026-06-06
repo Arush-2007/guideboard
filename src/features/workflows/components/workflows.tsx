@@ -1,25 +1,26 @@
 "use client";
 
 import { formatDistanceToNow } from "date-fns";
-import { 
+import {
   EmptyView,
-  EntityContainer, 
-  EntityHeader, 
-  EntityItem, 
-  EntityList, 
-  EntityPagination, 
+  EntityContainer,
+  EntityHeader,
+  EntityItem,
+  EntityList,
+  EntityPagination,
   EntitySearch,
   ErrorView,
   LoadingView
 } from "@/components/entity-components";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import {
   useCreateWorkflow,
   useGenerateWorkflowFromPrompt,
@@ -51,69 +52,6 @@ export const WorkflowsSearch = () => {
   );
 };
 
-export const WorkflowsAiGenerator = () => {
-  const router = useRouter();
-  const [prompt, setPrompt] = useState("");
-  const generate = useGenerateWorkflowFromPrompt();
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = prompt.trim();
-    if (!trimmed) return;
-
-    generate.mutate(
-      { prompt: trimmed },
-      {
-        onSuccess: (data) => {
-          setPrompt("");
-          router.push(`/workflows/${data.workflowId}`);
-        },
-        onError: (error) => {
-          toast.error(error.message);
-        },
-      },
-    );
-  };
-
-  return (
-    <Card className="rounded-3xl border border-border/70 bg-card/90 py-5 shadow-sm">
-      <CardHeader className="px-6 pb-4">
-        <CardTitle className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-          <SparklesIcon className="size-5 text-muted-foreground" />
-          Generate with AI
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="px-6 pt-0">
-        <form
-          onSubmit={handleSubmit}
-          className="flex flex-col gap-3 sm:flex-row sm:items-center"
-        >
-          <Input
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder='Describe your automation... e.g. When someone comments on my YouTube video, reply with AI'
-            className="h-10 flex-1 rounded-xl border-border/70 bg-background/80"
-            disabled={generate.isPending}
-          />
-          <Button
-            type="submit"
-            size="sm"
-            className="h-10 shrink-0 rounded-full px-5"
-            disabled={generate.isPending}
-          >
-            {generate.isPending ? (
-              <Loader2Icon className="size-4 animate-spin" />
-            ) : (
-              <SparklesIcon className="size-4" />
-            )}
-            Generate
-          </Button>
-        </form>
-      </CardContent>
-    </Card>
-  );
-};
-
 export const WorkflowsList = () => {
   const workflows = useSuspenseWorkflows();
 
@@ -131,6 +69,9 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
   const router = useRouter();
   const createWorkflow = useCreateWorkflow();
   const { handleError, modal } = useUpgradeModal();
+  const [aiOpen, setAiOpen] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const generate = useGenerateWorkflowFromPrompt();
 
   const handleCreate = () => {
     createWorkflow.mutate(undefined, {
@@ -141,11 +82,67 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
         handleError(error);
       },
     });
-  }
+  };
+
+  const handleGenerate = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+
+    generate.mutate(
+      { prompt: trimmed },
+      {
+        onSuccess: (data) => {
+          setPrompt("");
+          setAiOpen(false);
+          router.push(`/workflows/${data.workflowId}`);
+        },
+        onError: (error) => {
+          toast.error(error.message);
+        },
+      },
+    );
+  };
 
   return (
     <>
       {modal}
+      <Dialog open={aiOpen} onOpenChange={setAiOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <SparklesIcon className="size-4" />
+              Generate with AI
+            </DialogTitle>
+            <DialogDescription>
+              Describe your automation and AI will build the workflow for you.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleGenerate} className="flex flex-col gap-3 pt-2">
+            <Input
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="e.g. When someone comments on my YouTube video, reply with AI"
+              className="h-10 rounded-xl border-border/70 bg-background/80"
+              disabled={generate.isPending}
+              autoFocus
+            />
+            <Button
+              type="submit"
+              size="sm"
+              className="h-10 self-end rounded-full px-5"
+              disabled={generate.isPending || !prompt.trim()}
+            >
+              {generate.isPending ? (
+                <Loader2Icon className="size-4 animate-spin" />
+              ) : (
+                <SparklesIcon className="size-4" />
+              )}
+              Generate
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
       <EntityHeader
         title="Workflows"
         description="Create and manage your workflows"
@@ -153,6 +150,18 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
         newButtonLabel="New workflow"
         disabled={disabled}
         isCreating={createWorkflow.isPending}
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-full px-5"
+            onClick={() => setAiOpen(true)}
+            disabled={disabled}
+          >
+            <SparklesIcon className="size-4" />
+            Generate with AI
+          </Button>
+        }
       />
     </>
   );
@@ -183,10 +192,7 @@ export const WorkflowsContainer = ({
       search={<WorkflowsSearch />}
       pagination={<WorkflowsPagination />}
     >
-      <>
-        <WorkflowsAiGenerator />
-        {children}
-      </>
+      {children}
     </EntityContainer>
   );
 };

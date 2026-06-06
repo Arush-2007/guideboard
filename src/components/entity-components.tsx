@@ -30,6 +30,7 @@ type EntityHeaderProps = {
   newButtonLabel?: string;
   disabled?: boolean;
   isCreating?: boolean;
+  actions?: React.ReactNode;
 } & (
   | { onNew: () => void; newButtonHref?: never }
   | { newButtonHref: string; onNew?: never }
@@ -44,6 +45,7 @@ export const EntityHeader = ({
   newButtonLabel,
   disabled,
   isCreating,
+  actions,
 }: EntityHeaderProps) => {
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 rounded-3xl border border-border/70 bg-card/90 px-6 py-5 shadow-sm">
@@ -55,29 +57,32 @@ export const EntityHeader = ({
           </p>
         )}
       </div>
-      {onNew && !newButtonHref && (
-        <Button 
-          disabled={isCreating || disabled} 
-          size="sm"
-          className="rounded-full px-5"
-          onClick={onNew}
-        >
-          <PlusIcon className="size-4" />
-          {newButtonLabel}
-        </Button>
-      )}
-      {newButtonHref && !onNew && (
-        <Button 
-          size="sm" 
-          className="rounded-full px-5"
-          asChild
-        >
-          <Link href={newButtonHref} prefetch>
+      <div className="flex items-center gap-2">
+        {actions}
+        {onNew && !newButtonHref && (
+          <Button
+            disabled={isCreating || disabled}
+            size="sm"
+            className="rounded-full px-5"
+            onClick={onNew}
+          >
             <PlusIcon className="size-4" />
             {newButtonLabel}
-          </Link>
-        </Button>
-      )}
+          </Button>
+        )}
+        {newButtonHref && !onNew && (
+          <Button
+            size="sm"
+            className="rounded-full px-5"
+            asChild
+          >
+            <Link href={newButtonHref} prefetch>
+              <PlusIcon className="size-4" />
+              {newButtonLabel}
+            </Link>
+          </Button>
+        )}
+      </div>
     </div>
   );
 };

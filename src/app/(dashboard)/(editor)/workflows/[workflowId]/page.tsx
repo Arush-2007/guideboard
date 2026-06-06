@@ -3,7 +3,6 @@ import {
   EditorError, 
   EditorLoading
 } from "@/features/editor/components/editor";
-import { ChatPanel } from "@/features/editor/components/chat-panel";
 import { EditorHeader } from "@/features/editor/components/editor-header";
 import { prefetchWorkflow } from "@/features/workflows/server/prefetch";
 import { requireAuth } from "@/lib/auth-utils";
@@ -32,7 +31,6 @@ const Page = async ({ params }: PageProps) => {
             <div className="min-h-0 flex-1">
               <Editor workflowId={workflowId} />
             </div>
-            <ChatPanel workflowId={workflowId} />
           </main>
         </Suspense>
       </ErrorBoundary>
