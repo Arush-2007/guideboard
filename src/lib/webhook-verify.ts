@@ -47,6 +47,29 @@ export function verifyTypeformWebhookSignature(
 }
 
 /**
+ * YouTube PubSubHubbub HMAC-SHA1 verification.
+ * When subscribing, pass hub.secret — YouTube signs each notification with
+ * `X-Hub-Signature: sha1=<hex>`.
+ */
+export function verifyYoutubeWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  secret: string,
+): boolean {
+  if (!signatureHeader?.startsWith("sha1=")) return false;
+  const expected =
+    "sha1=" +
+    createHmac("sha1", secret).update(rawBody, "utf8").digest("hex");
+  try {
+    const a = Buffer.from(signatureHeader);
+    const b = Buffer.from(expected);
+    return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Telegram `X-Telegram-Bot-Api-Secret-Token` must match the webhook `secret_token` / `TELEGRAM_WEBHOOK_SECRET`.
  */
 export function verifyTelegramWebhookSecretToken(
