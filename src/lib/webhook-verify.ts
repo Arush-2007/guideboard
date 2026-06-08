@@ -58,12 +58,32 @@ export function verifyYoutubeWebhookSignature(
 ): boolean {
   if (!signatureHeader?.startsWith("sha1=")) return false;
   const expected =
-    "sha1=" +
-    createHmac("sha1", secret).update(rawBody, "utf8").digest("hex");
+    "sha1=" + createHmac("sha1", secret).update(rawBody, "utf8").digest("hex");
   try {
     const a = Buffer.from(signatureHeader);
     const b = Buffer.from(expected);
     return a.length === b.length && timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Timing-safe comparison of two shared-secret strings. Returns false when the
+ * provided value is missing, the expected value is empty, or the lengths differ
+ * (the length of a secret is not itself sensitive). Use this for any plain
+ * shared-secret check so comparisons don't leak via response timing.
+ */
+export function timingSafeStringEqual(
+  provided: string | null | undefined,
+  expected: string,
+): boolean {
+  if (provided == null || expected.length === 0) return false;
+  try {
+    const a = Buffer.from(provided, "utf8");
+    const b = Buffer.from(expected, "utf8");
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
   } catch {
     return false;
   }
@@ -76,13 +96,5 @@ export function verifyTelegramWebhookSecretToken(
   headerValue: string | null,
   expectedSecret: string,
 ): boolean {
-  if (headerValue == null || expectedSecret.length === 0) return false;
-  try {
-    const a = Buffer.from(headerValue, "utf8");
-    const b = Buffer.from(expectedSecret, "utf8");
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
-  } catch {
-    return false;
-  }
+  return timingSafeStringEqual(headerValue, expectedSecret);
 }

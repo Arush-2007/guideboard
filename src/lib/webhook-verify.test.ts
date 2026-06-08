@@ -1,10 +1,31 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  timingSafeStringEqual,
   verifyInstagramWebhookSignature,
   verifyTelegramWebhookSecretToken,
   verifyTypeformWebhookSignature,
 } from "./webhook-verify";
+
+describe("timingSafeStringEqual", () => {
+  it("accepts identical strings", () => {
+    expect(timingSafeStringEqual("shared-secret", "shared-secret")).toBe(true);
+  });
+
+  it("rejects differing strings of equal length", () => {
+    expect(timingSafeStringEqual("aaaaaa", "bbbbbb")).toBe(false);
+  });
+
+  it("rejects differing lengths", () => {
+    expect(timingSafeStringEqual("short", "longer-secret")).toBe(false);
+  });
+
+  it("rejects null/undefined provided value or empty expected", () => {
+    expect(timingSafeStringEqual(null, "x")).toBe(false);
+    expect(timingSafeStringEqual(undefined, "x")).toBe(false);
+    expect(timingSafeStringEqual("x", "")).toBe(false);
+  });
+});
 
 describe("verifyInstagramWebhookSignature", () => {
   it("accepts a valid sha256 signature", () => {
@@ -58,9 +79,9 @@ describe("verifyTelegramWebhookSecretToken", () => {
   });
 
   it("rejects wrong secret", () => {
-    expect(
-      verifyTelegramWebhookSecretToken("header-value", "expected"),
-    ).toBe(false);
+    expect(verifyTelegramWebhookSecretToken("header-value", "expected")).toBe(
+      false,
+    );
   });
 
   it("rejects null header or empty expected", () => {

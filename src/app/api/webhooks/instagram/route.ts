@@ -4,8 +4,9 @@ import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
-import { verifyInstagramWebhookSignature } from "@/lib/webhook-verify";
 import { refreshInstagramTokenIfNeeded } from "@/lib/instagram-token";
+import { isAllowed } from "@/lib/rate-limit";
+import { verifyInstagramWebhookSignature } from "@/lib/webhook-verify";
 
 type CommentValue = {
   id: string;
@@ -55,6 +56,13 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    if (!isAllowed("webhook:instagram", 100, 60_000)) {
+      return NextResponse.json(
+        { success: false, error: "Too many requests" },
+        { status: 429 },
+      );
+    }
+
     const appSecret = process.env.INSTAGRAM_APP_SECRET;
     if (!appSecret) {
       return NextResponse.json(
@@ -100,7 +108,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Refresh Instagram tokens for all users with active trigger nodes (non-fatal)
-    const uniqueUserIds = [...new Set(triggerNodes.map((n) => n.workflow.userId))];
+    const uniqueUserIds = [
+      ...new Set(triggerNodes.map((n) => n.workflow.userId)),
+    ];
     await Promise.all(
       uniqueUserIds.map((userId) =>
         refreshInstagramTokenIfNeeded(userId).catch(() => {
