@@ -9,6 +9,7 @@
     "lint": "biome check",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "ngrok:dev": "ngrok http --url=https://nonvolatile-dayle-edictally.ngrok-free.dev 3000",
     "format": "biome format --write",
     "inngest:dev": "inngest-cli dev",
@@ -91,6 +92,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.2.0",
     "@tailwindcss/postcss": "^4",
+    "@testcontainers/postgresql": "^12.0.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",

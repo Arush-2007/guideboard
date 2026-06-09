@@ -5,9 +5,14 @@ import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/i
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
 import { NodeType } from "@/generated/prisma";
-import { inngest } from "@/inngest/client";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import { TRPCError } from "@trpc/server";
+import {
+  generatedWorkflowSchema,
+  persistGeneratedWorkflow,
+  syncTriggerPollsForWorkflow,
+  validateGeneratedWorkflowGraph,
+} from "@/lib/workflow-persistence";
 
 const ANTHROPIC_WORKFLOW_SYSTEM_PROMPT = `You are a workflow automation builder for an app called Guideboard.
 The user describes what they want to automate in plain English.
@@ -39,28 +44,6 @@ Position nodes left to right: first node x=100, increment x by
 Always start with a trigger node.
 Keep workflows simple — 2 to 4 nodes maximum.`;
 
-const generatedWorkflowSchema = z.object({
-  name: z.string().min(1),
-  nodes: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        type: z.string(),
-        position: z.object({ x: z.number(), y: z.number() }),
-        data: z.record(z.string(), z.any()).optional(),
-      }),
-    )
-    .min(1)
-    .max(8),
-  edges: z.array(
-    z.object({
-      id: z.string().optional(),
-      source: z.string().min(1),
-      target: z.string().min(1),
-    }),
-  ),
-});
-
 function stripMarkdownCodeFences(text: string): string {
   let t = text.trim();
   if (!t.startsWith("```")) {
@@ -74,21 +57,6 @@ function stripMarkdownCodeFences(text: string): string {
     lines.pop();
   }
   return lines.join("\n").trim();
-}
-
-const NODE_TYPE_VALUES = new Set<string>(Object.values(NodeType));
-
-function assertValidNodeTypes(
-  nodes: z.infer<typeof generatedWorkflowSchema>["nodes"],
-): void {
-  for (const node of nodes) {
-    if (!NODE_TYPE_VALUES.has(node.type)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `Invalid node type in generated workflow: ${node.type}`,
-      });
-    }
-  }
 }
 
 export const workflowsRouter = createTRPCRouter({
@@ -209,123 +177,9 @@ export const workflowsRouter = createTRPCRouter({
         });
       }
 
-      assertValidNodeTypes(parsed.nodes);
+      validateGeneratedWorkflowGraph(parsed.nodes, parsed.edges);
 
-      const nodeIds = new Set(parsed.nodes.map((n) => n.id));
-      if (nodeIds.size !== parsed.nodes.length) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Generated workflow has duplicate node ids",
-        });
-      }
-
-      for (const edge of parsed.edges) {
-        if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message:
-              "Generated workflow has an edge referencing unknown node ids",
-          });
-        }
-      }
-
-      const workflow = await prisma.$transaction(async (tx) => {
-        const wf = await tx.workflow.create({
-          data: {
-            name: parsed.name,
-            userId: ctx.auth.user.id,
-          },
-        });
-
-        await tx.node.createMany({
-          data: parsed.nodes.map((node) => ({
-            id: node.id,
-            workflowId: wf.id,
-            name: node.type,
-            type: node.type as NodeType,
-            position: node.position,
-            data: node.data ?? {},
-          })),
-        });
-
-        if (parsed.edges.length > 0) {
-          await tx.connection.createMany({
-            data: parsed.edges.map((edge) => ({
-              workflowId: wf.id,
-              fromNodeId: edge.source,
-              toNodeId: edge.target,
-              fromOutput: "main",
-              toInput: "main",
-            })),
-          });
-        }
-
-        return wf;
-      });
-
-      const nodesForSync = parsed.nodes;
-
-      const youtubeTrigger = nodesForSync.find(
-        (n) => n.type === "YOUTUBE_COMMENT_TRIGGER",
-      );
-
-      if (youtubeTrigger) {
-        const videoId = (
-          youtubeTrigger.data as { videoId?: string } | undefined
-        )?.videoId;
-
-        if (videoId) {
-          await prisma.youtubeCommentPoll.upsert({
-            where: {
-              workflowId_videoId: { workflowId: workflow.id, videoId },
-            },
-            update: {},
-            create: {
-              userId: ctx.auth.user.id,
-              workflowId: workflow.id,
-              videoId,
-              lastChecked: new Date(),
-            },
-          });
-        }
-      } else {
-        await prisma.youtubeCommentPoll.deleteMany({
-          where: { workflowId: workflow.id },
-        });
-      }
-
-      const googleSheetsTrigger = nodesForSync.find(
-        (n) => n.type === "GOOGLE_SHEETS_TRIGGER",
-      );
-
-      if (googleSheetsTrigger) {
-        const triggerData = (googleSheetsTrigger.data as
-          | { spreadsheetId?: string; sheetName?: string }
-          | undefined) ?? { spreadsheetId: "", sheetName: "" };
-
-        if (triggerData.spreadsheetId && triggerData.sheetName) {
-          await prisma.googleSheetsPoll.upsert({
-            where: { workflowId: workflow.id },
-            update: {
-              userId: ctx.auth.user.id,
-              spreadsheetId: triggerData.spreadsheetId,
-              sheetName: triggerData.sheetName,
-            },
-            create: {
-              userId: ctx.auth.user.id,
-              workflowId: workflow.id,
-              spreadsheetId: triggerData.spreadsheetId,
-              sheetName: triggerData.sheetName,
-            },
-          });
-        }
-      } else {
-        await prisma.googleSheetsPoll.deleteMany({
-          where: { workflowId: workflow.id },
-        });
-      }
-
-      return { workflowId: workflow.id };
+      return persistGeneratedWorkflow(ctx.auth.user.id, parsed);
     }),
   remove: protectedProcedure
     .input(z.object({ id: z.string() }))
@@ -403,66 +257,8 @@ export const workflowsRouter = createTRPCRouter({
         });
       });
 
-      // Sync YoutubeCommentPoll rows for this workflow
-      const youtubeTrigger = nodes.find(
-        (n) => n.type === "YOUTUBE_COMMENT_TRIGGER",
-      );
-
-      if (youtubeTrigger) {
-        const videoId = (
-          youtubeTrigger.data as { videoId?: string } | undefined
-        )?.videoId;
-
-        if (videoId) {
-          await prisma.youtubeCommentPoll.upsert({
-            where: {
-              workflowId_videoId: { workflowId: id, videoId },
-            },
-            update: {},
-            create: {
-              userId: ctx.auth.user.id,
-              workflowId: id,
-              videoId,
-              lastChecked: new Date(),
-            },
-          });
-        }
-      } else {
-        await prisma.youtubeCommentPoll.deleteMany({
-          where: { workflowId: id },
-        });
-      }
-
-      const googleSheetsTrigger = nodes.find(
-        (n) => n.type === "GOOGLE_SHEETS_TRIGGER",
-      );
-
-      if (googleSheetsTrigger) {
-        const triggerData = (googleSheetsTrigger.data as
-          | { spreadsheetId?: string; sheetName?: string }
-          | undefined) ?? { spreadsheetId: "", sheetName: "" };
-
-        if (triggerData.spreadsheetId && triggerData.sheetName) {
-          await prisma.googleSheetsPoll.upsert({
-            where: { workflowId: id },
-            update: {
-              userId: ctx.auth.user.id,
-              spreadsheetId: triggerData.spreadsheetId,
-              sheetName: triggerData.sheetName,
-            },
-            create: {
-              userId: ctx.auth.user.id,
-              workflowId: id,
-              spreadsheetId: triggerData.spreadsheetId,
-              sheetName: triggerData.sheetName,
-            },
-          });
-        }
-      } else {
-        await prisma.googleSheetsPoll.deleteMany({
-          where: { workflowId: id },
-        });
-      }
+      // Keep trigger poll rows in sync with the workflow's current nodes.
+      await syncTriggerPollsForWorkflow(ctx.auth.user.id, id, nodes);
 
       return workflow;
     }),

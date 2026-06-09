@@ -2,7 +2,12 @@ import prisma from "@/lib/db";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
-import { NodeType, type Prisma } from "@/generated/prisma";
+import type { Prisma } from "@/generated/prisma";
+import {
+  generatedWorkflowSchema,
+  persistGeneratedWorkflow,
+  validateGeneratedWorkflowGraph,
+} from "@/lib/workflow-persistence";
 
 const ANTHROPIC_CONVERSATION_SYSTEM_PROMPT = `You are Guideboard AI, a conversational workflow automation builder.
 Your job is to help users build automations through natural conversation.
@@ -48,28 +53,6 @@ Position nodes: x starts at 100, increment by 300, y=200.
 Always start workflow with a trigger node. Max 4 nodes.
 Keep responses concise and friendly.`;
 
-const generatedWorkflowSchema = z.object({
-  name: z.string().min(1),
-  nodes: z
-    .array(
-      z.object({
-        id: z.string().min(1),
-        type: z.string(),
-        position: z.object({ x: z.number(), y: z.number() }),
-        data: z.record(z.string(), z.any()).optional(),
-      }),
-    )
-    .min(1)
-    .max(8),
-  edges: z.array(
-    z.object({
-      id: z.string().optional(),
-      source: z.string().min(1),
-      target: z.string().min(1),
-    }),
-  ),
-});
-
 const buildingResponseSchema = z.object({
   phase: z.literal("BUILDING"),
   message: z.string(),
@@ -82,8 +65,6 @@ const conversationalResponseSchema = z.object({
 });
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
-
-const NODE_TYPE_VALUES = new Set<string>(Object.values(NodeType));
 
 function stripMarkdownCodeFences(text: string): string {
   let t = text.trim();
@@ -117,86 +98,6 @@ function parseMessages(json: Prisma.JsonValue): ChatMessage[] {
     }
   }
   return out;
-}
-
-function assertValidNodeTypes(
-  nodes: z.infer<typeof generatedWorkflowSchema>["nodes"],
-): void {
-  for (const node of nodes) {
-    if (!NODE_TYPE_VALUES.has(node.type)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `Invalid node type in generated workflow: ${node.type}`,
-      });
-    }
-  }
-}
-
-async function syncTriggerPollsForWorkflow(
-  userId: string,
-  workflowId: string,
-  nodes: z.infer<typeof generatedWorkflowSchema>["nodes"],
-) {
-  const youtubeTrigger = nodes.find(
-    (n) => n.type === "YOUTUBE_COMMENT_TRIGGER",
-  );
-
-  if (youtubeTrigger) {
-    const videoId = (
-      youtubeTrigger.data as { videoId?: string } | undefined
-    )?.videoId;
-
-    if (videoId) {
-      await prisma.youtubeCommentPoll.upsert({
-        where: {
-          workflowId_videoId: { workflowId, videoId },
-        },
-        update: {},
-        create: {
-          userId,
-          workflowId,
-          videoId,
-          lastChecked: new Date(),
-        },
-      });
-    }
-  } else {
-    await prisma.youtubeCommentPoll.deleteMany({
-      where: { workflowId },
-    });
-  }
-
-  const googleSheetsTrigger = nodes.find(
-    (n) => n.type === "GOOGLE_SHEETS_TRIGGER",
-  );
-
-  if (googleSheetsTrigger) {
-    const triggerData =
-      (googleSheetsTrigger.data as
-        | { spreadsheetId?: string; sheetName?: string }
-        | undefined) ?? { spreadsheetId: "", sheetName: "" };
-
-    if (triggerData.spreadsheetId && triggerData.sheetName) {
-      await prisma.googleSheetsPoll.upsert({
-        where: { workflowId },
-        update: {
-          userId,
-          spreadsheetId: triggerData.spreadsheetId,
-          sheetName: triggerData.sheetName,
-        },
-        create: {
-          userId,
-          workflowId,
-          spreadsheetId: triggerData.spreadsheetId,
-          sheetName: triggerData.sheetName,
-        },
-      });
-    }
-  } else {
-    await prisma.googleSheetsPoll.deleteMany({
-      where: { workflowId },
-    });
-  }
 }
 
 export const conversationsRouter = createTRPCRouter({
@@ -346,78 +247,25 @@ export const conversationsRouter = createTRPCRouter({
           });
         }
 
-        assertValidNodeTypes(wfParsed.nodes);
+        validateGeneratedWorkflowGraph(wfParsed.nodes, wfParsed.edges);
 
-        const nodeIds = new Set(wfParsed.nodes.map((n) => n.id));
-        if (nodeIds.size !== wfParsed.nodes.length) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "Generated workflow has duplicate node ids",
-          });
-        }
-
-        for (const edge of wfParsed.edges) {
-          if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message:
-                "Generated workflow has an edge referencing unknown node ids",
-            });
-          }
-        }
-
-        const workflow = await prisma.$transaction(async (tx) => {
-          const wf = await tx.workflow.create({
-            data: {
-              name: wfParsed.name,
-              userId: ctx.auth.user.id,
-            },
-          });
-
-          await tx.node.createMany({
-            data: wfParsed.nodes.map((node) => ({
-              id: node.id,
-              workflowId: wf.id,
-              name: node.type,
-              type: node.type as NodeType,
-              position: node.position,
-              data: node.data ?? {},
-            })),
-          });
-
-          if (wfParsed.edges.length > 0) {
-            await tx.connection.createMany({
-              data: wfParsed.edges.map((edge) => ({
-                workflowId: wf.id,
-                fromNodeId: edge.source,
-                toNodeId: edge.target,
-                fromOutput: "main",
-                toInput: "main",
-              })),
-            });
-          }
-
-          return wf;
-        });
-
-        await syncTriggerPollsForWorkflow(
+        const { workflowId } = await persistGeneratedWorkflow(
           ctx.auth.user.id,
-          workflow.id,
-          wfParsed.nodes,
+          wfParsed,
         );
 
         await prisma.conversation.update({
           where: { id: conversation.id },
           data: {
             phase: "BUILDING",
-            workflowId: workflow.id,
+            workflowId,
           },
         });
 
         return {
           reply: parsed.message,
           phase: "BUILDING" as const,
-          workflowId: workflow.id,
+          workflowId,
         };
       }
 
