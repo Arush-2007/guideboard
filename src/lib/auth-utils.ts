@@ -1,8 +1,11 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 import { auth } from "./auth";
 
-export const requireAuth = async () => {
+// `cache` dedupes the session lookup within a single request render, so calling
+// `requireAuth` in a layout *and* a page (defense-in-depth) costs one DB hit, not two.
+export const requireAuth = cache(async () => {
   const session = await auth.api.getSession({
     headers: await headers(),
   });
@@ -12,9 +15,9 @@ export const requireAuth = async () => {
   }
 
   return session;
-};
+});
 
-export const requireUnauth = async () => {
+export const requireUnauth = cache(async () => {
   const session = await auth.api.getSession({
     headers: await headers(),
   });
@@ -22,4 +25,4 @@ export const requireUnauth = async () => {
   if (session) {
     redirect("/");
   }
-};
+});
