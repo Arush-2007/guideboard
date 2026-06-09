@@ -38,6 +38,16 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
+  session: {
+    // Serve getSession from a signed cookie snapshot instead of hitting Postgres
+    // on every call; refresh from DB after maxAge. Benefits both requireAuth() and
+    // every tRPC protectedProcedure. Same-device signOut clears it, and the app has
+    // no server-side revocation flows, so the staleness window carries no real risk.
+    cookieCache: {
+      enabled: true,
+      maxAge: 5 * 60,
+    },
+  },
   databaseHooks: {
     account: {
       create: {
