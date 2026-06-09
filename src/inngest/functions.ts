@@ -267,37 +267,10 @@ export const pollGmail = inngest.createFunction(
   { id: "poll-gmail", retries: 1 },
   { cron: "*/5 * * * *" },
   async ({ step }) => {
-    const workflows = await step.run("fetch-gmail-workflows", async () => {
-      return prisma.workflow.findMany({
-        where: {
-          nodes: {
-            some: {
-              type: NodeType.GMAIL_TRIGGER,
-            },
-          },
-        },
-        select: {
-          id: true,
-          userId: true,
-        },
-      });
-    });
-
-    await step.run("ensure-gmail-polls", async () => {
-      for (const workflow of workflows) {
-        await prisma.gmailPoll.upsert({
-          where: { workflowId: workflow.id },
-          create: {
-            workflowId: workflow.id,
-            userId: workflow.userId,
-          },
-          update: {
-            userId: workflow.userId,
-          },
-        });
-      }
-    });
-
+    // Poll rows are provisioned/cleaned up by `syncTriggerPollsForWorkflow`
+    // (src/lib/workflow-persistence.ts) on every workflow create/edit, so each
+    // row here corresponds to a live Gmail trigger — the poller only reads,
+    // mirroring pollYoutubeComments and pollGoogleSheets.
     const polls = await step.run("fetch-gmail-polls", async () => {
       return prisma.gmailPoll.findMany({
         select: {
