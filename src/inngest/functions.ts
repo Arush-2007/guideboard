@@ -1,39 +1,39 @@
 import { NonRetriableError } from "inngest";
-import { inngest } from "./client";
-import prisma from "@/lib/db";
-import { topologicalSort, sendWorkflowExecution } from "./utils";
-import { ExecutionStatus, NodeType } from "@/generated/prisma";
-import { getExecutor } from "@/features/executions/lib/executor-registry";
-import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
-import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import ky from "ky";
-import { httpRequestChannel } from "./channels/http-request";
-import { conditionChannel } from "./channels/condition";
-import { manualTriggerChannel } from "./channels/manual-trigger";
-import { googleFormTriggerChannel } from "./channels/google-form-trigger";
-import { typeformTriggerChannel } from "./channels/typeform-trigger";
-import { geminiChannel } from "./channels/gemini";
-import { openAiChannel } from "./channels/openai";
-import { anthropicChannel } from "./channels/anthropic";
-import { discordChannel } from "./channels/discord";
-import { slackChannel } from "./channels/slack";
-import { notionChannel } from "./channels/notion";
-import { telegramActionChannel } from "./channels/telegram-action";
-import { telegramTriggerChannel } from "./channels/telegram-trigger";
-import { whatsappActionChannel } from "./channels/whatsapp-action";
-import { gmailActionChannel } from "./channels/gmail-action";
-import { gmailTriggerChannel } from "./channels/gmail-trigger";
-import { googleSheetsActionChannel } from "./channels/google-sheets-action";
-import { googleSheetsTriggerChannel } from "./channels/google-sheets-trigger";
-import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
-import { instagramReplyChannel } from "./channels/instagram-reply-comment";
-import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
-import { youtubeReplyChannel } from "./channels/youtube-reply-comment";
+import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
+import prisma from "@/lib/db";
+import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { aiReplyGeneratorChannel } from "./channels/ai-reply-generator";
 import { aiTextChannel } from "./channels/ai-text";
+import { anthropicChannel } from "./channels/anthropic";
+import { conditionChannel } from "./channels/condition";
+import { discordChannel } from "./channels/discord";
+import { geminiChannel } from "./channels/gemini";
+import { gmailActionChannel } from "./channels/gmail-action";
+import { gmailTriggerChannel } from "./channels/gmail-trigger";
+import { googleFormTriggerChannel } from "./channels/google-form-trigger";
+import { googleSheetsActionChannel } from "./channels/google-sheets-action";
+import { googleSheetsTriggerChannel } from "./channels/google-sheets-trigger";
+import { httpRequestChannel } from "./channels/http-request";
+import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
+import { instagramReplyChannel } from "./channels/instagram-reply-comment";
+import { manualTriggerChannel } from "./channels/manual-trigger";
+import { notionChannel } from "./channels/notion";
+import { openAiChannel } from "./channels/openai";
+import { slackChannel } from "./channels/slack";
+import { telegramActionChannel } from "./channels/telegram-action";
+import { telegramTriggerChannel } from "./channels/telegram-trigger";
+import { typeformTriggerChannel } from "./channels/typeform-trigger";
+import { whatsappActionChannel } from "./channels/whatsapp-action";
+import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
+import { youtubeReplyChannel } from "./channels/youtube-reply-comment";
+import { inngest } from "./client";
+import { runWorkflowNodes } from "./run-workflow";
+import { sendWorkflowExecution, topologicalSort } from "./utils";
 
 export const executeWorkflow = inngest.createFunction(
-  { 
+  {
     id: "execute-workflow",
     retries: process.env.NODE_ENV === "production" ? 3 : 0,
     onFailure: async ({ event, step }) => {
@@ -47,7 +47,7 @@ export const executeWorkflow = inngest.createFunction(
       });
     },
   },
-  { 
+  {
     event: "workflows/execute.workflow",
     channels: [
       httpRequestChannel(),
@@ -134,21 +134,14 @@ export const executeWorkflow = inngest.createFunction(
       },
     );
 
-    // Initialize context with any initial data from the trigger
-    let context = initialData || {};
-
-    // Execute each node
-    for (const node of sortedNodes) {
-      const executor = getExecutor(node.type as NodeType);
-      context = await executor({
-        data: node.data as Record<string, unknown>,
-        nodeId: node.id,
-        userId,
-        context,
-        step,
-        publish,
-      });
-    }
+    // Run each node sequentially, threading context from one to the next.
+    const context = await runWorkflowNodes({
+      sortedNodes,
+      userId,
+      initialData,
+      step,
+      publish,
+    });
 
     await step.run("update-execution", async () => {
       return prisma.execution.update({
@@ -156,9 +149,9 @@ export const executeWorkflow = inngest.createFunction(
         data: {
           status: ExecutionStatus.SUCCESS,
           completedAt: new Date(),
-          output: context,
+          output: context as Prisma.InputJsonObject,
         },
-      })
+      });
     });
 
     return {
