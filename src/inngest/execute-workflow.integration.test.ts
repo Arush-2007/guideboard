@@ -1,7 +1,8 @@
+import { createServer, type Server } from "node:http";
 import type { Realtime } from "@inngest/realtime";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { StepTools } from "@/features/executions/types";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
+import type { StepTools } from "@/features/executions/types";
 import prisma from "@/lib/db";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
 import { runWorkflowNodes } from "./run-workflow";
@@ -13,11 +14,12 @@ import { topologicalSort } from "./utils";
  * `executeWorkflow` uses in production, then persists and asserts the resulting
  * `Execution` row.
  *
- * The node executors make real outbound HTTP calls (jsonplaceholder + httpbin),
- * so this proves the nodes actually execute and thread context end to end —
- * trigger -> GET -> condition gate -> templated POST -> action. It is a
- * `*.integration.test.ts`, so it runs only under the integration config
- * (`npm run test:integration`), never the default unit suite.
+ * The HTTP/Discord nodes make real outbound calls, but against a LOCAL throwaway
+ * server (not a public echo service) so the test is hermetic and deterministic.
+ * It proves the nodes execute and thread context end to end — trigger -> GET ->
+ * condition gate -> templated POST -> action — including the `renderTemplate`
+ * resolver (`!#...#!` / `{{...}}`). It's a `*.integration.test.ts`, so it runs
+ * only under the integration config (`npm run test:integration`).
  */
 
 // Inngest's `step.run(name, fn)` checkpoints work; for a single in-process run
@@ -29,6 +31,47 @@ const step = {
 const publish = (async () => {}) as unknown as Realtime.PublishFn;
 
 let userId: string;
+let server: Server;
+let baseUrl: string;
+
+beforeAll(async () => {
+  // GET /users/1 -> a fixed user; POST /post -> echoes the parsed JSON back
+  // under `.json` (mirroring httpbin's shape so the assertions read naturally).
+  server = createServer((req, res) => {
+    if (req.method === "GET" && req.url?.startsWith("/users/1")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ id: 1, name: "Leanne Graham" }));
+      return;
+    }
+    if (req.method === "POST" && req.url?.startsWith("/post")) {
+      let body = "";
+      req.on("data", (c) => {
+        body += c;
+      });
+      req.on("end", () => {
+        let parsed: unknown = null;
+        try {
+          parsed = body ? JSON.parse(body) : null;
+        } catch {
+          parsed = null;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ json: parsed }));
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const addr = server.address();
+  const port = typeof addr === "object" && addr ? addr.port : 0;
+  baseUrl = `http://127.0.0.1:${port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+});
 
 beforeEach(async () => {
   await cleanupDb();
@@ -61,10 +104,7 @@ describe("executeWorkflow engine (5-node workflow)", () => {
         type: NodeType.HTTP_REQUEST,
         name: "Fetch user",
         position: { x: 250, y: 0 },
-        data: {
-          endpoint: "https://jsonplaceholder.typicode.com/users/1",
-          method: "GET",
-        },
+        data: { endpoint: `${baseUrl}/users/1`, method: "GET" },
       },
       {
         id: "n_cond",
@@ -84,9 +124,10 @@ describe("executeWorkflow engine (5-node workflow)", () => {
         name: "Forward enriched lead",
         position: { x: 750, y: 0 },
         data: {
-          endpoint: "https://httpbin.org/post",
+          endpoint: `${baseUrl}/post`,
           method: "POST",
-          body: '{"getStatus":{{http_request_n_get.httpResponse.status}},"lead":"{{lead.name}}","enrichedName":"{{http_request_n_get.httpResponse.data.name}}"}',
+          // Mix of {{...}} and !#...#! to exercise both syntaxes of renderTemplate.
+          body: '{"getStatus":{{http_request_n_get.httpResponse.status}},"lead":"!#lead.name#!","enrichedName":"!#http_request_n_get.httpResponse.data.name#!"}',
         },
       },
       {
@@ -95,11 +136,9 @@ describe("executeWorkflow engine (5-node workflow)", () => {
         name: "Notify",
         position: { x: 1000, y: 0 },
         data: {
-          // Point the action at httpbin so the real POST succeeds (200) and we
-          // can assert the executor rendered + sent the right content.
-          webhookUrl: "https://httpbin.org/post",
+          webhookUrl: `${baseUrl}/post`,
           content:
-            "New lead {{lead.name}} enriched as {{http_request_n_get.httpResponse.data.name}} (HTTP {{http_request_n_get.httpResponse.status}})",
+            "New lead !#lead.name#! enriched as !#http_request_n_get.httpResponse.data.name#! (HTTP !#http_request_n_get.httpResponse.status#!)",
         },
       },
     ];
@@ -165,14 +204,14 @@ describe("executeWorkflow engine (5-node workflow)", () => {
 
     const output = execution.output as Record<string, any>;
 
-    // GET node fetched real data and stored it under its output key.
+    // GET node fetched data and stored it under its output key.
     expect(output.http_request_n_get.httpResponse.status).toBe(200);
     expect(output.http_request_n_get.httpResponse.data.name).toBe(
       "Leanne Graham",
     );
 
     // POST node templated a body from BOTH the trigger context and the GET
-    // output; httpbin echoes the parsed JSON back under `.json`.
+    // output (via renderTemplate); the echo server returns it under `.json`.
     const echoed = output.http_request_n_post.httpResponse.data.json;
     expect(echoed).toEqual({
       lead: "Ada Lovelace",
@@ -180,7 +219,7 @@ describe("executeWorkflow engine (5-node workflow)", () => {
       getStatus: 200,
     });
 
-    // Discord action rendered its template against the threaded context.
+    // Discord action rendered its !#...#! template against the threaded context.
     expect(output.discord_n_discord.messageContent).toBe(
       "New lead Ada Lovelace enriched as Leanne Graham (HTTP 200)",
     );
@@ -220,17 +259,13 @@ describe("executeWorkflow engine (5-node workflow)", () => {
           type: NodeType.HTTP_REQUEST,
           name: "Should never run",
           position: { x: 500, y: 0 },
-          data: { endpoint: "https://httpbin.org/post", method: "POST" },
+          data: { endpoint: `${baseUrl}/post`, method: "POST" },
         },
       ],
     });
     await prisma.connection.createMany({
       data: [
-        {
-          workflowId: workflow.id,
-          fromNodeId: "g_trigger",
-          toNodeId: "g_cond",
-        },
+        { workflowId: workflow.id, fromNodeId: "g_trigger", toNodeId: "g_cond" },
         { workflowId: workflow.id, fromNodeId: "g_cond", toNodeId: "g_post" },
       ],
     });

@@ -1,22 +1,15 @@
-import Handlebars from "handlebars";
-import { NonRetriableError } from "inngest";
-import { generateText } from "ai";
-import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createOpenAI } from "@ai-sdk/openai";
+import { generateText } from "ai";
+import { NonRetriableError } from "inngest";
+import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
+import { CredentialType, NodeType } from "@/generated/prisma";
 import { aiTextChannel } from "@/inngest/channels/ai-text";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-import { CredentialType, NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import { renderTemplate } from "@/lib/templating";
 
 type AiTextProvider = "openai" | "anthropic" | "gemini";
 
@@ -76,9 +69,9 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   const expectedCredentialType = providerToCredentialType[provider];
 
   const systemPrompt = config.systemPrompt
-    ? Handlebars.compile(config.systemPrompt)(context)
+    ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
-  const userPrompt = Handlebars.compile(config.prompt)(context);
+  const userPrompt = renderTemplate(config.prompt, context);
   const outputKey = `${NodeType.AI_TEXT.toLowerCase()}_${nodeId}`;
 
   const credential = await step.run("get-credential", () => {
@@ -169,7 +162,9 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     return {
       ...context,
       [outputKey]: {
-        text,
+        // The AI node's result, referenced downstream as
+        // !#ai_text_<id>.output#! (declared in node-outputs.ts).
+        output: text,
       },
     };
   } catch (error) {

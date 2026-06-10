@@ -1,19 +1,12 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { gmailActionChannel } from "@/inngest/channels/gmail-action";
 import ky from "ky";
-import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
+import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
+import { gmailActionChannel } from "@/inngest/channels/gmail-action";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import { renderTemplate } from "@/lib/templating";
 
 type GmailActionData = {
   to?: string;
@@ -61,9 +54,9 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
 
   const outputKey = `${NodeType.GMAIL_ACTION.toLowerCase()}_${nodeId}`;
 
-  const to = decode(Handlebars.compile(config.to ?? "")(context)).trim();
-  const subject = decode(Handlebars.compile(config.subject ?? "")(context)).trim();
-  const body = decode(Handlebars.compile(config.body ?? "")(context));
+  const to = decode(renderTemplate(config.to ?? "", context)).trim();
+  const subject = decode(renderTemplate(config.subject ?? "", context)).trim();
+  const body = decode(renderTemplate(config.body ?? "", context));
 
   try {
     const result = await step.run("gmail-send-message", async () => {
@@ -82,13 +75,16 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
       const rfc2822 = `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain\r\n\r\n${body}`;
       const raw = toBase64Url(rfc2822);
 
-      await ky.post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
+      await ky.post(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          json: { raw },
         },
-        json: { raw },
-      });
+      );
 
       return {
         ...context,

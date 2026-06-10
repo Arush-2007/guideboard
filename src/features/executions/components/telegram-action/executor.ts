@@ -1,18 +1,13 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { telegramActionChannel } from "@/inngest/channels/telegram-action";
 import ky from "ky";
-import { CredentialType, NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
+import type { NodeExecutor } from "@/features/executions/types";
+import { CredentialType, NodeType } from "@/generated/prisma";
+import { telegramActionChannel } from "@/inngest/channels/telegram-action";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  return new Handlebars.SafeString(jsonString);
-});
+import { renderTemplate } from "@/lib/templating";
 
 type TelegramActionData = {
   credentialId?: string;
@@ -39,7 +34,10 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
 
   let config: TelegramActionData;
   try {
-    config = parseNodeConfig(NodeType.TELEGRAM_ACTION, data) as TelegramActionData;
+    config = parseNodeConfig(
+      NodeType.TELEGRAM_ACTION,
+      data,
+    ) as TelegramActionData;
   } catch (error) {
     await publish(
       telegramActionChannel().status({
@@ -96,9 +94,9 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     throw new NonRetriableError("Telegram node: Bot token is empty");
   }
 
-  const rawChatId = Handlebars.compile(config.chatId ?? "")(context);
+  const rawChatId = renderTemplate(config.chatId ?? "", context);
   const chatId = decode(rawChatId).trim();
-  const rawMessage = Handlebars.compile(config.message ?? "")(context);
+  const rawMessage = renderTemplate(config.message ?? "", context);
   const text = decode(rawMessage).slice(0, TELEGRAM_MAX_MESSAGE);
   const outputKey = `${NodeType.TELEGRAM_ACTION.toLowerCase()}_${nodeId}`;
 

@@ -1,16 +1,12 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
 import ky from "ky";
-import type { NodeExecutor } from "@/features/executions/types";
-import { youtubeReplyChannel } from "@/inngest/channels/youtube-reply-comment";
-import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
-import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  return new Handlebars.SafeString(JSON.stringify(context, null, 2));
-});
+import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
+import { youtubeReplyChannel } from "@/inngest/channels/youtube-reply-comment";
+import { renderTemplate } from "@/lib/templating";
+import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
 
 type YoutubeReplyData = {
   replyMessage?: string;
@@ -48,7 +44,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
     );
   }
 
-  const rawReply = Handlebars.compile(config.replyMessage)(context);
+  const rawReply = renderTemplate(config.replyMessage, context);
   const compiledReply = decode(rawReply);
 
   try {
@@ -82,9 +78,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
 
       const prevAi = context.aiReply;
       const mergedAi =
-        typeof prevAi === "object" &&
-        prevAi !== null &&
-        !Array.isArray(prevAi)
+        typeof prevAi === "object" && prevAi !== null && !Array.isArray(prevAi)
           ? {
               ...(prevAi as Record<string, unknown>),
               replyText: compiledReply,
@@ -97,15 +91,11 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
       };
     });
 
-    await publish(
-      youtubeReplyChannel().status({ nodeId, status: "success" }),
-    );
+    await publish(youtubeReplyChannel().status({ nodeId, status: "success" }));
 
     return result;
   } catch (error) {
-    await publish(
-      youtubeReplyChannel().status({ nodeId, status: "error" }),
-    );
+    await publish(youtubeReplyChannel().status({ nodeId, status: "error" }));
     throw error;
   }
 };

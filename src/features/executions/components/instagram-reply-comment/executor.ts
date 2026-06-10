@@ -1,17 +1,13 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
 import ky from "ky";
+import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
 import { instagramReplyChannel } from "@/inngest/channels/instagram-reply-comment";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-import { NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  return new Handlebars.SafeString(JSON.stringify(context, null, 2));
-});
+import { renderTemplate } from "@/lib/templating";
 
 type InstagramReplyData = {
   replyMessage?: string;
@@ -54,7 +50,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
     );
   }
 
-  const rawReply = Handlebars.compile(config.replyMessage)(context);
+  const rawReply = renderTemplate(config.replyMessage, context);
   const compiledReply = decode(rawReply);
 
   try {
@@ -91,19 +87,16 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
       // accessToken is stored as encrypt(rawToken) — decrypt gives the raw long-lived token
       const accessToken = decrypt(credential.accessToken);
 
-      await ky.post(
-        `https://graph.instagram.com/v21.0/${commentId}/replies`,
-        {
+      await ky
+        .post(`https://graph.instagram.com/v21.0/${commentId}/replies`, {
           searchParams: { access_token: accessToken },
           json: { message: compiledReply },
-        },
-      ).json<InstagramReplyResponse>();
+        })
+        .json<InstagramReplyResponse>();
 
       const prevAi = context.aiReply;
       const mergedAi =
-        typeof prevAi === "object" &&
-        prevAi !== null &&
-        !Array.isArray(prevAi)
+        typeof prevAi === "object" && prevAi !== null && !Array.isArray(prevAi)
           ? {
               ...(prevAi as Record<string, unknown>),
               replyText: compiledReply,

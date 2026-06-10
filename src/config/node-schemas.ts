@@ -6,9 +6,7 @@ type AnyZodSchema = z.ZodTypeAny;
 const emptyPassthroughSchema = z.object({}).passthrough();
 
 // Shared validation rules (copied from the corresponding dialog.tsx forms)
-const plainTextSchema = z
-  .string()
-  .min(1, { message: "Field is required" });
+const plainTextSchema = z.string().min(1, { message: "Field is required" });
 
 const apiPromptSchema = z.object({
   credentialId: z.string().min(1, "Credential is required"),
@@ -32,9 +30,7 @@ const aiReplyGeneratorSchema = z
 
 const httpRequestSchema = z
   .object({
-    endpoint: z
-      .string()
-      .min(1, { message: "Please enter a valid URL" }),
+    endpoint: z.string().min(1, { message: "Please enter a valid URL" }),
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
     body: z.string().optional(),
   })
@@ -173,20 +169,40 @@ const googleSheetsTriggerSchema = z
   })
   .passthrough();
 
+// Shared "match the columns" mapping shape: target field/column -> template
+// string (may contain !#path#! placeholders). Reused by any node that maps
+// upstream data onto named targets.
+const mappingSchema = z.record(z.string(), z.string());
+
 const googleSheetsActionSchema = z
   .object({
     action: z.enum(["append_row", "read_rows"]),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Sheet Name is required"),
-    range: z.string().min(1, "Range is required"),
+    range: z.string().optional(),
     values: z.string().optional(),
+    columnMappings: mappingSchema.optional(),
   })
   .superRefine((data, ctx) => {
-    if (data.action === "append_row" && !data.values?.trim()) {
+    if (data.action === "read_rows") {
+      if (!data.range?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Range is required to read rows",
+          path: ["range"],
+        });
+      }
+      return;
+    }
+    // append_row: need a column mapping (preferred) or a legacy values array.
+    const hasMappings = data.columnMappings
+      ? Object.values(data.columnMappings).some((v) => v.trim())
+      : false;
+    if (!hasMappings && !data.values?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Values are required for append_row",
-        path: ["values"],
+        message: "Map at least one column to append a row",
+        path: ["columnMappings"],
       });
     }
   })
@@ -238,4 +254,3 @@ export function parseNodeConfig(type: NodeType, data: unknown) {
     `Invalid node.data for NodeType="${type}": ${issues || "unknown Zod error"}`,
   );
 }
-

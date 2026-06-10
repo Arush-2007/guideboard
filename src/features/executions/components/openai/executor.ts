@@ -1,20 +1,13 @@
-import Handlebars from "handlebars";
-import { NonRetriableError } from "inngest";
-import { generateText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { generateText } from "ai";
+import { NonRetriableError } from "inngest";
+import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
 import { openAiChannel } from "@/inngest/channels/openai";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-import { NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import { renderTemplate } from "@/lib/templating";
 
 type OpenAiData = {
   credentialId?: string;
@@ -45,7 +38,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
       openAiChannel().status({
         nodeId,
         status: "error",
-      })
+      }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -53,9 +46,9 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
   }
 
   const systemPrompt = config.systemPrompt
-    ? Handlebars.compile(config.systemPrompt)(context)
+    ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
-  const userPrompt = Handlebars.compile(config.userPrompt)(context);
+  const userPrompt = renderTemplate(config.userPrompt, context);
   const outputKey = `${NodeType.OPENAI.toLowerCase()}_${nodeId}`;
 
   const credential = await step.run("get-credential", () => {
@@ -72,7 +65,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
       openAiChannel().status({
         nodeId,
         status: "error",
-      })
+      }),
     );
     throw new NonRetriableError("OpenAI node: Credential not found");
   }
@@ -82,26 +75,20 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
   });
 
   try {
-    const { steps } = await step.ai.wrap(
-      "openai-generate-text",
-      generateText,
-      {
-        model: openai("gpt-4"),
-        system: systemPrompt,
-        prompt: userPrompt,
-        experimental_telemetry: {
-          isEnabled: true,
-          recordInputs: true,
-          recordOutputs: true,
-        },
+    const { steps } = await step.ai.wrap("openai-generate-text", generateText, {
+      model: openai("gpt-4"),
+      system: systemPrompt,
+      prompt: userPrompt,
+      experimental_telemetry: {
+        isEnabled: true,
+        recordInputs: true,
+        recordOutputs: true,
       },
-    );
+    });
 
-    const text = 
-      steps[0].content[0].type === "text" 
-        ? steps[0].content[0].text
-        : "";
-    
+    const text =
+      steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
+
     await publish(
       openAiChannel().status({
         nodeId,
@@ -114,9 +101,9 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
       [outputKey]: {
         text,
       },
-    }
+    };
   } catch (error) {
-     await publish(
+    await publish(
       openAiChannel().status({
         nodeId,
         status: "error",

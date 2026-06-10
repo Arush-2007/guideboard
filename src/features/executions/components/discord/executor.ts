@@ -1,18 +1,11 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { discordChannel } from "@/inngest/channels/discord";
 import ky from "ky";
-import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
+import { discordChannel } from "@/inngest/channels/discord";
+import { renderTemplate } from "@/lib/templating";
 
 type DiscordData = {
   webhookUrl?: string;
@@ -49,10 +42,10 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     );
   }
 
-  const rawContent = Handlebars.compile(config.content)(context);
+  const rawContent = renderTemplate(config.content, context);
   const content = decode(rawContent);
   const username = config.username
-    ? decode(Handlebars.compile(config.username)(context))
+    ? decode(renderTemplate(config.username, context))
     : undefined;
   const outputKey = `${NodeType.DISCORD.toLowerCase()}_${nodeId}`;
 
@@ -82,7 +75,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
         },
       };
     });
-    
+
     await publish(
       discordChannel().status({
         nodeId,
@@ -92,7 +85,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
 
     return result;
   } catch (error) {
-     await publish(
+    await publish(
       discordChannel().status({
         nodeId,
         status: "error",

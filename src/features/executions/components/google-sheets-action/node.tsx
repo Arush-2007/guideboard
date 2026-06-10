@@ -1,16 +1,16 @@
 "use client";
 
-import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { memo, useState } from "react";
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import { useParams } from "next/navigation";
+import { memo, useState } from "react";
+import { GOOGLE_SHEETS_ACTION_CHANNEL_NAME } from "@/inngest/channels/google-sheets-action";
+import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
+import { fetchGoogleSheetsActionRealtimeToken } from "./actions";
 import {
   GoogleSheetsActionDialog,
   type GoogleSheetsActionFormValues,
 } from "./dialog";
-import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchGoogleSheetsActionRealtimeToken } from "./actions";
-import { GOOGLE_SHEETS_ACTION_CHANNEL_NAME } from "@/inngest/channels/google-sheets-action";
 
 type GoogleSheetsActionNodeData = {
   action?: "append_row" | "read_rows";
@@ -18,6 +18,7 @@ type GoogleSheetsActionNodeData = {
   sheetName?: string;
   range?: string;
   values?: string;
+  columnMappings?: Record<string, string>;
 };
 
 type GoogleSheetsActionFlowNode = Node<GoogleSheetsActionNodeData>;
@@ -58,7 +59,9 @@ export const GoogleSheetsActionNode = memo(
 
     const nodeData = props.data;
     const description = nodeData?.sheetName
-      ? `${nodeData.action === "read_rows" ? "Read" : "Append"} ${nodeData.sheetName}:${nodeData.range ?? "A1:D1"}`
+      ? nodeData.action === "read_rows"
+        ? `Read ${nodeData.sheetName}:${nodeData.range ?? ""}`
+        : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (

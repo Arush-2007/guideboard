@@ -1,12 +1,16 @@
-import prisma from "@/lib/db";
-import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
+import ky from "ky";
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
 import { CredentialType } from "@/generated/prisma";
-import { encrypt, decrypt } from "@/lib/encryption";
-import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
+import prisma from "@/lib/db";
+import { decrypt, encrypt } from "@/lib/encryption";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
-import ky from "ky";
+import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
+import {
+  createTRPCRouter,
+  premiumProcedure,
+  protectedProcedure,
+} from "@/trpc/init";
 
 const credentialBodySchema = z
   .object({
@@ -64,7 +68,8 @@ const credentialBodySchema = z
       } catch {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Value must be valid JSON: {\"accessToken\":\"...\",\"phoneNumberId\":\"...\"}",
+          message:
+            'Value must be valid JSON: {"accessToken":"...","phoneNumberId":"..."}',
           path: ["value"],
         });
       }
@@ -334,6 +339,32 @@ export const credentialsRouter = createTRPCRouter({
       }))
       .filter((file) => file.id.length > 0);
   }),
+  getSheetColumns: protectedProcedure
+    .input(
+      z.object({
+        spreadsheetId: z.string().min(1),
+        sheetName: z.string().min(1),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      type SheetValuesResponse = { values?: string[][] };
+
+      const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
+      const a1Range = `${input.sheetName}!1:1`;
+
+      const data = await ky
+        .get(
+          `https://sheets.googleapis.com/v4/spreadsheets/${input.spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
+          { headers: { Authorization: `Bearer ${accessToken}` } },
+        )
+        .json<SheetValuesResponse>();
+
+      const headers = (data.values?.[0] ?? [])
+        .map((h) => String(h ?? "").trim())
+        .filter((h) => h.length > 0);
+
+      return { headers };
+    }),
   getNotionPages: protectedProcedure.query(async ({ ctx }) => {
     type NotionSearchResponse = {
       results?: Array<{
@@ -396,8 +427,7 @@ export const credentialsRouter = createTRPCRouter({
       .map((page) => ({
         id: page.id ?? "",
         title:
-          page.properties?.title?.title?.[0]?.plain_text ??
-          "Untitled page",
+          page.properties?.title?.title?.[0]?.plain_text ?? "Untitled page",
       }))
       .filter((page) => page.id.length > 0);
   }),

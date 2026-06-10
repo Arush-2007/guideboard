@@ -1,18 +1,11 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { slackChannel } from "@/inngest/channels/slack";
 import ky from "ky";
-import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
+import { slackChannel } from "@/inngest/channels/slack";
+import { renderTemplate } from "@/lib/templating";
 
 type SlackData = {
   webhookUrl?: string;
@@ -48,7 +41,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     );
   }
 
-  const rawContent = Handlebars.compile(config.content)(context);
+  const rawContent = renderTemplate(config.content, context);
   const content = decode(rawContent);
   const outputKey = `${NodeType.SLACK.toLowerCase()}_${nodeId}`;
 
@@ -77,7 +70,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
         },
       };
     });
-    
+
     await publish(
       slackChannel().status({
         nodeId,
@@ -87,7 +80,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
 
     return result;
   } catch (error) {
-     await publish(
+    await publish(
       slackChannel().status({
         nodeId,
         status: "error",

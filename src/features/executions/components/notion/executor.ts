@@ -1,18 +1,13 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { notionChannel } from "@/inngest/channels/notion";
 import ky from "ky";
-import { CredentialType, NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
+import type { NodeExecutor } from "@/features/executions/types";
+import { CredentialType, NodeType } from "@/generated/prisma";
+import { notionChannel } from "@/inngest/channels/notion";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  return new Handlebars.SafeString(jsonString);
-});
+import { renderTemplate } from "@/lib/templating";
 
 const NOTION_VERSION = "2022-06-28";
 const NOTION_RICH_TEXT_MAX = 2000;
@@ -108,9 +103,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
   });
 
   if (!credential || credential.type !== CredentialType.NOTION) {
-    await publish(
-      notionChannel().status({ nodeId, status: "error" }),
-    );
+    await publish(notionChannel().status({ nodeId, status: "error" }));
     throw new NonRetriableError(
       "Notion node: Notion credential not found or wrong type",
     );
@@ -123,23 +116,19 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
     }
     token = decrypt(credential.value).trim();
   } catch {
-    await publish(
-      notionChannel().status({ nodeId, status: "error" }),
+    await publish(notionChannel().status({ nodeId, status: "error" }));
+    throw new NonRetriableError(
+      "Notion node: Failed to read integration token",
     );
-    throw new NonRetriableError("Notion node: Failed to read integration token");
   }
 
   if (!token) {
-    await publish(
-      notionChannel().status({ nodeId, status: "error" }),
-    );
+    await publish(notionChannel().status({ nodeId, status: "error" }));
     throw new NonRetriableError("Notion node: Integration token is empty");
   }
 
-  const title = decode(
-    Handlebars.compile(config.pageTitle ?? "")(context),
-  ).trim();
-  const body = decode(Handlebars.compile(config.content ?? "")(context));
+  const title = decode(renderTemplate(config.pageTitle ?? "", context)).trim();
+  const body = decode(renderTemplate(config.content ?? "", context));
   const children = contentToParagraphBlocks(body);
   const outputKey = `${NodeType.NOTION_ACTION.toLowerCase()}_${nodeId}`;
 
@@ -158,11 +147,13 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
 
       if (config.action === "create_page") {
         const rawParent = decode(
-          Handlebars.compile(config.parentPageId ?? "")(context),
+          renderTemplate(config.parentPageId ?? "", context),
         ).trim();
         const pageId = formatNotionUuid(normalizeNotionId(rawParent));
         if (!pageId) {
-          throw new NonRetriableError("Notion node: Parent page ID is required");
+          throw new NonRetriableError(
+            "Notion node: Parent page ID is required",
+          );
         }
         requestBody = {
           parent: { page_id: pageId },
@@ -180,7 +171,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
         };
       } else {
         const rawDb = decode(
-          Handlebars.compile(config.databaseId ?? "")(context),
+          renderTemplate(config.databaseId ?? "", context),
         ).trim();
         const databaseId = formatNotionUuid(normalizeNotionId(rawDb));
         if (!databaseId) {

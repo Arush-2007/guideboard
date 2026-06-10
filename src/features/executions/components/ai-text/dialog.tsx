@@ -1,5 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import Image from "next/image";
+import { useEffect, useRef } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -17,14 +23,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect, useRef } from "react";
-import { Button } from "@/components/ui/button";
-import { CredentialType } from "@/generated/prisma";
-import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import {
   Select,
   SelectContent,
@@ -32,7 +30,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import Image from "next/image";
+import { VariableTextarea } from "@/components/variable-textarea";
+import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
+import { CredentialType } from "@/generated/prisma";
 
 const providerSchema = z.enum(["openai", "anthropic", "gemini"]);
 
@@ -145,7 +145,9 @@ export const AiTextDialog = ({
         <DialogHeader>
           <DialogTitle>AI</DialogTitle>
           <DialogDescription>
-            Choose a provider, connect a credential, and set your prompts.
+            Pick a provider and credential, then describe what the AI should do
+            with data from previous steps. Its result is available downstream as
+            the node's "AI output".
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -159,10 +161,7 @@ export const AiTextDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Provider</FormLabel>
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value}
-                  >
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select provider" />
@@ -215,10 +214,7 @@ export const AiTextDialog = ({
                       Using: {autoSelected.name}
                     </div>
                   ) : (
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select a credential" />
@@ -226,10 +222,7 @@ export const AiTextDialog = ({
                       </FormControl>
                       <SelectContent>
                         {credentials.map((credential) => (
-                          <SelectItem
-                            key={credential.id}
-                            value={credential.id}
-                          >
+                          <SelectItem key={credential.id} value={credential.id}>
                             <div className="flex items-center gap-2">
                               <Image
                                 src={logoSrc}
@@ -254,10 +247,10 @@ export const AiTextDialog = ({
               name="systemPrompt"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>System Prompt (optional)</FormLabel>
+                  <FormLabel>AI role (optional)</FormLabel>
                   <FormControl>
                     <VariableTextarea
-                      placeholder="You are a helpful assistant."
+                      placeholder="You are a precise classifier. Answer with a single word."
                       className="min-h-[80px] font-mono text-sm"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
@@ -265,7 +258,7 @@ export const AiTextDialog = ({
                     />
                   </FormControl>
                   <FormDescription>
-                    Sets the AI behavior and tone
+                    Sets the AI's behavior and tone
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -277,10 +270,12 @@ export const AiTextDialog = ({
               name="prompt"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Prompt</FormLabel>
+                  <FormLabel>Operation — what should the AI do?</FormLabel>
                   <FormControl>
                     <VariableTextarea
-                      placeholder="Summarize this text: {{json httpResponse.data}}"
+                      placeholder={
+                        "If !#telegram.text#! is an internship application, reply with exactly: Yes — otherwise reply: No"
+                      }
                       className="min-h-[120px] font-mono text-sm"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
@@ -288,7 +283,9 @@ export const AiTextDialog = ({
                     />
                   </FormControl>
                   <FormDescription>
-                    Supports {"{{variables}}"} from previous nodes
+                    Describe the task in plain language. Use the{" "}
+                    <span className="font-mono">{"{ }"}</span> button to insert
+                    data from previous steps.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

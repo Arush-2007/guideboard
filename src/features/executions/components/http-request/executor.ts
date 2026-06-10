@@ -1,17 +1,10 @@
-import Handlebars from "handlebars";
 import { NonRetriableError } from "inngest";
 import ky, { type Options as KyOptions } from "ky";
-import type { NodeExecutor } from "@/features/executions/types";
-import { httpRequestChannel } from "@/inngest/channels/http-request";
-import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
+import { httpRequestChannel } from "@/inngest/channels/http-request";
+import { renderTemplate } from "@/lib/templating";
 
 type HttpRequestData = {
   endpoint?: string;
@@ -58,7 +51,9 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
             status: "error",
           }),
         );
-        throw new NonRetriableError("HTTP Request node: No endpoint configured");
+        throw new NonRetriableError(
+          "HTTP Request node: No endpoint configured",
+        );
       }
 
       if (!config.method) {
@@ -71,13 +66,13 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
         throw new NonRetriableError("HTTP Request node: Method not configured");
       }
 
-      const endpoint = Handlebars.compile(config.endpoint)(context);
+      const endpoint = renderTemplate(config.endpoint, context);
       const method = config.method;
 
       const options: KyOptions = { method };
 
       if (["POST", "PUT", "PATCH"].includes(method)) {
-        const resolved = Handlebars.compile(config.body || "{}")(context);
+        const resolved = renderTemplate(config.body || "{}", context);
         JSON.parse(resolved);
         options.body = resolved;
         options.headers = {
@@ -102,7 +97,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
       return {
         ...context,
         [outputKey]: responsePayload,
-      }
+      };
     });
 
     await publish(

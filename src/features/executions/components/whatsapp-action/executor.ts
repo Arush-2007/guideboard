@@ -1,20 +1,13 @@
-import Handlebars from "handlebars";
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { whatsappActionChannel } from "@/inngest/channels/whatsapp-action";
 import ky from "ky";
+import { parseNodeConfig } from "@/config/node-schemas";
+import type { NodeExecutor } from "@/features/executions/types";
+import { CredentialType, NodeType } from "@/generated/prisma";
+import { whatsappActionChannel } from "@/inngest/channels/whatsapp-action";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-import { CredentialType, NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import { renderTemplate } from "@/lib/templating";
 
 type WhatsappCredentialValue = {
   accessToken?: string;
@@ -43,7 +36,10 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
 
   let config: WhatsappActionData;
   try {
-    config = parseNodeConfig(NodeType.WHATSAPP_ACTION, data) as WhatsappActionData;
+    config = parseNodeConfig(
+      NodeType.WHATSAPP_ACTION,
+      data,
+    ) as WhatsappActionData;
   } catch (error) {
     await publish(
       whatsappActionChannel().status({
@@ -57,9 +53,12 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
   }
 
   const outputKey = `${NodeType.WHATSAPP_ACTION.toLowerCase()}_${nodeId}`;
-  const rawRecipientPhone = Handlebars.compile(config.recipientPhone ?? "")(context);
+  const rawRecipientPhone = renderTemplate(
+    config.recipientPhone ?? "",
+    context,
+  );
   const recipientPhone = decode(rawRecipientPhone).trim();
-  const rawMessage = Handlebars.compile(config.message ?? "")(context);
+  const rawMessage = renderTemplate(config.message ?? "", context);
   const compiledMessage = decode(rawMessage);
 
   const credential = await step.run("get-whatsapp-credential", () => {
@@ -117,7 +116,9 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
   try {
     const result = await step.run("whatsapp-send-message", async () => {
       if (!recipientPhone) {
-        throw new NonRetriableError("WhatsApp node: Recipient phone is required");
+        throw new NonRetriableError(
+          "WhatsApp node: Recipient phone is required",
+        );
       }
       if (!compiledMessage.trim()) {
         throw new NonRetriableError("WhatsApp node: Message is required");

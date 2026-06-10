@@ -1,20 +1,13 @@
-import Handlebars from "handlebars";
-import { NonRetriableError } from "inngest";
-import { generateText } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { generateText } from "ai";
+import { NonRetriableError } from "inngest";
+import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
 import { anthropicChannel } from "@/inngest/channels/anthropic";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
-import { NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
-
-Handlebars.registerHelper("json", (context) => {
-  const jsonString = JSON.stringify(context, null, 2);
-  const safeString = new Handlebars.SafeString(jsonString);
-
-  return safeString;
-});
+import { renderTemplate } from "@/lib/templating";
 
 type AnthropicData = {
   credentialId?: string;
@@ -45,7 +38,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
       anthropicChannel().status({
         nodeId,
         status: "error",
-      })
+      }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -53,9 +46,9 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
   }
 
   const systemPrompt = config.systemPrompt
-    ? Handlebars.compile(config.systemPrompt)(context)
+    ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
-  const userPrompt = Handlebars.compile(config.userPrompt)(context);
+  const userPrompt = renderTemplate(config.userPrompt, context);
   const outputKey = `${NodeType.ANTHROPIC.toLowerCase()}_${nodeId}`;
 
   const credential = await step.run("get-credential", () => {
@@ -72,7 +65,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
       anthropicChannel().status({
         nodeId,
         status: "error",
-      })
+      }),
     );
     throw new NonRetriableError("Anthropic node: Credential not found");
   }
@@ -97,11 +90,9 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
       },
     );
 
-    const text = 
-      steps[0].content[0].type === "text" 
-        ? steps[0].content[0].text
-        : "";
-    
+    const text =
+      steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
+
     await publish(
       anthropicChannel().status({
         nodeId,
@@ -114,9 +105,9 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
       [outputKey]: {
         text,
       },
-    }
+    };
   } catch (error) {
-     await publish(
+    await publish(
       anthropicChannel().status({
         nodeId,
         status: "error",
