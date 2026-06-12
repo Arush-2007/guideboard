@@ -1,5 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { RecipientList } from "@/components/recipient-list";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -19,25 +25,35 @@ import {
 } from "@/components/ui/form";
 import { VariableInput } from "@/components/variable-input";
 import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
-  to: z.string().min(1, "To is required"),
+  to: z
+    .array(z.string())
+    .transform((arr) => arr.map((s) => s.trim()).filter(Boolean))
+    .refine((arr) => arr.length > 0, "Add at least one recipient"),
   subject: z.string().min(1, "Subject is required"),
   body: z.string().min(1, "Body is required"),
 });
 
 export type GmailActionFormValues = z.infer<typeof formSchema>;
 
+/** Accepts the new array shape or a legacy comma-separated string. */
+function toRecipientRows(to: string | string[] | undefined): string[] {
+  if (Array.isArray(to)) return to.length > 0 ? to : [""];
+  if (typeof to === "string" && to.trim()) {
+    return to
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  return [""];
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (values: z.infer<typeof formSchema>) => void;
-  defaultValues?: Partial<GmailActionFormValues>;
+  onSubmit: (values: GmailActionFormValues) => void;
+  defaultValues?: { to?: string | string[]; subject?: string; body?: string };
   currentNodeId: string;
   workflowId?: string;
 }
@@ -50,10 +66,10 @@ export const GmailActionDialog = ({
   currentNodeId,
   workflowId,
 }: Props) => {
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm<GmailActionFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      to: defaultValues.to || "",
+      to: toRecipientRows(defaultValues.to),
       subject: defaultValues.subject || "",
       body: defaultValues.body || "",
     },
@@ -63,14 +79,14 @@ export const GmailActionDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        to: defaultValues.to || "",
+        to: toRecipientRows(defaultValues.to),
         subject: defaultValues.subject || "",
         body: defaultValues.body || "",
       });
     }
   }, [open, defaultValues, form]);
 
-  const handleSubmit = (values: z.infer<typeof formSchema>) => {
+  const handleSubmit = (values: GmailActionFormValues) => {
     onSubmit(values);
     onOpenChange(false);
   };
@@ -79,15 +95,18 @@ export const GmailActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Gmail Configuration</DialogTitle>
+          <DialogTitle>Compose email</DialogTitle>
           <DialogDescription>
-            Send an email using your connected Google account.
+            Sent from your connected Google account. Insert data from earlier
+            steps with the <span className="font-mono">{"{ }"}</span> button —
+            it drops in a <span className="font-mono">{"!#field#!"}</span>{" "}
+            placeholder.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(handleSubmit)}
-            className="space-y-8 mt-4"
+            className="mt-4 space-y-6"
           >
             <FormField
               control={form.control}
@@ -96,16 +115,17 @@ export const GmailActionDialog = ({
                 <FormItem>
                   <FormLabel>To</FormLabel>
                   <FormControl>
-                    <VariableInput
-                      placeholder="recipient@example.com"
+                    <RecipientList
+                      value={field.value}
+                      onChange={field.onChange}
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
-                      {...field}
+                      placeholder="name@example.com or !#field#!"
                     />
                   </FormControl>
                   <FormDescription>
-                    Use {"{{variables}}"} from previous nodes, e.g.{" "}
-                    {"{{googleForm.respondentEmail}}"}
+                    Add one row per recipient. Each can be a fixed address or a
+                    field from an earlier step.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -126,9 +146,6 @@ export const GmailActionDialog = ({
                       {...field}
                     />
                   </FormControl>
-                  <FormDescription>
-                    Supports {"{{variables}}"} for dynamic subjects.
-                  </FormDescription>
                   <FormMessage />
                 </FormItem>
               )}
@@ -138,23 +155,20 @@ export const GmailActionDialog = ({
               control={form.control}
               name="body"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>Body</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                    placeholder="Hello {{gmail_trigger_abc123.from}}"
-                    className="min-h-[120px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
-                <FormDescription>
-                  Supports {"{{variables}}"} from previous nodes.
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                <FormItem>
+                  <FormLabel>Body</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="Hi !#telegram.from.firstName#!, …"
+                      className="min-h-[140px] text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
 
             <DialogFooter className="mt-4">

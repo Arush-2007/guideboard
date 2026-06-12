@@ -8,6 +8,8 @@ import { slackChannel } from "@/inngest/channels/slack";
 import { renderTemplate } from "@/lib/templating";
 
 type SlackData = {
+  webhookUrls?: string[];
+  /** Legacy single-webhook field. */
   webhookUrl?: string;
   content?: string;
 };
@@ -45,28 +47,33 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
   const content = decode(rawContent);
   const outputKey = `${NodeType.SLACK.toLowerCase()}_${nodeId}`;
 
+  // Combine the fan-out list with the legacy single field, de-duplicated.
+  const webhookUrls = [
+    ...(Array.isArray(config.webhookUrls) ? config.webhookUrls : []),
+    ...(config.webhookUrl ? [config.webhookUrl] : []),
+  ]
+    .map((u) => u.trim())
+    .filter(Boolean);
+  const uniqueUrls = [...new Set(webhookUrls)];
+
   try {
     const result = await step.run("slack-webhook", async () => {
-      if (!config.webhookUrl) {
-        await publish(
-          slackChannel().status({
-            nodeId,
-            status: "error",
-          }),
+      if (uniqueUrls.length === 0) {
+        throw new NonRetriableError(
+          "Slack node: at least one webhook URL is required",
         );
-        throw new NonRetriableError("Slack node: Webhook URL is required");
       }
 
-      await ky.post(config.webhookUrl, {
-        json: {
-          content: content, // The key depends on workflow config
-        },
-      });
+      // Slack Incoming Webhooks expect a `text` field. Post to every channel.
+      await Promise.all(
+        uniqueUrls.map((url) => ky.post(url, { json: { text: content } })),
+      );
 
       return {
         ...context,
         [outputKey]: {
           messageContent: content.slice(0, 2000),
+          deliveredCount: uniqueUrls.length,
         },
       };
     });

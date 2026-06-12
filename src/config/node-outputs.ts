@@ -82,6 +82,32 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       { path: "spreadsheetId", label: "Spreadsheet ID" },
     ],
   },
+  [NodeType.GMAIL_ACTION]: {
+    rootKind: "perNode",
+    fields: [
+      {
+        path: "to",
+        label: "Recipients",
+        example: "alice@team.com, bob@team.com",
+      },
+      { path: "subject", label: "Subject", example: "New intern application" },
+    ],
+  },
+  [NodeType.SLACK]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "messageContent", label: "Message sent" },
+      { path: "deliveredCount", label: "Channels notified", example: "2" },
+    ],
+  },
+  [NodeType.WHATSAPP_ACTION]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "recipientPhones", label: "Recipients", example: "911234567890" },
+      { path: "message", label: "Message sent" },
+      { path: "deliveredCount", label: "Recipients notified", example: "4" },
+    ],
+  },
 };
 
 /**

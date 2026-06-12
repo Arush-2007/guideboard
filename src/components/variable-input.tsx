@@ -3,12 +3,14 @@
 import * as React from "react";
 import { Input } from "@/components/ui/input";
 import { VariablePicker } from "@/components/variable-picker";
-import { cn } from "@/lib/utils";
 import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
+import { cn } from "@/lib/utils";
 
 export type VariableInputProps = React.ComponentProps<typeof Input> & {
   currentNodeId: string;
   workflowId?: string;
+  /** Insert a bare dotted path instead of the `!#path#!` template form. */
+  bare?: boolean;
 };
 
 export const VariableInput = React.forwardRef<
@@ -23,6 +25,7 @@ export const VariableInput = React.forwardRef<
       value,
       onChange,
       disabled,
+      bare,
       ...rest
     },
     ref,
@@ -66,6 +69,7 @@ export const VariableInput = React.forwardRef<
             workflowId={workflowId}
             onSelect={handleVariableSelect}
             disabled={disabled}
+            bare={bare}
           />
         </div>
       </div>

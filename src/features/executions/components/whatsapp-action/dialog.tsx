@@ -1,5 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { RecipientList } from "@/components/recipient-list";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -17,16 +23,13 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { VariableInput } from "@/components/variable-input";
 import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
-  recipientPhone: z.string().min(1, "Recipient phone number is required"),
+  recipientPhones: z
+    .array(z.string())
+    .transform((arr) => arr.map((s) => s.trim()).filter(Boolean))
+    .refine((arr) => arr.length > 0, "Add at least one recipient"),
   message: z
     .string()
     .min(1, "Message is required")
@@ -35,11 +38,27 @@ const formSchema = z.object({
 
 export type WhatsappActionFormValues = z.infer<typeof formSchema>;
 
+/** Accepts the new array shape or a legacy single `recipientPhone` string. */
+function toPhoneRows(
+  recipientPhones: string[] | undefined,
+  legacy: string | undefined,
+): string[] {
+  if (Array.isArray(recipientPhones) && recipientPhones.length > 0) {
+    return recipientPhones;
+  }
+  if (legacy?.trim()) return [legacy.trim()];
+  return [""];
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (values: z.infer<typeof formSchema>) => void;
-  defaultValues?: Partial<WhatsappActionFormValues>;
+  onSubmit: (values: WhatsappActionFormValues) => void;
+  defaultValues?: {
+    recipientPhones?: string[];
+    recipientPhone?: string;
+    message?: string;
+  };
   currentNodeId: string;
   workflowId?: string;
 }
@@ -52,10 +71,13 @@ export const WhatsappActionDialog = ({
   currentNodeId,
   workflowId,
 }: Props) => {
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm<WhatsappActionFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      recipientPhone: defaultValues.recipientPhone || "",
+      recipientPhones: toPhoneRows(
+        defaultValues.recipientPhones,
+        defaultValues.recipientPhone,
+      ),
       message: defaultValues.message || "",
     },
   });
@@ -64,13 +86,16 @@ export const WhatsappActionDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        recipientPhone: defaultValues.recipientPhone || "",
+        recipientPhones: toPhoneRows(
+          defaultValues.recipientPhones,
+          defaultValues.recipientPhone,
+        ),
         message: defaultValues.message || "",
       });
     }
   }, [open, defaultValues, form]);
 
-  const handleSubmit = (values: z.infer<typeof formSchema>) => {
+  const handleSubmit = (values: WhatsappActionFormValues) => {
     onSubmit(values);
     onOpenChange(false);
   };
@@ -79,34 +104,36 @@ export const WhatsappActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>WhatsApp Configuration</DialogTitle>
+          <DialogTitle>Send WhatsApp</DialogTitle>
           <DialogDescription>
-            Configure the WhatsApp message details for this node.
+            Sends the same message to each recipient via your WhatsApp Business
+            (Meta Cloud API) credential.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(handleSubmit)}
-            className="space-y-8 mt-4"
+            className="mt-4 space-y-6"
           >
             <FormField
               control={form.control}
-              name="recipientPhone"
+              name="recipientPhones"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Recipient Phone Number</FormLabel>
+                  <FormLabel>Recipients</FormLabel>
                   <FormControl>
-                    <VariableInput
-                      placeholder="e.g. 911234567890"
+                    <RecipientList
+                      value={field.value}
+                      onChange={field.onChange}
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
-                      {...field}
+                      placeholder="911234567890 or !#field#!"
                     />
                   </FormControl>
                   <FormDescription>
-                    Use {"{{variables}}"} to pull from a previous node, e.g.{" "}
-                    {"{{googleForm.responses['Phone']}}"} — or enter a fixed
-                    number with country code, no plus sign.
+                    One row per recipient. Use the full number with country code
+                    and no plus sign, or insert a field with the{" "}
+                    <span className="font-mono">{"{ }"}</span> button.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -117,24 +144,26 @@ export const WhatsappActionDialog = ({
               control={form.control}
               name="message"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>Message</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                    placeholder="Hello {{openai_abc123.text}}"
-                    className="min-h-[80px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
+                <FormItem>
+                  <FormLabel>Message</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="Hi !#telegram.from.firstName#!, …"
+                      className="min-h-[100px] text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
                   <FormDescription>
-                    Supports {"{{variables}}"} from previous nodes.
+                    Insert data from earlier steps with the{" "}
+                    <span className="font-mono">{"{ }"}</span> button.
                   </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  <FormMessage />
+                </FormItem>
+              )}
             />
+
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>
             </DialogFooter>

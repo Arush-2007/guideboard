@@ -1,11 +1,12 @@
 import { NonRetriableError } from "inngest";
+import { parseNodeConfig } from "@/config/node-schemas";
 import type {
   NodeExecutor,
   WorkflowContext,
 } from "@/features/executions/types";
-import { conditionChannel } from "@/inngest/channels/condition";
 import { NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
+import { conditionChannel } from "@/inngest/channels/condition";
+import { renderTemplate } from "@/lib/templating";
 
 type ConditionOperator =
   | "contains"
@@ -148,8 +149,13 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
         );
       }
 
-      const fieldValue = getByPath(context, field);
-      const compareValue = config.value ?? "";
+      // Tolerate a `!#path#!` wrapper (e.g. legacy data or a manual paste):
+      // the field is a bare context path, so strip the template markers.
+      const barePath = field.replace(/^!#\s*/, "").replace(/\s*#!$/, "");
+      const fieldValue = getByPath(context, barePath);
+      // Render the compare value so users can reference upstream data
+      // (e.g. `!#telegram.text#!`), consistent with every other node.
+      const compareValue = renderTemplate(config.value ?? "", context);
       const passes = evaluateCondition(operator, fieldValue, compareValue);
 
       if (!passes) {

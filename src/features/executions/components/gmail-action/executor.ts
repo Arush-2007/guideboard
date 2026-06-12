@@ -9,7 +9,7 @@ import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { renderTemplate } from "@/lib/templating";
 
 type GmailActionData = {
-  to?: string;
+  to?: string | string[];
   subject?: string;
   body?: string;
 };
@@ -54,7 +54,17 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
 
   const outputKey = `${NodeType.GMAIL_ACTION.toLowerCase()}_${nodeId}`;
 
-  const to = decode(renderTemplate(config.to ?? "", context)).trim();
+  // `to` may be an array of recipient templates (new) or a single string
+  // (legacy). Render each, drop blanks, and join into one RFC 2822 To header.
+  const recipientTemplates = Array.isArray(config.to)
+    ? config.to
+    : config.to
+      ? [config.to]
+      : [];
+  const recipients = recipientTemplates
+    .map((tpl) => decode(renderTemplate(tpl, context)).trim())
+    .filter(Boolean);
+  const to = recipients.join(", ");
   const subject = decode(renderTemplate(config.subject ?? "", context)).trim();
   const body = decode(renderTemplate(config.body ?? "", context));
 

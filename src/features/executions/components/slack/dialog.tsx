@@ -1,5 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { RecipientList } from "@/components/recipient-list";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -17,32 +23,40 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
-  channelOverride: z.string().optional(),
-  content: z
-    .string()
-    .min(1, "Message content is required"),
-  webhookUrl: z.string().min(1, "Webhook URL is required"),
+  webhookUrls: z
+    .array(z.string())
+    .transform((arr) => arr.map((s) => s.trim()).filter(Boolean))
+    .refine((arr) => arr.length > 0, "Add at least one webhook URL"),
+  content: z.string().min(1, "Message content is required"),
 });
 
 export type SlackFormValues = z.infer<typeof formSchema>;
 
+/** Accepts the new array shape or a legacy single `webhookUrl` string. */
+function toWebhookRows(
+  webhookUrls: string[] | undefined,
+  legacy: string | undefined,
+): string[] {
+  if (Array.isArray(webhookUrls) && webhookUrls.length > 0) return webhookUrls;
+  if (legacy?.trim()) return [legacy.trim()];
+  return [""];
+}
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSubmit: (values: z.infer<typeof formSchema>) => void;
-  defaultValues?: Partial<SlackFormValues>;
+  onSubmit: (values: SlackFormValues) => void;
+  defaultValues?: {
+    webhookUrls?: string[];
+    webhookUrl?: string;
+    content?: string;
+  };
   currentNodeId: string;
   workflowId?: string;
-};
+}
 
 export const SlackDialog = ({
   open,
@@ -52,12 +66,14 @@ export const SlackDialog = ({
   currentNodeId,
   workflowId,
 }: Props) => {
-  const form = useForm<z.infer<typeof formSchema>>({
+  const form = useForm<SlackFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      channelOverride: defaultValues.channelOverride ?? "",
+      webhookUrls: toWebhookRows(
+        defaultValues.webhookUrls,
+        defaultValues.webhookUrl,
+      ),
       content: defaultValues.content || "",
-      webhookUrl: defaultValues.webhookUrl || "",
     },
   });
 
@@ -65,14 +81,16 @@ export const SlackDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        channelOverride: defaultValues.channelOverride ?? "",
+        webhookUrls: toWebhookRows(
+          defaultValues.webhookUrls,
+          defaultValues.webhookUrl,
+        ),
         content: defaultValues.content || "",
-        webhookUrl: defaultValues.webhookUrl || "",
       });
     }
   }, [open, defaultValues, form]);
 
-  const handleSubmit = (values: z.infer<typeof formSchema>) => {
+  const handleSubmit = (values: SlackFormValues) => {
     onSubmit(values);
     onOpenChange(false);
   };
@@ -81,31 +99,36 @@ export const SlackDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Slack Configuration</DialogTitle>
+          <DialogTitle>Send to Slack</DialogTitle>
           <DialogDescription>
-            Configure the Slack webhook settings for this node.
+            Posts the same message to each webhook. Each Incoming Webhook is
+            tied to one channel — add one per channel you want to notify.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
           <form
             onSubmit={form.handleSubmit(handleSubmit)}
-            className="space-y-8 mt-4"
+            className="mt-4 space-y-6"
           >
             <FormField
               control={form.control}
-              name="webhookUrl"
+              name="webhookUrls"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Slack Webhook URL</FormLabel>
+                  <FormLabel>Webhook URLs</FormLabel>
                   <FormControl>
-                    <Input
+                    <RecipientList
+                      value={field.value}
+                      onChange={field.onChange}
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
                       placeholder="https://hooks.slack.com/services/..."
-                      {...field}
+                      addLabel="Add channel"
                     />
                   </FormControl>
                   <FormDescription>
-                    In Slack: go to api.slack.com/apps → your app → Incoming
-                    Webhooks → Add New Webhook → Copy URL
+                    In Slack: api.slack.com/apps → your app → Incoming Webhooks
+                    → Add New Webhook → copy the URL (one per channel).
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -116,37 +139,22 @@ export const SlackDialog = ({
               control={form.control}
               name="content"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>Message Content</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                    placeholder="Summary: {{myGemini.text}}"
-                    className="min-h-[80px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
-                  <FormDescription>
-                    The message to send. Use {"{{variables}}"} for simple values
-                    or {"{{json variable}}"} to stringify objects
-                  </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-            />
-
-            <FormField
-              control={form.control}
-              name="channelOverride"
-              render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Channel Override</FormLabel>
+                  <FormLabel>Message</FormLabel>
                   <FormControl>
-                    <Input placeholder="#general" {...field} />
+                    <VariableTextarea
+                      placeholder="New application from !#telegram.from.firstName#! — please review"
+                      className="min-h-[100px] text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
                   </FormControl>
                   <FormDescription>
-                    Leave blank to use the webhook&apos;s default channel
+                    Insert data from earlier steps with the{" "}
+                    <span className="font-mono">{"{ }"}</span> button. To ping
+                    teammates, @mention them with{" "}
+                    <span className="font-mono">{"<@U123>"}</span>.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

@@ -23,13 +23,25 @@ export type VariablePickerProps = {
   onSelect: (variablePath: string) => void;
   disabled?: boolean;
   className?: string;
+  /**
+   * Insert the bare dotted context path (e.g. `ai_text_abc.output`) instead of
+   * the `!#path#!` template form. Used by inputs that consume a raw path rather
+   * than a rendered template — e.g. the Condition node's "Field path".
+   */
+  bare?: boolean;
 };
+
+/** Strips the `!#path#!` template wrapper down to the bare dotted path. */
+function toBarePath(insertText: string): string {
+  return insertText.replace(/^!#\s*/, "").replace(/\s*#!$/, "");
+}
 
 export function VariablePicker({
   currentNodeId,
   onSelect,
   disabled,
   className,
+  bare,
 }: VariablePickerProps) {
   const [open, setOpen] = useState(false);
 
@@ -84,30 +96,35 @@ export function VariablePicker({
                     {group.nodeLabel}
                   </div>
                   <ul>
-                    {group.fields.map((row) => (
-                      <li key={row.insertText}>
-                        <button
-                          type="button"
-                          className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-                          onClick={() => {
-                            onSelect(row.insertText);
-                            setOpen(false);
-                          }}
-                        >
-                          <span className="font-medium text-foreground">
-                            {row.fieldLabel}
-                          </span>
-                          <span className="font-mono text-xs text-muted-foreground">
-                            {row.insertText}
-                            {row.example ? (
-                              <span className="ml-2 not-italic text-muted-foreground/70">
-                                e.g. {row.example}
-                              </span>
-                            ) : null}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
+                    {group.fields.map((row) => {
+                      const inserted = bare
+                        ? toBarePath(row.insertText)
+                        : row.insertText;
+                      return (
+                        <li key={row.insertText}>
+                          <button
+                            type="button"
+                            className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                            onClick={() => {
+                              onSelect(inserted);
+                              setOpen(false);
+                            }}
+                          >
+                            <span className="font-medium text-foreground">
+                              {row.fieldLabel}
+                            </span>
+                            <span className="font-mono text-xs text-muted-foreground">
+                              {inserted}
+                              {row.example ? (
+                                <span className="ml-2 not-italic text-muted-foreground/70">
+                                  e.g. {row.example}
+                                </span>
+                              ) : null}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 </div>
               ))}

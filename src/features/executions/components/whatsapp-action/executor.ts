@@ -15,6 +15,8 @@ type WhatsappCredentialValue = {
 };
 
 type WhatsappActionData = {
+  recipientPhones?: string[];
+  /** Legacy single-recipient field. */
   recipientPhone?: string;
   message?: string;
 };
@@ -53,11 +55,21 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
   }
 
   const outputKey = `${NodeType.WHATSAPP_ACTION.toLowerCase()}_${nodeId}`;
-  const rawRecipientPhone = renderTemplate(
-    config.recipientPhone ?? "",
-    context,
-  );
-  const recipientPhone = decode(rawRecipientPhone).trim();
+
+  // Combine the fan-out list with the legacy single field; render each phone
+  // template against the context, trim, drop blanks, de-duplicate.
+  const phoneTemplates = [
+    ...(Array.isArray(config.recipientPhones) ? config.recipientPhones : []),
+    ...(config.recipientPhone ? [config.recipientPhone] : []),
+  ];
+  const recipientPhones = [
+    ...new Set(
+      phoneTemplates
+        .map((tpl) => decode(renderTemplate(tpl, context)).trim())
+        .filter(Boolean),
+    ),
+  ];
+
   const rawMessage = renderTemplate(config.message ?? "", context);
   const compiledMessage = decode(rawMessage);
 
@@ -115,37 +127,42 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
 
   try {
     const result = await step.run("whatsapp-send-message", async () => {
-      if (!recipientPhone) {
+      if (recipientPhones.length === 0) {
         throw new NonRetriableError(
-          "WhatsApp node: Recipient phone is required",
+          "WhatsApp node: at least one recipient is required",
         );
       }
       if (!compiledMessage.trim()) {
         throw new NonRetriableError("WhatsApp node: Message is required");
       }
 
-      await ky.post(
-        `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-          json: {
-            messaging_product: "whatsapp",
-            to: recipientPhone,
-            type: "text",
-            text: {
-              body: compiledMessage,
+      await Promise.all(
+        recipientPhones.map((to) =>
+          ky.post(
+            `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+            {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+              json: {
+                messaging_product: "whatsapp",
+                to,
+                type: "text",
+                text: {
+                  body: compiledMessage,
+                },
+              },
             },
-          },
-        },
+          ),
+        ),
       );
 
       return {
         ...context,
         [outputKey]: {
-          recipientPhone,
+          recipientPhones: recipientPhones.join(", "),
           message: compiledMessage,
+          deliveredCount: recipientPhones.length,
         },
       };
     });

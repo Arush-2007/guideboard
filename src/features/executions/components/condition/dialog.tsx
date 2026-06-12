@@ -1,5 +1,10 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -17,7 +22,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { VariableInput } from "@/components/variable-input";
 import {
   Select,
   SelectContent,
@@ -26,11 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
+import { VariableInput } from "@/components/variable-input";
 
 const operatorEnum = z.enum([
   "contains",
@@ -121,14 +121,18 @@ export const ConditionDialog = ({
                   <FormLabel>Field path</FormLabel>
                   <FormControl>
                     <VariableInput
-                      placeholder="commentText"
+                      placeholder="e.g. ai_text_abc.output"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
+                      bare
                       {...field}
                     />
                   </FormControl>
                   <FormDescription>
-                    Dot path into workflow context (e.g. sheetsNewRow.0)
+                    The field to test. Pick one with the{" "}
+                    <span className="font-mono">{"{ }"}</span> button — it
+                    inserts a bare dot path (no{" "}
+                    <span className="font-mono">{"!#…#!"}</span>).
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -141,10 +145,7 @@ export const ConditionDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Operator</FormLabel>
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value}
-                  >
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select operator" />
@@ -152,7 +153,9 @@ export const ConditionDialog = ({
                     </FormControl>
                     <SelectContent>
                       <SelectItem value="contains">Contains</SelectItem>
-                      <SelectItem value="not_contains">Does not contain</SelectItem>
+                      <SelectItem value="not_contains">
+                        Does not contain
+                      </SelectItem>
                       <SelectItem value="equals">Equals</SelectItem>
                       <SelectItem value="not_equals">Does not equal</SelectItem>
                       <SelectItem value="greater_than">Greater than</SelectItem>

@@ -1,16 +1,16 @@
 "use client";
 
-import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { memo, useState } from "react";
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import { useParams } from "next/navigation";
-import { BaseExecutionNode } from "../base-execution-node";
-import { GmailActionDialog, GmailActionFormValues } from "./dialog";
-import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchGmailActionRealtimeToken } from "./actions";
+import { memo, useState } from "react";
 import { GMAIL_ACTION_CHANNEL_NAME } from "@/inngest/channels/gmail-action";
+import { useNodeStatus } from "../../hooks/use-node-status";
+import { BaseExecutionNode } from "../base-execution-node";
+import { fetchGmailActionRealtimeToken } from "./actions";
+import { GmailActionDialog, type GmailActionFormValues } from "./dialog";
 
 type GmailActionNodeData = {
-  to?: string;
+  to?: string | string[];
   subject?: string;
   body?: string;
 };
@@ -34,23 +34,30 @@ export const GmailActionNode = memo((props: NodeProps<GmailActionNodeType>) => {
   const handleOpenSettings = () => setDialogOpen(true);
 
   const handleSubmit = (values: GmailActionFormValues) => {
-    setNodes((nodes) => nodes.map((node) => {
-      if (node.id === props.id) {
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            ...values,
-          }
+    setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id === props.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              ...values,
+            },
+          };
         }
-      }
-      return node;
-    }))
+        return node;
+      }),
+    );
   };
 
   const nodeData = props.data;
+  const recipientCount = Array.isArray(nodeData?.to)
+    ? nodeData.to.filter((r) => r.trim()).length
+    : nodeData?.to?.trim()
+      ? 1
+      : 0;
   const description = nodeData?.subject
-    ? `To: ${nodeData.to || "?"} — ${nodeData.subject.slice(0, 40)}${nodeData.subject.length > 40 ? "…" : ""}`
+    ? `${recipientCount} recipient${recipientCount === 1 ? "" : "s"} — ${nodeData.subject.slice(0, 36)}${nodeData.subject.length > 36 ? "…" : ""}`
     : "Not configured";
 
   return (
@@ -67,14 +74,14 @@ export const GmailActionNode = memo((props: NodeProps<GmailActionNodeType>) => {
         {...props}
         id={props.id}
         icon="/logos/gmail.svg"
-        name="Gmail Action"
+        name="Send Email"
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });
 
 GmailActionNode.displayName = "GmailActionNode";

@@ -101,7 +101,20 @@ const discordSchema = z
 const slackSchema = z
   .object({
     content: z.string().min(1, "Message content is required"),
-    webhookUrl: z.string().min(1, "Webhook URL is required"),
+    // Array of webhook URLs (new, fan-out) and/or a legacy single `webhookUrl`.
+    webhookUrls: z.array(z.string()).optional(),
+    webhookUrl: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasList = (data.webhookUrls ?? []).some((u) => u.trim());
+    const hasLegacy = !!data.webhookUrl?.trim();
+    if (!hasList && !hasLegacy) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Add at least one webhook URL",
+        path: ["webhookUrls"],
+      });
+    }
   })
   .passthrough();
 
@@ -146,17 +159,34 @@ const notionActionSchema = z
 
 const whatsappActionSchema = z
   .object({
-    recipientPhone: z.string().min(1, "Recipient phone number is required"),
+    // Array of recipients (new, fan-out) and/or a legacy single phone number.
+    recipientPhones: z.array(z.string()).optional(),
+    recipientPhone: z.string().optional(),
     message: z
       .string()
       .min(1, "Message is required")
       .max(4096, "WhatsApp messages cannot exceed 4096 characters"),
   })
+  .superRefine((data, ctx) => {
+    const hasList = (data.recipientPhones ?? []).some((p) => p.trim());
+    const hasLegacy = !!data.recipientPhone?.trim();
+    if (!hasList && !hasLegacy) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Add at least one recipient",
+        path: ["recipientPhones"],
+      });
+    }
+  })
   .passthrough();
 
 const gmailActionSchema = z
   .object({
-    to: z.string().min(1, "To is required"),
+    // Array of recipients (new) or a legacy comma-separated string.
+    to: z.union([
+      z.array(z.string().min(1)).min(1, "Add at least one recipient"),
+      z.string().min(1, "To is required"),
+    ]),
     subject: z.string().min(1, "Subject is required"),
     body: z.string().min(1, "Body is required"),
   })
