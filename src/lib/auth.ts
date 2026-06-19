@@ -1,6 +1,7 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import prisma from "@/lib/db";
+import { sendEmail } from "@/lib/email";
 import { encrypt } from "@/lib/encryption";
 
 const githubClientId = process.env.GITHUB_CLIENT_ID;
@@ -38,6 +39,13 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
+  // Accept auth requests from both the local dev origin and the ngrok tunnel.
+  // Without this, opening the app over ngrok fails the origin/CSRF check with a
+  // 403 (the request Origin won't match BETTER_AUTH_URL=localhost).
+  trustedOrigins: [
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.NGROK_URL,
+  ].filter((origin): origin is string => Boolean(origin)),
   session: {
     // Serve getSession from a signed cookie snapshot instead of hitting Postgres
     // on every call; refresh from DB after maxAge. Benefits both requireAuth() and
@@ -75,6 +83,31 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     autoSignIn: true,
+    sendResetPassword: async ({ user, url }) => {
+      await sendEmail({
+        to: user.email,
+        subject: "Reset your Guideboard password",
+        text: `Reset your password by visiting this link: ${url}\n\nIf you didn't request this, you can safely ignore this email. The link expires in 1 hour.`,
+        html: `
+          <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
+            <h2 style="margin-bottom: 8px;">Reset your password</h2>
+            <p style="color: #555; line-height: 1.5;">
+              We received a request to reset your Guideboard password. Click the
+              button below to choose a new one.
+            </p>
+            <p style="margin: 24px 0;">
+              <a href="${url}" style="background: #111; color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; display: inline-block;">
+                Reset password
+              </a>
+            </p>
+            <p style="color: #888; font-size: 13px; line-height: 1.5;">
+              If you didn't request this, you can safely ignore this email.
+              This link expires in 1 hour.
+            </p>
+          </div>
+        `,
+      });
+    },
   },
   socialProviders: {
     ...(githubClientId && githubClientSecret

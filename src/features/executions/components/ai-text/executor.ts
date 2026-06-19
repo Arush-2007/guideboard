@@ -1,5 +1,6 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
+import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
@@ -11,7 +12,7 @@ import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
 
-type AiTextProvider = "openai" | "anthropic" | "gemini";
+type AiTextProvider = "openai" | "anthropic" | "gemini" | "groq";
 
 type AiTextData = {
   provider?: AiTextProvider;
@@ -24,6 +25,7 @@ const providerToCredentialType: Record<AiTextProvider, CredentialType> = {
   openai: CredentialType.OPENAI,
   anthropic: CredentialType.ANTHROPIC,
   gemini: CredentialType.GEMINI,
+  groq: CredentialType.GROQ,
 };
 
 export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
@@ -135,18 +137,31 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
                 recordOutputs: true,
               },
             }
-          : {
-              model: createGoogleGenerativeAI({
-                apiKey: decrypt(credential.value),
-              })("gemini-2.0-flash"),
-              system: systemPrompt,
-              prompt: userPrompt,
-              experimental_telemetry: {
-                isEnabled: true,
-                recordInputs: true,
-                recordOutputs: true,
+          : provider === "gemini"
+            ? {
+                model: createGoogleGenerativeAI({
+                  apiKey: decrypt(credential.value),
+                })("gemini-2.0-flash"),
+                system: systemPrompt,
+                prompt: userPrompt,
+                experimental_telemetry: {
+                  isEnabled: true,
+                  recordInputs: true,
+                  recordOutputs: true,
+                },
+              }
+            : {
+                model: createGroq({
+                  apiKey: decrypt(credential.value),
+                })("llama-3.3-70b-versatile"),
+                system: systemPrompt,
+                prompt: userPrompt,
+                experimental_telemetry: {
+                  isEnabled: true,
+                  recordInputs: true,
+                  recordOutputs: true,
+                },
               },
-            },
     );
 
     const text =

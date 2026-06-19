@@ -66,7 +66,6 @@ export const GoogleSheetsTriggerNode = memo(
           icon="/logos/google-sheets.svg"
           name="Google Sheets Trigger"
           description={description}
-          allowInput
           status={nodeStatus}
           onSettings={handleOpenSettings}
           onDoubleClick={handleOpenSettings}

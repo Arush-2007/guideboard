@@ -29,7 +29,6 @@ export const TelegramTrigger = memo((props: NodeProps) => {
         icon="/logos/telegram.svg"
         name="Telegram"
         description="When your bot receives a message"
-        allowInput
         status={nodeStatus}
         onSettings={handleOpenSettings}
         onDoubleClick={handleOpenSettings}

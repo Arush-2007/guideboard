@@ -174,7 +174,16 @@ export const credentialsRouter = createTRPCRouter({
         }
       }
 
-      return credential;
+      // Return the decrypted secret so the edit form shows the real value.
+      // Without this the form would pre-fill the ciphertext and a subsequent
+      // save would re-encrypt it (double-encryption corrupts the credential).
+      try {
+        return { ...credential, value: decrypt(credential.value) };
+      } catch {
+        // Legacy/corrupted (e.g. double-encrypted) values can't be decrypted;
+        // return empty so the user can re-enter the key cleanly.
+        return { ...credential, value: "" };
+      }
     }),
   getMany: protectedProcedure
     .input(

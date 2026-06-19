@@ -14,6 +14,7 @@ import {
   Background,
   BackgroundVariant,
   Controls,
+  MarkerType,
   MiniMap,
   Panel,
 } from '@xyflow/react';
@@ -63,6 +64,17 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
     return nodes.some((node) => node.type === NodeType.MANUAL_TRIGGER);
   }, [nodes]);
 
+  const defaultEdgeOptions = useMemo(
+    () => ({
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 18,
+        height: 18,
+      },
+    }),
+    [],
+  );
+
   const backgroundConfig = useMemo(
     () => ({
       variant: BackgroundVariant.Lines,
@@ -83,6 +95,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         nodeTypes={nodeComponents}
+        defaultEdgeOptions={defaultEdgeOptions}
         onInit={setEditor}
         fitView
         snapGrid={[10, 10]}

@@ -158,7 +158,7 @@ const executionNodes: NodeTypeOption[] = [
     type: NodeType.AI_REPLY_GENERATOR,
     label: "AI Reply Generator",
     description:
-      "Generate an AI reply to a comment using xAI, Gemini, or OpenAI",
+      "Generate an AI reply to a comment using xAI, Gemini, OpenAI, or Groq",
     icon: "/logos/xai.svg",
   },
 ];

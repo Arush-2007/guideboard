@@ -18,11 +18,12 @@ type AiReplyGeneratorData = {
   xaiCredentialId?: string;
   geminiCredentialId?: string;
   openaiCredentialId?: string;
+  groqCredentialId?: string;
 };
 
 type ResolvedCredential = {
   apiKey: string;
-  provider: "xai" | "gemini" | "openai";
+  provider: "xai" | "gemini" | "openai" | "groq";
   model: string;
   accountDescription: string | null;
   replyTone: string | null;
@@ -131,8 +132,20 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
           };
         }
 
+        const groqCred = await tryCredential(config.groqCredentialId);
+        if (groqCred) {
+          return {
+            apiKey: decrypt(groqCred.value),
+            provider: "groq",
+            model: "llama-3.3-70b-versatile",
+            accountDescription: settings?.accountDescription ?? null,
+            replyTone: settings?.replyTone ?? null,
+            replyGoal: settings?.replyGoal ?? null,
+          };
+        }
+
         throw new NonRetriableError(
-          "AI Reply Generator node: No valid credential found. Add at least one AI credential (xAI, Gemini, or OpenAI).",
+          "AI Reply Generator node: No valid credential found. Add at least one AI credential (xAI, Gemini, OpenAI, or Groq).",
         );
       },
     );
@@ -145,6 +158,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<AiReplyGeneratorData> =
       xai: "https://api.x.ai/v1",
       gemini: "https://generativelanguage.googleapis.com/v1beta/openai",
       openai: undefined,
+      groq: "https://api.groq.com/openai/v1",
     };
 
     const aiProvider = createOpenAI({

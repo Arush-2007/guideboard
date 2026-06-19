@@ -115,6 +115,11 @@ const credentialTypeOptions = [
     label: "xAI (Grok)",
     logo: "/logos/xai.svg",
   },
+  {
+    value: CredentialType.GROQ,
+    label: "Groq",
+    logo: "/logos/groq.svg",
+  },
 ];
 
 interface CredentialFormProps {
@@ -243,7 +248,11 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                   <FormItem>
                     <FormLabel>Name</FormLabel>
                     <FormControl>
-                      <Input placeholder="My API key" {...field} />
+                      <Input
+                        placeholder="My API key"
+                        autoComplete="off"
+                        {...field}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -360,7 +369,9 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                                   ? "{\"accessToken\":\"EA...\",\"phoneNumberId\":\"123456789012345\"}"
                                 : watchedType === CredentialType.XAI
                                   ? "xai-..."
-                                  : "sk-..."
+                                  : watchedType === CredentialType.GROQ
+                                    ? "gsk_..."
+                                    : "sk-..."
                           }
                           {...field}
                         />

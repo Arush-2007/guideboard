@@ -54,12 +54,12 @@ export const BaseExecutionNode = memo(
         <NodeStatusIndicator
           status={status}
           variant="border"
-          className="rounded-full"
+          className="rounded-2xl"
         >
           <BaseNode
             status={status}
             onDoubleClick={onDoubleClick}
-            className="relative size-20 rounded-full"
+            className="relative size-20 rounded-2xl"
           >
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (

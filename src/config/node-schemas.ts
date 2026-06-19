@@ -25,6 +25,7 @@ const aiReplyGeneratorSchema = z
     xaiCredentialId: z.string().optional(),
     geminiCredentialId: z.string().optional(),
     openaiCredentialId: z.string().optional(),
+    groqCredentialId: z.string().optional(),
   })
   .passthrough();
 
@@ -58,7 +59,7 @@ const openAiFamilySchema = apiPromptSchema.passthrough();
 
 const aiTextSchema = z
   .object({
-    provider: z.enum(["openai", "anthropic", "gemini"]),
+    provider: z.enum(["openai", "anthropic", "gemini", "groq"]),
     credentialId: z.string().min(1, "Credential is required"),
     systemPrompt: z.string().optional(),
     prompt: z.string().min(1, "Prompt is required"),

@@ -29,7 +29,6 @@ export const TypeformTrigger = memo((props: NodeProps) => {
         icon="/logos/typeform.svg"
         name="Typeform"
         description="When a Typeform response is submitted"
-        allowInput
         status={nodeStatus}
         onSettings={handleOpenSettings}
         onDoubleClick={handleOpenSettings}

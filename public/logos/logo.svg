@@ -1,5 +1,10 @@
-<svg id="logo-38" width="78" height="32" viewBox="0 0 78 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M55.5 0H77.5L58.5 32H36.5L55.5 0Z" fill="#0A66C2"></path>
-  <path d="M35.5 0H51.5L32.5 32H16.5L35.5 0Z" fill="#3B82F6"></path>
-  <path d="M19.5 0H31.5L12.5 32H0.5L19.5 0Z" fill="#93C5FD"></path>
+<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="gb-g" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#0A66C2"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="9" fill="url(#gb-g)"/>
+  <path fill="#fff" d="M16.4 6.6a9.4 9.4 0 1 0 9.18 11.45c.08-.36.12-.72.12-1.05 0-.6-.46-1.05-1.06-1.05h-6.32c-.6 0-1.06.46-1.06 1.06 0 .6.46 1.06 1.06 1.06h4.6a6.06 6.06 0 1 1-1.5-6.06 1.06 1.06 0 0 0 1.5-1.5 9.37 9.37 0 0 0-6.5-2.91Z"/>
 </svg>

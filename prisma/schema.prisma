@@ -206,6 +206,7 @@ enum CredentialType {
   TELEGRAM
   WHATSAPP
   XAI
+  GROQ
 }
 
 model Workflow {

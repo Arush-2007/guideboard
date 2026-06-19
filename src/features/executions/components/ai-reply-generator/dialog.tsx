@@ -48,6 +48,7 @@ const formSchema = z.object({
   xaiCredentialId: z.string().optional(),
   geminiCredentialId: z.string().optional(),
   openaiCredentialId: z.string().optional(),
+  groqCredentialId: z.string().optional(),
 });
 
 export type AiReplyGeneratorFormValues = z.infer<typeof formSchema>;
@@ -71,6 +72,8 @@ export const AiReplyGeneratorDialog = ({
     useCredentialsByType(CredentialType.GEMINI);
   const { data: openaiCredentials, isLoading: isLoadingOpenai } =
     useCredentialsByType(CredentialType.OPENAI);
+  const { data: groqCredentials, isLoading: isLoadingGroq } =
+    useCredentialsByType(CredentialType.GROQ);
 
   const form = useForm<AiReplyGeneratorFormValues>({
     resolver: zodResolver(formSchema),
@@ -85,6 +88,7 @@ export const AiReplyGeneratorDialog = ({
       xaiCredentialId: defaultValues.xaiCredentialId ?? "",
       geminiCredentialId: defaultValues.geminiCredentialId ?? "",
       openaiCredentialId: defaultValues.openaiCredentialId ?? "",
+      groqCredentialId: defaultValues.groqCredentialId ?? "",
     },
   });
 
@@ -117,6 +121,8 @@ export const AiReplyGeneratorDialog = ({
         values.geminiCredentialId === NONE ? "" : values.geminiCredentialId,
       openaiCredentialId:
         values.openaiCredentialId === NONE ? "" : values.openaiCredentialId,
+      groqCredentialId:
+        values.groqCredentialId === NONE ? "" : values.groqCredentialId,
     });
     onOpenChange(false);
   };
@@ -292,8 +298,8 @@ export const AiReplyGeneratorDialog = ({
 
             {/* AI provider helper */}
             <p className="rounded-xl border border-border bg-muted/50 px-4 py-3 text-xs text-muted-foreground">
-              AI will try <strong>xAI → Gemini → OpenAI</strong> in order. Add
-              at least one credential.
+              AI will try <strong>xAI → Gemini → OpenAI → Groq</strong> in
+              order. Add at least one credential.
             </p>
 
             {/* xAI credential */}
@@ -400,6 +406,45 @@ export const AiReplyGeneratorDialog = ({
                             <Image
                               src="/logos/openai.svg"
                               alt="OpenAI"
+                              width={14}
+                              height={14}
+                            />
+                            {cred.name}
+                          </div>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            {/* Groq credential */}
+            <FormField
+              control={form.control}
+              name="groqCredentialId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Groq Credential (optional)</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value || NONE}
+                    disabled={isLoadingGroq}
+                  >
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="None" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value={NONE}>None</SelectItem>
+                      {groqCredentials?.map((cred) => (
+                        <SelectItem key={cred.id} value={cred.id}>
+                          <div className="flex items-center gap-2">
+                            <Image
+                              src="/logos/groq.svg"
+                              alt="Groq"
                               width={14}
                               height={14}
                             />

@@ -1,6 +1,7 @@
 "use client";
 
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
+import { Sparkles } from "lucide-react";
 import { memo, useState } from "react";
 import { BaseExecutionNode } from "../base-execution-node";
 import {
@@ -16,6 +17,7 @@ type AiReplyGeneratorNodeData = {
   xaiCredentialId?: string;
   geminiCredentialId?: string;
   openaiCredentialId?: string;
+  groqCredentialId?: string;
   postDescription?: string;
 };
 
@@ -62,7 +64,7 @@ export const AiReplyGeneratorNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon="/logos/xai.svg"
+          icon={Sparkles}
           name="AI Reply Generator"
           status={nodeStatus}
           description={description}

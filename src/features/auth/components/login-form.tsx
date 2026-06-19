@@ -45,44 +45,53 @@ export function LoginForm() {
   });
 
   const signInGithub = async () => {
-    await authClient.signIn.social({
-      provider: "github",
-    }, {
-      onSuccess: () => {
-        router.push("/");
+    await authClient.signIn.social(
+      {
+        provider: "github",
       },
-      onError: () => {
-        toast.error("Something went wrong");
+      {
+        onSuccess: () => {
+          router.push("/");
+        },
+        onError: () => {
+          toast.error("Something went wrong");
+        },
       },
-    });
+    );
   };
 
   const signInGoogle = async () => {
-    await authClient.signIn.social({
-      provider: "google",
-    }, {
-      onSuccess: () => {
-        router.push("/");
+    await authClient.signIn.social(
+      {
+        provider: "google",
       },
-      onError: () => {
-        toast.error("Something went wrong");
+      {
+        onSuccess: () => {
+          router.push("/");
+        },
+        onError: () => {
+          toast.error("Something went wrong");
+        },
       },
-    });
+    );
   };
 
   const onSubmit = async (values: LoginFormValues) => {
-    await authClient.signIn.email({
-      email: values.email,
-      password: values.password,
-      callbackURL: "/",
-    }, {
-      onSuccess: () => {
-        router.push("/");
+    await authClient.signIn.email(
+      {
+        email: values.email,
+        password: values.password,
+        callbackURL: "/",
       },
-      onError: (ctx) => {
-        toast.error(ctx.error.message);
+      {
+        onSuccess: () => {
+          router.push("/");
+        },
+        onError: (ctx) => {
+          toast.error(ctx.error.message);
+        },
       },
-    });
+    );
   };
 
   const isPending = form.formState.isSubmitting;
@@ -110,7 +119,12 @@ export function LoginForm() {
                     type="button"
                     disabled={isPending}
                   >
-                    <Image alt="GitHub" src="/logos/github.svg" width={20} height={20} />
+                    <Image
+                      alt="GitHub"
+                      src="/logos/github.svg"
+                      width={20}
+                      height={20}
+                    />
                     Continue with GitHub
                   </Button>
                   <Button
@@ -120,7 +134,12 @@ export function LoginForm() {
                     type="button"
                     disabled={isPending}
                   >
-                    <Image alt="Google" src="/logos/google.svg" width={20} height={20} />
+                    <Image
+                      alt="Google"
+                      src="/logos/google.svg"
+                      width={20}
+                      height={20}
+                    />
                     Continue with Google
                   </Button>
                 </div>
@@ -147,7 +166,15 @@ export function LoginForm() {
                     name="password"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel>Password</FormLabel>
+                        <div className="flex items-center justify-between">
+                          <FormLabel>Password</FormLabel>
+                          <Link
+                            href="/forgot-password"
+                            className="text-sm underline-offset-4 hover:underline"
+                          >
+                            Forgot password?
+                          </Link>
+                        </div>
                         <FormControl>
                           <Input
                             type="password"
@@ -159,7 +186,11 @@ export function LoginForm() {
                       </FormItem>
                     )}
                   />
-                  <Button type="submit" className="h-10 w-full rounded-xl text-sm font-semibold" disabled={isPending}>
+                  <Button
+                    type="submit"
+                    className="h-10 w-full rounded-xl text-sm font-semibold"
+                    disabled={isPending}
+                  >
                     Login
                   </Button>
                 </div>
@@ -176,4 +207,4 @@ export function LoginForm() {
       </Card>
     </div>
   );
-};
+}

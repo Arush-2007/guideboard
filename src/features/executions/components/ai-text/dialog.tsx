@@ -34,7 +34,7 @@ import { VariableTextarea } from "@/components/variable-textarea";
 import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import { CredentialType } from "@/generated/prisma";
 
-const providerSchema = z.enum(["openai", "anthropic", "gemini"]);
+const providerSchema = z.enum(["openai", "anthropic", "gemini", "groq"]);
 
 const formSchema = z.object({
   provider: providerSchema,
@@ -55,6 +55,8 @@ function credentialTypeForProvider(
       return CredentialType.ANTHROPIC;
     case "gemini":
       return CredentialType.GEMINI;
+    case "groq":
+      return CredentialType.GROQ;
   }
 }
 
@@ -130,14 +132,18 @@ export const AiTextDialog = ({
       ? "OPENAI"
       : provider === "anthropic"
         ? "ANTHROPIC"
-        : "GEMINI";
+        : provider === "gemini"
+          ? "GEMINI"
+          : "GROQ";
 
   const logoSrc =
     provider === "openai"
       ? "/logos/openai.svg"
       : provider === "anthropic"
         ? "/logos/anthropic.svg"
-        : "/logos/gemini.svg";
+        : provider === "gemini"
+          ? "/logos/gemini.svg"
+          : "/logos/groq.svg";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -171,6 +177,7 @@ export const AiTextDialog = ({
                       <SelectItem value="openai">OpenAI</SelectItem>
                       <SelectItem value="anthropic">Anthropic</SelectItem>
                       <SelectItem value="gemini">Gemini</SelectItem>
+                      <SelectItem value="groq">Groq</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />

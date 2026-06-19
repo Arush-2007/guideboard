@@ -17,7 +17,6 @@ interface BaseTriggerNodeProps extends NodeProps {
   status?: NodeStatus;
   onSettings?: () => void;
   onDoubleClick?: () => void;
-  allowInput?: boolean;
 };
 
 export const BaseTriggerNode = memo(
@@ -30,7 +29,6 @@ export const BaseTriggerNode = memo(
     status = "initial",
     onSettings,
     onDoubleClick,
-    allowInput = false,
   }: BaseTriggerNodeProps) => {
     const { setNodes, setEdges } = useReactFlow();
     const handleDelete = () => {
@@ -56,12 +54,12 @@ export const BaseTriggerNode = memo(
         <NodeStatusIndicator
           status={status}
           variant="border"
-          className="rounded-full"
+          className="rounded-2xl"
         >
           <BaseNode
             status={status}
             onDoubleClick={onDoubleClick}
-            className="relative size-20 rounded-full"
+            className="relative size-20 rounded-2xl"
           >
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
@@ -73,13 +71,6 @@ export const BaseTriggerNode = memo(
                 />
               ) : (
                 <Icon className="size-8 text-muted-foreground" />
-              )}
-              {allowInput && (
-                <BaseHandle
-                  id="target-1"
-                  type="target"
-                  position={Position.Left}
-                />
               )}
               <BaseHandle
                 id="source-1"
