@@ -1,19 +1,8 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { googleSheetsTriggerChannel } from "@/inngest/channels/google-sheets-trigger";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export type GoogleSheetsTriggerToken = Realtime.Token<
-  typeof googleSheetsTriggerChannel,
-  ["status"]
->;
-
-export async function fetchGoogleSheetsTriggerRealtimeToken(): Promise<GoogleSheetsTriggerToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: googleSheetsTriggerChannel(),
-    topics: ["status"],
-  });
-
-  return token;
+export function fetchGoogleSheetsTriggerRealtimeToken() {
+  return mintUserStatusToken(googleSheetsTriggerChannel);
 }

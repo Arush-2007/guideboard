@@ -17,12 +17,13 @@ type SlackData = {
 export const slackExecutor: NodeExecutor<SlackData> = async ({
   data,
   nodeId,
+  userId,
   context,
   step,
   publish,
 }) => {
   await publish(
-    slackChannel().status({
+    slackChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -33,7 +34,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     config = parseNodeConfig(NodeType.SLACK, data) as SlackData;
   } catch (error) {
     await publish(
-      slackChannel().status({
+      slackChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -79,7 +80,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     });
 
     await publish(
-      slackChannel().status({
+      slackChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -88,7 +89,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     return result;
   } catch (error) {
     await publish(
-      slackChannel().status({
+      slackChannel(userId).status({
         nodeId,
         status: "error",
       }),

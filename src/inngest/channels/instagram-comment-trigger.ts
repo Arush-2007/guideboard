@@ -4,7 +4,7 @@ export const INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME =
   "instagram-comment-trigger-execution";
 
 export const instagramCommentTriggerChannel = channel(
-  INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME,
+  (userId: string) => `${INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME}:${userId}`,
 ).addTopic(
   topic("status").type<{
     nodeId: string;

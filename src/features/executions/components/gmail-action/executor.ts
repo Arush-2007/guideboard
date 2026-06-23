@@ -31,7 +31,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
   publish,
 }) => {
   await publish(
-    gmailActionChannel().status({
+    gmailActionChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -42,7 +42,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
     config = parseNodeConfig(NodeType.GMAIL_ACTION, data) as GmailActionData;
   } catch (error) {
     await publish(
-      gmailActionChannel().status({
+      gmailActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -106,7 +106,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
     });
 
     await publish(
-      gmailActionChannel().status({
+      gmailActionChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -115,7 +115,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      gmailActionChannel().status({
+      gmailActionChannel(userId).status({
         nodeId,
         status: "error",
       }),

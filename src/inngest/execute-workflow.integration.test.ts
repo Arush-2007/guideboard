@@ -1,6 +1,14 @@
 import { createServer, type Server } from "node:http";
 import type { Realtime } from "@inngest/realtime";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
 import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
 import type { StepTools } from "@/features/executions/types";
 import prisma from "@/lib/db";
@@ -265,7 +273,11 @@ describe("executeWorkflow engine (5-node workflow)", () => {
     });
     await prisma.connection.createMany({
       data: [
-        { workflowId: workflow.id, fromNodeId: "g_trigger", toNodeId: "g_cond" },
+        {
+          workflowId: workflow.id,
+          fromNodeId: "g_trigger",
+          toNodeId: "g_cond",
+        },
         { workflowId: workflow.id, fromNodeId: "g_cond", toNodeId: "g_post" },
       ],
     });

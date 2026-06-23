@@ -6,15 +6,11 @@ import { NonRetriableError } from "inngest";
 
 type TelegramTriggerData = Record<string, unknown>;
 
-export const telegramTriggerExecutor: NodeExecutor<TelegramTriggerData> = async ({
-  nodeId,
-  context,
-  step,
-  publish,
-  data,
-}) => {
+export const telegramTriggerExecutor: NodeExecutor<
+  TelegramTriggerData
+> = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    telegramTriggerChannel().status({
+    telegramTriggerChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -24,7 +20,7 @@ export const telegramTriggerExecutor: NodeExecutor<TelegramTriggerData> = async 
     parseNodeConfig(NodeType.TELEGRAM_TRIGGER, data);
   } catch (error) {
     await publish(
-      telegramTriggerChannel().status({
+      telegramTriggerChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -37,7 +33,7 @@ export const telegramTriggerExecutor: NodeExecutor<TelegramTriggerData> = async 
   const result = await step.run("telegram-trigger", async () => context);
 
   await publish(
-    telegramTriggerChannel().status({
+    telegramTriggerChannel(userId).status({
       nodeId,
       status: "success",
     }),

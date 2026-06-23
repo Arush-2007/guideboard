@@ -4,30 +4,6 @@ import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
-import { aiReplyGeneratorChannel } from "./channels/ai-reply-generator";
-import { aiTextChannel } from "./channels/ai-text";
-import { anthropicChannel } from "./channels/anthropic";
-import { conditionChannel } from "./channels/condition";
-import { discordChannel } from "./channels/discord";
-import { geminiChannel } from "./channels/gemini";
-import { gmailActionChannel } from "./channels/gmail-action";
-import { gmailTriggerChannel } from "./channels/gmail-trigger";
-import { googleFormTriggerChannel } from "./channels/google-form-trigger";
-import { googleSheetsActionChannel } from "./channels/google-sheets-action";
-import { googleSheetsTriggerChannel } from "./channels/google-sheets-trigger";
-import { httpRequestChannel } from "./channels/http-request";
-import { instagramCommentTriggerChannel } from "./channels/instagram-comment-trigger";
-import { instagramReplyChannel } from "./channels/instagram-reply-comment";
-import { manualTriggerChannel } from "./channels/manual-trigger";
-import { notionChannel } from "./channels/notion";
-import { openAiChannel } from "./channels/openai";
-import { slackChannel } from "./channels/slack";
-import { telegramActionChannel } from "./channels/telegram-action";
-import { telegramTriggerChannel } from "./channels/telegram-trigger";
-import { typeformTriggerChannel } from "./channels/typeform-trigger";
-import { whatsappActionChannel } from "./channels/whatsapp-action";
-import { youtubeCommentTriggerChannel } from "./channels/youtube-comment-trigger";
-import { youtubeReplyChannel } from "./channels/youtube-reply-comment";
 import { inngest } from "./client";
 import { runWorkflowNodes } from "./run-workflow";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
@@ -48,33 +24,11 @@ export const executeWorkflow = inngest.createFunction(
     },
   },
   {
+    // Realtime publish is provided by realtimeMiddleware() on the inngest client
+    // (src/inngest/client.ts), so channels don't need to be declared here. Each
+    // executor publishes to its own user-scoped channel, e.g.
+    // `anthropicChannel(userId).status(...)`.
     event: "workflows/execute.workflow",
-    channels: [
-      httpRequestChannel(),
-      conditionChannel(),
-      manualTriggerChannel(),
-      googleFormTriggerChannel(),
-      typeformTriggerChannel(),
-      geminiChannel(),
-      openAiChannel(),
-      anthropicChannel(),
-      discordChannel(),
-      slackChannel(),
-      notionChannel(),
-      telegramActionChannel(),
-      telegramTriggerChannel(),
-      whatsappActionChannel(),
-      gmailActionChannel(),
-      gmailTriggerChannel(),
-      googleSheetsActionChannel(),
-      googleSheetsTriggerChannel(),
-      instagramCommentTriggerChannel(),
-      instagramReplyChannel(),
-      youtubeCommentTriggerChannel(),
-      youtubeReplyChannel(),
-      aiReplyGeneratorChannel(),
-      aiTextChannel(),
-    ],
   },
   async ({ event, step, publish }) => {
     const inngestEventId = event.id;

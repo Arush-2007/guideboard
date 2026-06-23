@@ -8,13 +8,14 @@ type ManualTriggerData = Record<string, unknown>;
 
 export const manualTriggerExecutor: NodeExecutor<ManualTriggerData> = async ({
   nodeId,
+  userId,
   context,
   step,
   publish,
   data,
 }) => {
   await publish(
-    manualTriggerChannel().status({
+    manualTriggerChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -24,7 +25,7 @@ export const manualTriggerExecutor: NodeExecutor<ManualTriggerData> = async ({
     parseNodeConfig(NodeType.MANUAL_TRIGGER, data);
   } catch (error) {
     await publish(
-      manualTriggerChannel().status({
+      manualTriggerChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -37,7 +38,7 @@ export const manualTriggerExecutor: NodeExecutor<ManualTriggerData> = async ({
   const result = await step.run("manual-trigger", async () => context);
 
   await publish(
-    manualTriggerChannel().status({
+    manualTriggerChannel(userId).status({
       nodeId,
       status: "success",
     }),

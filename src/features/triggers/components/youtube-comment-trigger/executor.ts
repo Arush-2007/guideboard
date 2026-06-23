@@ -6,40 +6,38 @@ import { NonRetriableError } from "inngest";
 
 type YoutubeCommentTriggerData = Record<string, unknown>;
 
-export const youtubeCommentTriggerExecutor: NodeExecutor<YoutubeCommentTriggerData> =
-  async ({ nodeId, context, step, publish, data }) => {
+export const youtubeCommentTriggerExecutor: NodeExecutor<
+  YoutubeCommentTriggerData
+> = async ({ nodeId, userId, context, step, publish, data }) => {
+  await publish(
+    youtubeCommentTriggerChannel(userId).status({
+      nodeId,
+      status: "loading",
+    }),
+  );
+
+  try {
+    parseNodeConfig(NodeType.YOUTUBE_COMMENT_TRIGGER, data);
+  } catch (error) {
     await publish(
-      youtubeCommentTriggerChannel().status({
+      youtubeCommentTriggerChannel(userId).status({
         nodeId,
-        status: "loading",
+        status: "error",
       }),
     );
-
-    try {
-      parseNodeConfig(NodeType.YOUTUBE_COMMENT_TRIGGER, data);
-    } catch (error) {
-      await publish(
-        youtubeCommentTriggerChannel().status({
-          nodeId,
-          status: "error",
-        }),
-      );
-      throw new NonRetriableError(
-        error instanceof Error ? error.message : "Invalid node config",
-      );
-    }
-
-    const result = await step.run(
-      "youtube-comment-trigger",
-      async () => context,
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
     );
+  }
 
-    await publish(
-      youtubeCommentTriggerChannel().status({
-        nodeId,
-        status: "success",
-      }),
-    );
+  const result = await step.run("youtube-comment-trigger", async () => context);
 
-    return result;
-  };
+  await publish(
+    youtubeCommentTriggerChannel(userId).status({
+      nodeId,
+      status: "success",
+    }),
+  );
+
+  return result;
+};

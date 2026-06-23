@@ -55,7 +55,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
   GoogleSheetsActionData
 > = async ({ data, nodeId, userId, context, step, publish }) => {
   await publish(
-    googleSheetsActionChannel().status({
+    googleSheetsActionChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -69,7 +69,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     ) as GoogleSheetsActionData;
   } catch (error) {
     await publish(
-      googleSheetsActionChannel().status({
+      googleSheetsActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -96,7 +96,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
   if (!spreadsheetId || !sheetName) {
     await publish(
-      googleSheetsActionChannel().status({ nodeId, status: "error" }),
+      googleSheetsActionChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       "Google Sheets Action: spreadsheetId and sheetName are required",
@@ -106,7 +106,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
   // Range is only needed for read_rows or the legacy values-based append.
   if (!hasMappings && !range) {
     await publish(
-      googleSheetsActionChannel().status({ nodeId, status: "error" }),
+      googleSheetsActionChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       "Google Sheets Action: a column mapping or a range is required",
@@ -219,7 +219,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     });
 
     await publish(
-      googleSheetsActionChannel().status({
+      googleSheetsActionChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -227,7 +227,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     return result;
   } catch (error) {
     await publish(
-      googleSheetsActionChannel().status({
+      googleSheetsActionChannel(userId).status({
         nodeId,
         status: "error",
       }),

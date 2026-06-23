@@ -25,7 +25,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
   publish,
 }) => {
   await publish(
-    youtubeReplyChannel().status({
+    youtubeReplyChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -38,7 +38,9 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
       data,
     ) as YoutubeReplyData;
   } catch (error) {
-    await publish(youtubeReplyChannel().status({ nodeId, status: "error" }));
+    await publish(
+      youtubeReplyChannel(userId).status({ nodeId, status: "error" }),
+    );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
     );
@@ -52,7 +54,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
       const commentId = context.commentId as string | undefined;
       if (!commentId) {
         await publish(
-          youtubeReplyChannel().status({ nodeId, status: "error" }),
+          youtubeReplyChannel(userId).status({ nodeId, status: "error" }),
         );
         throw new NonRetriableError(
           "YouTube Reply node: commentId is missing from workflow context",
@@ -91,11 +93,15 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
       };
     });
 
-    await publish(youtubeReplyChannel().status({ nodeId, status: "success" }));
+    await publish(
+      youtubeReplyChannel(userId).status({ nodeId, status: "success" }),
+    );
 
     return result;
   } catch (error) {
-    await publish(youtubeReplyChannel().status({ nodeId, status: "error" }));
+    await publish(
+      youtubeReplyChannel(userId).status({ nodeId, status: "error" }),
+    );
     throw error;
   }
 };

@@ -26,7 +26,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
   publish,
 }) => {
   await publish(
-    telegramActionChannel().status({
+    telegramActionChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -40,7 +40,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     ) as TelegramActionData;
   } catch (error) {
     await publish(
-      telegramActionChannel().status({
+      telegramActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -61,7 +61,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
 
   if (!credential || credential.type !== CredentialType.TELEGRAM) {
     await publish(
-      telegramActionChannel().status({
+      telegramActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -76,7 +76,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     botToken = decrypt(credential.value).trim();
   } catch {
     await publish(
-      telegramActionChannel().status({
+      telegramActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -86,7 +86,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
 
   if (!botToken) {
     await publish(
-      telegramActionChannel().status({
+      telegramActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -127,7 +127,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     });
 
     await publish(
-      telegramActionChannel().status({
+      telegramActionChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -136,7 +136,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      telegramActionChannel().status({
+      telegramActionChannel(userId).status({
         nodeId,
         status: "error",
       }),

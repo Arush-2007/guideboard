@@ -37,7 +37,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   publish,
 }) => {
   await publish(
-    aiTextChannel().status({
+    aiTextChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -48,7 +48,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     config = parseNodeConfig(NodeType.AI_TEXT, data) as AiTextData;
   } catch (error) {
     await publish(
-      aiTextChannel().status({
+      aiTextChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -61,7 +61,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   const provider = config.provider;
   if (!provider) {
     await publish(
-      aiTextChannel().status({
+      aiTextChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -87,7 +87,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
 
   if (!credential) {
     await publish(
-      aiTextChannel().status({
+      aiTextChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -97,7 +97,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
 
   if (credential.type !== expectedCredentialType) {
     await publish(
-      aiTextChannel().status({
+      aiTextChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -168,7 +168,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
       steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      aiTextChannel().status({
+      aiTextChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -184,7 +184,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     };
   } catch (error) {
     await publish(
-      aiTextChannel().status({
+      aiTextChannel(userId).status({
         nodeId,
         status: "error",
       }),

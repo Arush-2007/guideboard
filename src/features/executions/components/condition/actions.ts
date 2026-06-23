@@ -1,19 +1,8 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { conditionChannel } from "@/inngest/channels/condition";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export type ConditionToken = Realtime.Token<
-  typeof conditionChannel,
-  ["status"]
->;
-
-export async function fetchConditionRealtimeToken(): Promise<ConditionToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: conditionChannel(),
-    topics: ["status"],
-  });
-
-  return token;
+export function fetchConditionRealtimeToken() {
+  return mintUserStatusToken(conditionChannel);
 }

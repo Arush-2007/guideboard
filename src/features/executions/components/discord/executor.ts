@@ -16,12 +16,13 @@ type DiscordData = {
 export const discordExecutor: NodeExecutor<DiscordData> = async ({
   data,
   nodeId,
+  userId,
   context,
   step,
   publish,
 }) => {
   await publish(
-    discordChannel().status({
+    discordChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -32,7 +33,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     config = parseNodeConfig(NodeType.DISCORD, data) as DiscordData;
   } catch (error) {
     await publish(
-      discordChannel().status({
+      discordChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -53,7 +54,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     const result = await step.run("discord-webhook", async () => {
       if (!config.webhookUrl) {
         await publish(
-          discordChannel().status({
+          discordChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -77,7 +78,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     });
 
     await publish(
-      discordChannel().status({
+      discordChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -86,7 +87,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     return result;
   } catch (error) {
     await publish(
-      discordChannel().status({
+      discordChannel(userId).status({
         nodeId,
         status: "error",
       }),

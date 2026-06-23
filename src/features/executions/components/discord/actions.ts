@@ -1,19 +1,8 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { discordChannel } from "@/inngest/channels/discord";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export type DiscordToken = Realtime.Token<
-  typeof discordChannel,
-  ["status"]
->;
-
-export async function fetchDiscordRealtimeToken(): Promise<DiscordToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: discordChannel(),
-    topics: ["status"],
-  });
-
-  return token;
-};
+export function fetchDiscordRealtimeToken() {
+  return mintUserStatusToken(discordChannel);
+}

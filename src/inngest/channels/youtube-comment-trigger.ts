@@ -4,7 +4,7 @@ export const YOUTUBE_COMMENT_TRIGGER_CHANNEL_NAME =
   "youtube-comment-trigger-execution";
 
 export const youtubeCommentTriggerChannel = channel(
-  YOUTUBE_COMMENT_TRIGGER_CHANNEL_NAME,
+  (userId: string) => `${YOUTUBE_COMMENT_TRIGGER_CHANNEL_NAME}:${userId}`,
 ).addTopic(
   topic("status").type<{
     nodeId: string;

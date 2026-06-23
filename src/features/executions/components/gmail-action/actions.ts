@@ -1,19 +1,8 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { gmailActionChannel } from "@/inngest/channels/gmail-action";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export type GmailActionToken = Realtime.Token<
-  typeof gmailActionChannel,
-  ["status"]
->;
-
-export async function fetchGmailActionRealtimeToken(): Promise<GmailActionToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: gmailActionChannel(),
-    topics: ["status"],
-  });
-
-  return token;
+export function fetchGmailActionRealtimeToken() {
+  return mintUserStatusToken(gmailActionChannel);
 }

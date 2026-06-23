@@ -26,7 +26,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
   publish,
 }) => {
   await publish(
-    instagramReplyChannel().status({
+    instagramReplyChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -40,7 +40,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
     ) as InstagramReplyData;
   } catch (error) {
     await publish(
-      instagramReplyChannel().status({
+      instagramReplyChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -58,7 +58,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
       const commentId = context.commentId as string | undefined;
       if (!commentId) {
         await publish(
-          instagramReplyChannel().status({
+          instagramReplyChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -74,7 +74,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
 
       if (!credential) {
         await publish(
-          instagramReplyChannel().status({
+          instagramReplyChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -110,7 +110,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
     });
 
     await publish(
-      instagramReplyChannel().status({
+      instagramReplyChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -119,7 +119,7 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
     return result;
   } catch (error) {
     await publish(
-      instagramReplyChannel().status({
+      instagramReplyChannel(userId).status({
         nodeId,
         status: "error",
       }),

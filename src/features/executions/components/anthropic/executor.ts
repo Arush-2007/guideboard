@@ -24,7 +24,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
   publish,
 }) => {
   await publish(
-    anthropicChannel().status({
+    anthropicChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -35,7 +35,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
     config = parseNodeConfig(NodeType.ANTHROPIC, data) as AnthropicData;
   } catch (error) {
     await publish(
-      anthropicChannel().status({
+      anthropicChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -62,7 +62,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
 
   if (!credential) {
     await publish(
-      anthropicChannel().status({
+      anthropicChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -94,7 +94,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
       steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      anthropicChannel().status({
+      anthropicChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -108,7 +108,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
     };
   } catch (error) {
     await publish(
-      anthropicChannel().status({
+      anthropicChannel(userId).status({
         nodeId,
         status: "error",
       }),

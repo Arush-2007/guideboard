@@ -6,40 +6,41 @@ import { NonRetriableError } from "inngest";
 
 type InstagramCommentTriggerData = Record<string, unknown>;
 
-export const instagramCommentTriggerExecutor: NodeExecutor<InstagramCommentTriggerData> =
-  async ({ nodeId, context, step, publish, data }) => {
+export const instagramCommentTriggerExecutor: NodeExecutor<
+  InstagramCommentTriggerData
+> = async ({ nodeId, userId, context, step, publish, data }) => {
+  await publish(
+    instagramCommentTriggerChannel(userId).status({
+      nodeId,
+      status: "loading",
+    }),
+  );
+
+  try {
+    parseNodeConfig(NodeType.INSTAGRAM_COMMENT_TRIGGER, data);
+  } catch (error) {
     await publish(
-      instagramCommentTriggerChannel().status({
+      instagramCommentTriggerChannel(userId).status({
         nodeId,
-        status: "loading",
+        status: "error",
       }),
     );
-
-    try {
-      parseNodeConfig(NodeType.INSTAGRAM_COMMENT_TRIGGER, data);
-    } catch (error) {
-      await publish(
-        instagramCommentTriggerChannel().status({
-          nodeId,
-          status: "error",
-        }),
-      );
-      throw new NonRetriableError(
-        error instanceof Error ? error.message : "Invalid node config",
-      );
-    }
-
-    const result = await step.run(
-      "instagram-comment-trigger",
-      async () => context,
+    throw new NonRetriableError(
+      error instanceof Error ? error.message : "Invalid node config",
     );
+  }
 
-    await publish(
-      instagramCommentTriggerChannel().status({
-        nodeId,
-        status: "success",
-      }),
-    );
+  const result = await step.run(
+    "instagram-comment-trigger",
+    async () => context,
+  );
 
-    return result;
-  };
+  await publish(
+    instagramCommentTriggerChannel(userId).status({
+      nodeId,
+      status: "success",
+    }),
+  );
+
+  return result;
+};

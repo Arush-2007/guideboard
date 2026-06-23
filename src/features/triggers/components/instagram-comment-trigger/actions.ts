@@ -1,26 +1,15 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { instagramCommentTriggerChannel } from "@/inngest/channels/instagram-comment-trigger";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { headers } from "next/headers";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 
-export type InstagramCommentTriggerToken = Realtime.Token<
-  typeof instagramCommentTriggerChannel,
-  ["status"]
->;
-
-export async function fetchInstagramCommentTriggerRealtimeToken(): Promise<InstagramCommentTriggerToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: instagramCommentTriggerChannel(),
-    topics: ["status"],
-  });
-
-  return token;
+export function fetchInstagramCommentTriggerRealtimeToken() {
+  return mintUserStatusToken(instagramCommentTriggerChannel);
 }
 
 export type InstagramCommentTriggerConfig = {

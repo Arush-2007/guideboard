@@ -39,7 +39,11 @@ Every node type is an enum member in `NodeType` (Prisma schema) plus three paral
 2. **`src/config/node-schemas.ts`** — maps `NodeType` → a Zod schema validating that node's `data` JSON. `parseNodeConfig(type, data)` is the single validation entry point, called by executors at runtime. Schemas are `.passthrough()` by default; field names must match the dialog forms exactly.
 3. **`src/features/executions/lib/executor-registry.ts`** — maps `NodeType` → its server-side `NodeExecutor`. `getExecutor(type)` throws if a type is unregistered.
 
-For executors that emit realtime status, there is also a **fourth** registration: the Inngest realtime channel must be listed in the `channels: [...]` array of `executeWorkflow` in `src/inngest/functions.ts`.
+For executors that emit realtime status, there are two more registrations:
+1. The node type → channel/token mapping in **`src/features/executions/lib/node-status-registry.ts`** (consumed by the editor's `<NodeStatusSubscriber>`s and `useNodeStatus`).
+2. A per-user channel file in `src/inngest/channels/`. Channels are **parameterized by `userId`** (e.g. `channel((userId) => \`anthropic-execution:${userId}\`)`) so each user's status stream is isolated. Executors publish with `xChannel(userId).status({ nodeId, status })`, and the `fetch*RealtimeToken` server action mints a session-scoped token via `mintUserStatusToken(xChannel)` (`src/inngest/channels/mint-status-token.ts`).
+
+Realtime `publish` is provided by `realtimeMiddleware()` on the Inngest client (`src/inngest/client.ts`); there is **no** `channels: [...]` array to maintain on `executeWorkflow`.
 
 A single node feature is split across two locations by convention:
 - **Triggers** live in `src/features/triggers/components/<node>/` (node.tsx, dialog.tsx, executor.ts, actions.ts).
@@ -55,7 +59,7 @@ A single node feature is split across two locations by convention:
 3. Runs each node's executor **sequentially**, threading a `context` object (`WorkflowContext = Record<string, unknown>`) from one node to the next. Each executor returns the next context, conventionally writing its output under a key like `<nodetype>_<nodeId>`.
 4. Marks the `Execution` SUCCESS/FAILED; `onFailure` records the error. Retries are 3 in production, 0 in dev.
 
-A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so Inngest can checkpoint it, and `publish(channel().status({ nodeId, status }))` to stream UI status. Throw `NonRetriableError` for config/validation failures so Inngest doesn't retry them.
+A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so Inngest can checkpoint it, and `publish(channel(userId).status({ nodeId, status }))` to stream UI status (channels are user-scoped — see the registration notes above). Throw `NonRetriableError` for config/validation failures so Inngest doesn't retry them.
 
 **Templating:** action executors render user-authored fields (message bodies, etc.) through Handlebars against the `context`, so users reference upstream output with `{{some_node_output.field}}`. A `json` helper is registered.
 

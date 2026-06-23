@@ -1,19 +1,8 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { openAiChannel } from "@/inngest/channels/openai";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export type OpenAiToken = Realtime.Token<
-  typeof openAiChannel,
-  ["status"]
->;
-
-export async function fetchOpenAiRealtimeToken(): Promise<OpenAiToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: openAiChannel(),
-    topics: ["status"],
-  });
-
-  return token;
-};
+export function fetchOpenAiRealtimeToken() {
+  return mintUserStatusToken(openAiChannel);
+}

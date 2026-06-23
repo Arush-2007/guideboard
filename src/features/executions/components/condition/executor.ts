@@ -107,12 +107,13 @@ function evaluateCondition(
 export const conditionExecutor: NodeExecutor<ConditionData> = async ({
   data,
   nodeId,
+  userId,
   context,
   step,
   publish,
 }) => {
   await publish(
-    conditionChannel().status({
+    conditionChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -123,7 +124,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     config = parseNodeConfig(NodeType.CONDITION, data) as ConditionData;
   } catch (error) {
     await publish(
-      conditionChannel().status({
+      conditionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -139,7 +140,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
       const operator = config.operator;
       if (!field || !operator) {
         await publish(
-          conditionChannel().status({
+          conditionChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -162,7 +163,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
         const stopOnFail = config.stopOnFail !== false;
         if (stopOnFail) {
           await publish(
-            conditionChannel().status({
+            conditionChannel(userId).status({
               nodeId,
               status: "error",
             }),
@@ -175,7 +176,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     });
 
     await publish(
-      conditionChannel().status({
+      conditionChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -184,7 +185,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      conditionChannel().status({
+      conditionChannel(userId).status({
         nodeId,
         status: "error",
       }),

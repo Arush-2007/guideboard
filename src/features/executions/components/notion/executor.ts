@@ -75,7 +75,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
   publish,
 }) => {
   await publish(
-    notionChannel().status({
+    notionChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -86,7 +86,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
     config = parseNodeConfig(NodeType.NOTION_ACTION, data) as NotionActionData;
   } catch (error) {
     await publish(
-      notionChannel().status({
+      notionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -103,7 +103,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
   });
 
   if (!credential || credential.type !== CredentialType.NOTION) {
-    await publish(notionChannel().status({ nodeId, status: "error" }));
+    await publish(notionChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError(
       "Notion node: Notion credential not found or wrong type",
     );
@@ -116,14 +116,14 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
     }
     token = decrypt(credential.value).trim();
   } catch {
-    await publish(notionChannel().status({ nodeId, status: "error" }));
+    await publish(notionChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError(
       "Notion node: Failed to read integration token",
     );
   }
 
   if (!token) {
-    await publish(notionChannel().status({ nodeId, status: "error" }));
+    await publish(notionChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError("Notion node: Integration token is empty");
   }
 
@@ -210,7 +210,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
     });
 
     await publish(
-      notionChannel().status({
+      notionChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -219,7 +219,7 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      notionChannel().status({
+      notionChannel(userId).status({
         nodeId,
         status: "error",
       }),

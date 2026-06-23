@@ -1,26 +1,15 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { youtubeCommentTriggerChannel } from "@/inngest/channels/youtube-comment-trigger";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { headers } from "next/headers";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 
-export type YoutubeCommentTriggerToken = Realtime.Token<
-  typeof youtubeCommentTriggerChannel,
-  ["status"]
->;
-
-export async function fetchYoutubeCommentTriggerRealtimeToken(): Promise<YoutubeCommentTriggerToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: youtubeCommentTriggerChannel(),
-    topics: ["status"],
-  });
-
-  return token;
+export function fetchYoutubeCommentTriggerRealtimeToken() {
+  return mintUserStatusToken(youtubeCommentTriggerChannel);
 }
 
 export type YoutubeCommentTriggerConfig = {

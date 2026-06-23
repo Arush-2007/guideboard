@@ -8,13 +8,14 @@ type GmailTriggerData = Record<string, unknown>;
 
 export const gmailTriggerExecutor: NodeExecutor<GmailTriggerData> = async ({
   nodeId,
+  userId,
   context,
   step,
   publish,
   data,
 }) => {
   await publish(
-    gmailTriggerChannel().status({
+    gmailTriggerChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -24,7 +25,7 @@ export const gmailTriggerExecutor: NodeExecutor<GmailTriggerData> = async ({
     parseNodeConfig(NodeType.GMAIL_TRIGGER, data);
   } catch (error) {
     await publish(
-      gmailTriggerChannel().status({
+      gmailTriggerChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -37,7 +38,7 @@ export const gmailTriggerExecutor: NodeExecutor<GmailTriggerData> = async ({
   const result = await step.run("gmail-trigger", async () => context);
 
   await publish(
-    gmailTriggerChannel().status({
+    gmailTriggerChannel(userId).status({
       nodeId,
       status: "success",
     }),

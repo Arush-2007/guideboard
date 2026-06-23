@@ -6,15 +6,11 @@ import { NonRetriableError } from "inngest";
 
 type TypeformTriggerData = Record<string, unknown>;
 
-export const typeformTriggerExecutor: NodeExecutor<TypeformTriggerData> = async ({
-  nodeId,
-  context,
-  step,
-  publish,
-  data,
-}) => {
+export const typeformTriggerExecutor: NodeExecutor<
+  TypeformTriggerData
+> = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    typeformTriggerChannel().status({
+    typeformTriggerChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -24,7 +20,7 @@ export const typeformTriggerExecutor: NodeExecutor<TypeformTriggerData> = async 
     parseNodeConfig(NodeType.TYPEFORM_TRIGGER, data);
   } catch (error) {
     await publish(
-      typeformTriggerChannel().status({
+      typeformTriggerChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -37,7 +33,7 @@ export const typeformTriggerExecutor: NodeExecutor<TypeformTriggerData> = async 
   const result = await step.run("typeform-trigger", async () => context);
 
   await publish(
-    typeformTriggerChannel().status({
+    typeformTriggerChannel(userId).status({
       nodeId,
       status: "success",
     }),

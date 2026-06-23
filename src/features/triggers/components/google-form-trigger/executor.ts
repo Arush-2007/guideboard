@@ -6,15 +6,11 @@ import { NonRetriableError } from "inngest";
 
 type GoogleFormTriggerData = Record<string, unknown>;
 
-export const googleFormTriggerExecutor: NodeExecutor<GoogleFormTriggerData> = async ({
-  nodeId,
-  context,
-  step,
-  publish,
-  data,
-}) => {
+export const googleFormTriggerExecutor: NodeExecutor<
+  GoogleFormTriggerData
+> = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    googleFormTriggerChannel().status({
+    googleFormTriggerChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -24,7 +20,7 @@ export const googleFormTriggerExecutor: NodeExecutor<GoogleFormTriggerData> = as
     parseNodeConfig(NodeType.GOOGLE_FORM_TRIGGER, data);
   } catch (error) {
     await publish(
-      googleFormTriggerChannel().status({
+      googleFormTriggerChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -37,7 +33,7 @@ export const googleFormTriggerExecutor: NodeExecutor<GoogleFormTriggerData> = as
   const result = await step.run("google-form-trigger", async () => context);
 
   await publish(
-    googleFormTriggerChannel().status({
+    googleFormTriggerChannel(userId).status({
       nodeId,
       status: "success",
     }),

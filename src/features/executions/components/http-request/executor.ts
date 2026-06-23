@@ -15,12 +15,13 @@ type HttpRequestData = {
 export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
   data,
   nodeId,
+  userId,
   context,
   step,
   publish,
 }) => {
   await publish(
-    httpRequestChannel().status({
+    httpRequestChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -31,7 +32,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
     config = parseNodeConfig(NodeType.HTTP_REQUEST, data) as HttpRequestData;
   } catch (error) {
     await publish(
-      httpRequestChannel().status({
+      httpRequestChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -46,7 +47,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
     const result = await step.run("http-request", async () => {
       if (!config.endpoint) {
         await publish(
-          httpRequestChannel().status({
+          httpRequestChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -58,7 +59,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
 
       if (!config.method) {
         await publish(
-          httpRequestChannel().status({
+          httpRequestChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -101,7 +102,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
     });
 
     await publish(
-      httpRequestChannel().status({
+      httpRequestChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -110,7 +111,7 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
     return result;
   } catch (error) {
     await publish(
-      httpRequestChannel().status({
+      httpRequestChannel(userId).status({
         nodeId,
         status: "error",
       }),

@@ -30,7 +30,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
   publish,
 }) => {
   await publish(
-    whatsappActionChannel().status({
+    whatsappActionChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -44,7 +44,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     ) as WhatsappActionData;
   } catch (error) {
     await publish(
-      whatsappActionChannel().status({
+      whatsappActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -87,7 +87,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
 
   if (!credential) {
     await publish(
-      whatsappActionChannel().status({
+      whatsappActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -100,7 +100,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     parsed = JSON.parse(decrypt(credential.value)) as WhatsappCredentialValue;
   } catch {
     await publish(
-      whatsappActionChannel().status({
+      whatsappActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -115,7 +115,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
 
   if (!accessToken || !phoneNumberId) {
     await publish(
-      whatsappActionChannel().status({
+      whatsappActionChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -168,7 +168,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     });
 
     await publish(
-      whatsappActionChannel().status({
+      whatsappActionChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -177,7 +177,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      whatsappActionChannel().status({
+      whatsappActionChannel(userId).status({
         nodeId,
         status: "error",
       }),

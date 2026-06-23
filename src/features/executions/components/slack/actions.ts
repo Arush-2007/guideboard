@@ -1,19 +1,8 @@
 "use server";
 
-import { getSubscriptionToken, type Realtime } from "@inngest/realtime";
 import { slackChannel } from "@/inngest/channels/slack";
-import { inngest } from "@/inngest/client";
+import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export type SlackToken = Realtime.Token<
-  typeof slackChannel,
-  ["status"]
->;
-
-export async function fetchSlackRealtimeToken(): Promise<SlackToken> {
-  const token = await getSubscriptionToken(inngest, {
-    channel: slackChannel(),
-    topics: ["status"],
-  });
-
-  return token;
-};
+export function fetchSlackRealtimeToken() {
+  return mintUserStatusToken(slackChannel);
+}
