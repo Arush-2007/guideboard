@@ -129,9 +129,7 @@ export const TelegramActionDialog = ({
                     </Select>
                   ) : credentials.length === 0 ? (
                     <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
-                      <p>
-                        No TELEGRAM credential found. Set one up first.
-                      </p>
+                      <p>No TELEGRAM credential found. Set one up first.</p>
                       <Button
                         type="button"
                         size="sm"
@@ -149,10 +147,7 @@ export const TelegramActionDialog = ({
                       Using: {autoSelected.name}
                     </div>
                   ) : (
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select a Telegram bot token" />
@@ -167,6 +162,7 @@ export const TelegramActionDialog = ({
                                 alt=""
                                 width={16}
                                 height={16}
+                                unoptimized
                               />
                               {c.name}
                             </div>
@@ -223,7 +219,8 @@ export const TelegramActionDialog = ({
                     />
                   </FormControl>
                   <FormDescription>
-                    Max 4096 characters. Use {"{{variables}}"} for context values.
+                    Max 4096 characters. Use {"{{variables}}"} for context
+                    values.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

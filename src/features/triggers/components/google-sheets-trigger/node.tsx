@@ -1,15 +1,15 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { BaseTriggerNode } from "../base-trigger-node";
-import {
-  GoogleSheetsTriggerDialog,
-  type GoogleSheetsTriggerFormValues,
-} from "./dialog";
+import type { GoogleSheetsTriggerFormValues } from "./dialog";
+const GoogleSheetsTriggerDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.GoogleSheetsTriggerDialog),
+);
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
-import { fetchGoogleSheetsTriggerRealtimeToken } from "./actions";
-import { GOOGLE_SHEETS_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/google-sheets-trigger";
 
 type GoogleSheetsTriggerNodeData = {
   spreadsheetId?: string;
@@ -23,12 +23,7 @@ export const GoogleSheetsTriggerNode = memo(
     const [dialogOpen, setDialogOpen] = useState(false);
     const { setNodes } = useReactFlow();
 
-    const nodeStatus = useNodeStatus({
-      nodeId: props.id,
-      channel: GOOGLE_SHEETS_TRIGGER_CHANNEL_NAME,
-      topic: "status",
-      refreshToken: fetchGoogleSheetsTriggerRealtimeToken,
-    });
+    const nodeStatus = useNodeStatus(props.id);
 
     const handleOpenSettings = () => setDialogOpen(true);
 
@@ -55,12 +50,14 @@ export const GoogleSheetsTriggerNode = memo(
 
     return (
       <>
-        <GoogleSheetsTriggerDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          onSubmit={handleSubmit}
-          defaultValues={props.data}
-        />
+        {dialogOpen && (
+          <GoogleSheetsTriggerDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            onSubmit={handleSubmit}
+            defaultValues={props.data}
+          />
+        )}
         <BaseTriggerNode
           {...props}
           icon="/logos/google-sheets.svg"

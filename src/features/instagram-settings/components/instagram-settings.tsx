@@ -52,17 +52,13 @@ export const InstagramSettings = () => {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
 
-  const { data, isPending } = useQuery(
-    trpc.aiReplySettings.get.queryOptions(),
-  );
+  const { data, isPending } = useQuery(trpc.aiReplySettings.get.queryOptions());
 
   const save = useMutation(
     trpc.aiReplySettings.save.mutationOptions({
       onSuccess: () => {
         toast.success("Settings saved");
-        queryClient.invalidateQueries(
-          trpc.aiReplySettings.get.queryOptions(),
-        );
+        queryClient.invalidateQueries(trpc.aiReplySettings.get.queryOptions());
       },
       onError: (error) => {
         toast.error(`Failed to save settings: ${error.message}`);
@@ -110,6 +106,7 @@ export const InstagramSettings = () => {
                 alt="AI Reply Settings"
                 width={22}
                 height={22}
+                unoptimized
               />
             </span>
             AI Reply Settings
@@ -194,10 +191,7 @@ export const InstagramSettings = () => {
                 />
 
                 <div className="flex justify-end pt-1">
-                  <Button
-                    type="submit"
-                    disabled={save.isPending}
-                  >
+                  <Button type="submit" disabled={save.isPending}>
                     {save.isPending ? "Saving…" : "Save settings"}
                   </Button>
                 </div>

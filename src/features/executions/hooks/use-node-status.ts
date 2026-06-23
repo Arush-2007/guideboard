@@ -1,55 +1,27 @@
-import type { Realtime } from "@inngest/realtime";
-import { useInngestSubscription } from "@inngest/realtime/hooks";
-import { useEffect, useState } from "react";
+import { useAtomValue } from "jotai";
+import { selectAtom } from "jotai/utils";
+import { useMemo } from "react";
 import type { NodeStatus } from "@/components/react-flow/node-status-indicator";
+import { nodeStatusMapAtom } from "@/features/editor/store/atoms";
 
-interface UseNodeStatusOptions {
-  nodeId: string;
-  channel: string;
-  topic: string;
-  refreshToken: () => Promise<Realtime.Subscribe.Token>;
-};
+/**
+ * Latest realtime status for a single node.
+ *
+ * Reads the node's own slice of the shared status map via `selectAtom`. Because
+ * the selected value is a primitive status string, selectAtom's default
+ * `Object.is` equality means a status update re-renders ONLY the affected node,
+ * not every node on the canvas. The subscriptions that populate the map are
+ * owned by the per-channel <NodeStatusSubscriber>s mounted in the editor.
+ */
+export function useNodeStatus(nodeId: string): NodeStatus {
+  const statusAtom = useMemo(
+    () =>
+      selectAtom(
+        nodeStatusMapAtom,
+        (map): NodeStatus => map[nodeId] ?? "initial",
+      ),
+    [nodeId],
+  );
 
-export function useNodeStatus({
-  nodeId,
-  channel,
-  topic,
-  refreshToken,
-}: UseNodeStatusOptions) {
-  const [status, setStatus] = useState<NodeStatus>("initial");
-
-  const { data } = useInngestSubscription({
-    refreshToken,
-    enabled: true,
-  });
-
-  useEffect(() => {
-    if (!data?.length) {
-      return;
-    }
-
-    // Find the latest message for this node
-    const latestMessage = data
-      .filter(
-        (msg) => 
-          msg.kind === "data" &&
-          msg.channel === channel &&
-          msg.topic === topic &&
-          msg.data.nodeId === nodeId,
-      )
-      .sort((a, b) => {
-        if (a.kind === "data" && b.kind === "data") {
-          return (
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          );
-        }
-        return 0;
-      })[0];
-
-    if (latestMessage?.kind === "data") {
-      setStatus(latestMessage.data.status as NodeStatus);
-    }
-  }, [data, nodeId, channel, topic]);
-
-  return status;
-};
+  return useAtomValue(statusAtom);
+}

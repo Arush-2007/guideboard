@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
-import { SLACK_CHANNEL_NAME } from "@/inngest/channels/slack";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
-import { fetchSlackRealtimeToken } from "./actions";
-import { SlackDialog, type SlackFormValues } from "./dialog";
+import type { SlackFormValues } from "./dialog";
+const SlackDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.SlackDialog),
+);
 
 type SlackNodeData = {
   webhookUrls?: string[];
@@ -25,12 +28,7 @@ export const SlackNode = memo((props: NodeProps<SlackNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: SLACK_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchSlackRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
@@ -61,14 +59,16 @@ export const SlackNode = memo((props: NodeProps<SlackNodeType>) => {
 
   return (
     <>
-      <SlackDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <SlackDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}

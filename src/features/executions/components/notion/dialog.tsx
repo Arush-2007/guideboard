@@ -162,9 +162,7 @@ export const NotionDialog = ({
                     </Select>
                   ) : credentials.length === 0 ? (
                     <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
-                      <p>
-                        No NOTION credential found. Set one up first.
-                      </p>
+                      <p>No NOTION credential found. Set one up first.</p>
                       <Button
                         type="button"
                         size="sm"
@@ -182,10 +180,7 @@ export const NotionDialog = ({
                       Using: {autoSelected.name}
                     </div>
                   ) : (
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select integration token" />
@@ -200,6 +195,7 @@ export const NotionDialog = ({
                                 alt=""
                                 width={16}
                                 height={16}
+                                unoptimized
                               />
                               {c.name}
                             </div>
@@ -222,10 +218,7 @@ export const NotionDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>Action</FormLabel>
-                  <Select
-                    onValueChange={field.onChange}
-                    value={field.value}
-                  >
+                  <Select onValueChange={field.onChange} value={field.value}>
                     <FormControl>
                       <SelectTrigger className="w-full">
                         <SelectValue />
@@ -298,9 +291,8 @@ export const NotionDialog = ({
                       />
                     </FormControl>
                     <FormDescription>
-                      Title property must be named{" "}
-                      <strong>Name</strong> (Notion default). Supports{" "}
-                      {"{{templates}}"}.
+                      Title property must be named <strong>Name</strong> (Notion
+                      default). Supports {"{{templates}}"}.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

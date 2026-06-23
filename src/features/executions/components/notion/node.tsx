@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
-import { NotionDialog, type NotionFormValues } from "./dialog";
+import type { NotionFormValues } from "./dialog";
+const NotionDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.NotionDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchNotionRealtimeToken } from "./actions";
-import { NOTION_CHANNEL_NAME } from "@/inngest/channels/notion";
 
 type NotionNodeData = {
   credentialId?: string;
@@ -27,12 +30,7 @@ export const NotionNode = memo((props: NodeProps<NotionFlowNode>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: NOTION_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchNotionRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
@@ -60,14 +58,16 @@ export const NotionNode = memo((props: NodeProps<NotionFlowNode>) => {
 
   return (
     <>
-      <NotionDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <NotionDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}

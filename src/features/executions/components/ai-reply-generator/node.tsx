@@ -1,16 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { Sparkles } from "lucide-react";
 import { memo, useState } from "react";
 import { BaseExecutionNode } from "../base-execution-node";
-import {
-  AiReplyGeneratorDialog,
-  type AiReplyGeneratorFormValues,
-} from "./dialog";
+import type { AiReplyGeneratorFormValues } from "./dialog";
+const AiReplyGeneratorDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.AiReplyGeneratorDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchAiReplyGeneratorRealtimeToken } from "./actions";
-import { AI_REPLY_GENERATOR_CHANNEL_NAME } from "@/inngest/channels/ai-reply-generator";
 
 type AiReplyGeneratorNodeData = {
   variableName?: string;
@@ -28,12 +28,7 @@ export const AiReplyGeneratorNode = memo(
     const [dialogOpen, setDialogOpen] = useState(false);
     const { setNodes } = useReactFlow();
 
-    const nodeStatus = useNodeStatus({
-      nodeId: props.id,
-      channel: AI_REPLY_GENERATOR_CHANNEL_NAME,
-      topic: "status",
-      refreshToken: fetchAiReplyGeneratorRealtimeToken,
-    });
+    const nodeStatus = useNodeStatus(props.id);
 
     const handleOpenSettings = () => setDialogOpen(true);
 
@@ -55,12 +50,14 @@ export const AiReplyGeneratorNode = memo(
 
     return (
       <>
-        <AiReplyGeneratorDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          onSubmit={handleSubmit}
-          defaultValues={nodeData}
-        />
+        {dialogOpen && (
+          <AiReplyGeneratorDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            onSubmit={handleSubmit}
+            defaultValues={nodeData}
+          />
+        )}
         <BaseExecutionNode
           {...props}
           id={props.id}

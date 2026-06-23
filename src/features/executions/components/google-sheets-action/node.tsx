@@ -1,16 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
-import { GOOGLE_SHEETS_ACTION_CHANNEL_NAME } from "@/inngest/channels/google-sheets-action";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
-import { fetchGoogleSheetsActionRealtimeToken } from "./actions";
-import {
-  GoogleSheetsActionDialog,
-  type GoogleSheetsActionFormValues,
-} from "./dialog";
+import type { GoogleSheetsActionFormValues } from "./dialog";
+const GoogleSheetsActionDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.GoogleSheetsActionDialog),
+);
 
 type GoogleSheetsActionNodeData = {
   action?: "append_row" | "read_rows";
@@ -31,12 +31,7 @@ export const GoogleSheetsActionNode = memo(
     const workflowId =
       typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-    const nodeStatus = useNodeStatus({
-      nodeId: props.id,
-      channel: GOOGLE_SHEETS_ACTION_CHANNEL_NAME,
-      topic: "status",
-      refreshToken: fetchGoogleSheetsActionRealtimeToken,
-    });
+    const nodeStatus = useNodeStatus(props.id);
 
     const handleOpenSettings = () => setDialogOpen(true);
 
@@ -66,14 +61,16 @@ export const GoogleSheetsActionNode = memo(
 
     return (
       <>
-        <GoogleSheetsActionDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          onSubmit={handleSubmit}
-          defaultValues={nodeData}
-          currentNodeId={props.id}
-          workflowId={workflowId}
-        />
+        {dialogOpen && (
+          <GoogleSheetsActionDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            onSubmit={handleSubmit}
+            defaultValues={nodeData}
+            currentNodeId={props.id}
+            workflowId={workflowId}
+          />
+        )}
         <BaseExecutionNode
           {...props}
           id={props.id}

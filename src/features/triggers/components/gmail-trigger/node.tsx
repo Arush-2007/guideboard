@@ -1,29 +1,24 @@
+import dynamic from "next/dynamic";
 import { NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { BaseTriggerNode } from "../base-trigger-node";
-import { GmailTriggerDialog } from "./dialog";
+const GmailTriggerDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.GmailTriggerDialog),
+);
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
-import { fetchGmailTriggerRealtimeToken } from "./actions";
-import { GMAIL_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/gmail-trigger";
 
 export const GmailTriggerNode = memo((props: NodeProps) => {
   const [dialogOpen, setDialogOpen] = useState(false);
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: GMAIL_TRIGGER_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchGmailTriggerRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
   return (
     <>
-      <GmailTriggerDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-      />
+      {dialogOpen && (
+        <GmailTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      )}
       <BaseTriggerNode
         {...props}
         icon="/logos/gmail.svg"
@@ -34,5 +29,5 @@ export const GmailTriggerNode = memo((props: NodeProps) => {
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });

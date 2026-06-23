@@ -1,19 +1,17 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { type NodeProps, type Node, useReactFlow } from "@xyflow/react";
 import { memo, useState } from "react";
 import { toast } from "sonner";
 import { BaseTriggerNode } from "../base-trigger-node";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
-import { INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/instagram-comment-trigger";
-import {
-  fetchInstagramCommentTriggerRealtimeToken,
-  saveInstagramCommentTriggerConfig,
-} from "./actions";
-import {
-  InstagramCommentTriggerDialog,
-  type InstagramCommentTriggerFormValues,
-} from "./dialog";
+import { saveInstagramCommentTriggerConfig } from "./actions";
+import type { InstagramCommentTriggerFormValues } from "./dialog";
+const InstagramCommentTriggerDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.InstagramCommentTriggerDialog),
+);
 
 type InstagramCommentTriggerData = {
   postId?: string;
@@ -29,12 +27,7 @@ export const InstagramCommentTriggerNode = memo(
     const [dialogOpen, setDialogOpen] = useState(false);
     const { setNodes } = useReactFlow();
 
-    const nodeStatus = useNodeStatus({
-      nodeId: props.id,
-      channel: INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME,
-      topic: "status",
-      refreshToken: fetchInstagramCommentTriggerRealtimeToken,
-    });
+    const nodeStatus = useNodeStatus(props.id);
 
     const handleOpenSettings = () => setDialogOpen(true);
 
@@ -53,7 +46,9 @@ export const InstagramCommentTriggerNode = memo(
           postId: values.postId,
         });
       } catch {
-        toast.error("Failed to save trigger config. Your changes are saved locally until you save the workflow.");
+        toast.error(
+          "Failed to save trigger config. Your changes are saved locally until you save the workflow.",
+        );
       }
     };
 
@@ -64,12 +59,14 @@ export const InstagramCommentTriggerNode = memo(
 
     return (
       <>
-        <InstagramCommentTriggerDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          onSubmit={handleSubmit}
-          defaultValues={nodeData}
-        />
+        {dialogOpen && (
+          <InstagramCommentTriggerDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            onSubmit={handleSubmit}
+            defaultValues={nodeData}
+          />
+        )}
         <BaseTriggerNode
           {...props}
           icon="/logos/instagram.svg"

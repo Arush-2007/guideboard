@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
-import { OpenAiDialog, OpenAiFormValues } from "./dialog";
+import type { OpenAiFormValues } from "./dialog";
+const OpenAiDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.OpenAiDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchOpenAiRealtimeToken } from "./actions";
-import { OPENAI_CHANNEL_NAME } from "@/inngest/channels/openai";
 
 type OpenAiNodeData = {
   variableName?: string;
@@ -25,28 +28,25 @@ export const OpenAiNode = memo((props: NodeProps<OpenAiNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: OPENAI_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchOpenAiRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
   const handleSubmit = (values: OpenAiFormValues) => {
-    setNodes((nodes) => nodes.map((node) => {
-      if (node.id === props.id) {
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            ...values,
-          }
+    setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id === props.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              ...values,
+            },
+          };
         }
-      }
-      return node;
-    }))
+        return node;
+      }),
+    );
   };
 
   const nodeData = props.data;
@@ -56,14 +56,16 @@ export const OpenAiNode = memo((props: NodeProps<OpenAiNodeType>) => {
 
   return (
     <>
-      <OpenAiDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <OpenAiDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}
@@ -75,7 +77,7 @@ export const OpenAiNode = memo((props: NodeProps<OpenAiNodeType>) => {
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });
 
 OpenAiNode.displayName = "OpenAiNode";

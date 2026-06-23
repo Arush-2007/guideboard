@@ -1,14 +1,17 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
 import { BrainCircuit } from "lucide-react";
 import { BaseExecutionNode } from "../base-execution-node";
-import { AiTextDialog, type AiTextFormValues } from "./dialog";
+import type { AiTextFormValues } from "./dialog";
+const AiTextDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.AiTextDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchAiTextRealtimeToken } from "./actions";
-import { AI_TEXT_CHANNEL_NAME } from "@/inngest/channels/ai-text";
 
 type AiTextNodeData = {
   provider?: "openai" | "anthropic" | "gemini";
@@ -26,12 +29,7 @@ export const AiTextNode = memo((props: NodeProps<AiTextNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: AI_TEXT_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchAiTextRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
@@ -59,14 +57,16 @@ export const AiTextNode = memo((props: NodeProps<AiTextNodeType>) => {
 
   return (
     <>
-      <AiTextDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <AiTextDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}

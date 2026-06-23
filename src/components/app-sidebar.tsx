@@ -50,7 +50,7 @@ const menuItems = [
         url: "/executions",
       },
     ],
-  }
+  },
 ];
 
 export const AppSidebar = () => {
@@ -58,13 +58,24 @@ export const AppSidebar = () => {
   const pathname = usePathname();
 
   return (
-    <Sidebar collapsible="icon" className="border-r border-sidebar-border/70 bg-sidebar">
+    <Sidebar
+      collapsible="icon"
+      className="border-r border-sidebar-border/70 bg-sidebar"
+    >
       <SidebarHeader className="gap-y-4 border-b border-sidebar-border/70 p-4">
         <SidebarMenuItem>
           <SidebarMenuButton asChild className="h-11 gap-x-3 rounded-2xl px-3">
             <Link href="/" prefetch>
-              <Image src="/logos/logo.svg" alt="Guideboard" width={28} height={28} />
-              <span className="text-sm font-semibold tracking-tight">Guideboard</span>
+              <Image
+                src="/logos/logo.svg"
+                alt="Guideboard"
+                width={28}
+                height={28}
+                unoptimized
+              />
+              <span className="text-sm font-semibold tracking-tight">
+                Guideboard
+              </span>
             </Link>
           </SidebarMenuButton>
         </SidebarMenuItem>
@@ -74,7 +85,9 @@ export const AppSidebar = () => {
               <LayoutGridIcon className="size-4" />
             </span>
             <div className="min-w-0">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Current Space</p>
+              <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                Current Space
+              </p>
               <p className="truncate text-sm font-semibold">Automation Hub</p>
             </div>
           </div>
@@ -118,13 +131,15 @@ export const AppSidebar = () => {
             <SidebarMenuButton
               tooltip="Sign out"
               className="h-10 gap-x-3 rounded-xl px-3 text-[13px] font-semibold transition-all duration-200 hover:bg-destructive/10 hover:text-destructive"
-              onClick={() => authClient.signOut({
-                fetchOptions: {
-                  onSuccess: () => {
-                    router.push("/login");
+              onClick={() =>
+                authClient.signOut({
+                  fetchOptions: {
+                    onSuccess: () => {
+                      router.push("/login");
+                    },
                   },
-                },
-              })}
+                })
+              }
             >
               <LogOutIcon className="h-4 w-4" />
               <span>Sign out</span>

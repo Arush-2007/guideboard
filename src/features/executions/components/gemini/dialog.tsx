@@ -49,7 +49,7 @@ interface Props {
   defaultValues?: Partial<GeminiFormValues>;
   currentNodeId: string;
   workflowId?: string;
-};
+}
 
 export const GeminiDialog = ({
   open,
@@ -126,9 +126,7 @@ export const GeminiDialog = ({
                     </Select>
                   ) : credentials.length === 0 ? (
                     <div className="rounded-md border border-yellow-500/40 bg-yellow-50 px-3 py-2 text-sm text-yellow-900">
-                      <p>
-                        No GEMINI credential found. Set one up first.
-                      </p>
+                      <p>No GEMINI credential found. Set one up first.</p>
                       <Button
                         type="button"
                         size="sm"
@@ -146,10 +144,7 @@ export const GeminiDialog = ({
                       Using: {autoSelected.name}
                     </div>
                   ) : (
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger className="w-full">
                           <SelectValue placeholder="Select a credential" />
@@ -157,16 +152,14 @@ export const GeminiDialog = ({
                       </FormControl>
                       <SelectContent>
                         {credentials.map((credential) => (
-                          <SelectItem
-                            key={credential.id}
-                            value={credential.id}
-                          >
+                          <SelectItem key={credential.id} value={credential.id}>
                             <div className="flex items-center gap-2">
                               <Image
                                 src="/logos/gemini.svg"
                                 alt="Gemini"
                                 width={16}
                                 height={16}
+                                unoptimized
                               />
                               {credential.name}
                             </div>
@@ -184,45 +177,48 @@ export const GeminiDialog = ({
               control={form.control}
               name="systemPrompt"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>System Prompt (Optional)</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                    placeholder="You are a helpful assistant."
-                    className="min-h-[80px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
+                <FormItem>
+                  <FormLabel>System Prompt (Optional)</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="You are a helpful assistant."
+                      className="min-h-[80px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
                   <FormDescription>
-                    Sets the behavior of the assistant. Use {"{{variables}}"} for simple values or {"{{json variable}}"} to stringify objects
+                    Sets the behavior of the assistant. Use {"{{variables}}"}{" "}
+                    for simple values or {"{{json variable}}"} to stringify
+                    objects
                   </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  <FormMessage />
+                </FormItem>
+              )}
             />
             <FormField
               control={form.control}
               name="userPrompt"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>User Prompt</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                     placeholder="Summarize this text: {{json httpResponse.data}}"
-                    className="min-h-[120px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
+                <FormItem>
+                  <FormLabel>User Prompt</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="Summarize this text: {{json httpResponse.data}}"
+                      className="min-h-[120px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
                   <FormDescription>
-                    The prompt to send to the AI. Use {"{{variables}}"} for simple values or {"{{json variable}}"} to stringify objects
+                    The prompt to send to the AI. Use {"{{variables}}"} for
+                    simple values or {"{{json variable}}"} to stringify objects
                   </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  <FormMessage />
+                </FormItem>
+              )}
             />
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>

@@ -67,14 +67,21 @@ export const CredentialsInstagramSection = () => {
 
   const isExpiringSoon =
     data?.tokenExpiresAt != null &&
-    new Date(data.tokenExpiresAt).getTime() < Date.now() + INSTAGRAM_TOKEN_WARNING_MS;
+    new Date(data.tokenExpiresAt).getTime() <
+      Date.now() + INSTAGRAM_TOKEN_WARNING_MS;
 
   return (
     <Card className="rounded-2xl border-border/70 p-4 shadow-sm">
       <CardContent className="flex flex-row items-center justify-between p-0">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-            <Image src="/logos/instagram.svg" alt="Instagram" width={20} height={20} />
+            <Image
+              src="/logos/instagram.svg"
+              alt="Instagram"
+              width={20}
+              height={20}
+              unoptimized
+            />
           </div>
           <div className="min-w-0">
             <p className="truncate text-base font-medium">Instagram</p>
@@ -89,7 +96,12 @@ export const CredentialsInstagramSection = () => {
         </div>
         <div className="ml-4 shrink-0">
           {!isPending && !data && (
-            <Button variant="outline" size="sm" className="rounded-full px-4" asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full px-4"
+              asChild
+            >
               <Link href="/api/auth/instagram">Connect</Link>
             </Button>
           )}
@@ -149,7 +161,13 @@ export const CredentialsYoutubeSection = () => {
       <CardContent className="flex flex-row items-center justify-between p-0">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-            <Image src="/logos/youtube.svg" alt="YouTube" width={20} height={20} />
+            <Image
+              src="/logos/youtube.svg"
+              alt="YouTube"
+              width={20}
+              height={20}
+              unoptimized
+            />
           </div>
           <div className="min-w-0">
             <p className="truncate text-base font-medium">YouTube</p>
@@ -164,7 +182,12 @@ export const CredentialsYoutubeSection = () => {
         </div>
         <div className="ml-4 shrink-0">
           {!isPending && !data && (
-            <Button variant="outline" size="sm" className="rounded-full px-4" asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="rounded-full px-4"
+              asChild
+            >
               <Link href="/api/auth/youtube">Connect</Link>
             </Button>
           )}

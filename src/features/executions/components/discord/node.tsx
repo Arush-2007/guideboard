@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
-import { DiscordDialog, DiscordFormValues } from "./dialog";
+import type { DiscordFormValues } from "./dialog";
+const DiscordDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.DiscordDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchDiscordRealtimeToken } from "./actions";
-import { DISCORD_CHANNEL_NAME } from "@/inngest/channels/discord";
 
 type DiscordNodeData = {
   webhookUrl?: string;
@@ -23,28 +26,25 @@ export const DiscordNode = memo((props: NodeProps<DiscordNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: DISCORD_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchDiscordRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
   const handleSubmit = (values: DiscordFormValues) => {
-    setNodes((nodes) => nodes.map((node) => {
-      if (node.id === props.id) {
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            ...values,
-          }
+    setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id === props.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              ...values,
+            },
+          };
         }
-      }
-      return node;
-    }))
+        return node;
+      }),
+    );
   };
 
   const nodeData = props.data;
@@ -54,14 +54,16 @@ export const DiscordNode = memo((props: NodeProps<DiscordNodeType>) => {
 
   return (
     <>
-      <DiscordDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <DiscordDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}
@@ -73,7 +75,7 @@ export const DiscordNode = memo((props: NodeProps<DiscordNodeType>) => {
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });
 
 DiscordNode.displayName = "DiscordNode";

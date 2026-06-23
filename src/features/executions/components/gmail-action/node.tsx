@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
-import { GMAIL_ACTION_CHANNEL_NAME } from "@/inngest/channels/gmail-action";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
-import { fetchGmailActionRealtimeToken } from "./actions";
-import { GmailActionDialog, type GmailActionFormValues } from "./dialog";
+import type { GmailActionFormValues } from "./dialog";
+const GmailActionDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.GmailActionDialog),
+);
 
 type GmailActionNodeData = {
   to?: string | string[];
@@ -24,12 +27,7 @@ export const GmailActionNode = memo((props: NodeProps<GmailActionNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: GMAIL_ACTION_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchGmailActionRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
@@ -62,14 +60,16 @@ export const GmailActionNode = memo((props: NodeProps<GmailActionNodeType>) => {
 
   return (
     <>
-      <GmailActionDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <GmailActionDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}

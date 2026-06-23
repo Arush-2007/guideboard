@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
-import { GeminiDialog, GeminiFormValues } from "./dialog";
+import type { GeminiFormValues } from "./dialog";
+const GeminiDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.GeminiDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchGeminiRealtimeToken } from "./actions";
-import { GEMINI_CHANNEL_NAME } from "@/inngest/channels/gemini";
 
 type GeminiNodeData = {
   variableName?: string;
@@ -25,28 +28,25 @@ export const GeminiNode = memo((props: NodeProps<GeminiNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: GEMINI_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchGeminiRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
   const handleSubmit = (values: GeminiFormValues) => {
-    setNodes((nodes) => nodes.map((node) => {
-      if (node.id === props.id) {
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            ...values,
-          }
+    setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id === props.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              ...values,
+            },
+          };
         }
-      }
-      return node;
-    }))
+        return node;
+      }),
+    );
   };
 
   const nodeData = props.data;
@@ -56,14 +56,16 @@ export const GeminiNode = memo((props: NodeProps<GeminiNodeType>) => {
 
   return (
     <>
-      <GeminiDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <GeminiDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}
@@ -75,7 +77,7 @@ export const GeminiNode = memo((props: NodeProps<GeminiNodeType>) => {
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });
 
 GeminiNode.displayName = "GeminiNode";

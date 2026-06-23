@@ -1,19 +1,17 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { type NodeProps, type Node, useReactFlow } from "@xyflow/react";
 import { memo, useState } from "react";
 import { toast } from "sonner";
 import { BaseTriggerNode } from "../base-trigger-node";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
-import { YOUTUBE_COMMENT_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/youtube-comment-trigger";
-import {
-  fetchYoutubeCommentTriggerRealtimeToken,
-  saveYoutubeCommentTriggerConfig,
-} from "./actions";
-import {
-  YoutubeCommentTriggerDialog,
-  type YoutubeCommentTriggerFormValues,
-} from "./dialog";
+import { saveYoutubeCommentTriggerConfig } from "./actions";
+import type { YoutubeCommentTriggerFormValues } from "./dialog";
+const YoutubeCommentTriggerDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.YoutubeCommentTriggerDialog),
+);
 
 type YoutubeCommentTriggerData = {
   videoId?: string;
@@ -28,12 +26,7 @@ export const YoutubeCommentTriggerNode = memo(
     const [dialogOpen, setDialogOpen] = useState(false);
     const { setNodes } = useReactFlow();
 
-    const nodeStatus = useNodeStatus({
-      nodeId: props.id,
-      channel: YOUTUBE_COMMENT_TRIGGER_CHANNEL_NAME,
-      topic: "status",
-      refreshToken: fetchYoutubeCommentTriggerRealtimeToken,
-    });
+    const nodeStatus = useNodeStatus(props.id);
 
     const handleOpenSettings = () => setDialogOpen(true);
 
@@ -65,12 +58,14 @@ export const YoutubeCommentTriggerNode = memo(
 
     return (
       <>
-        <YoutubeCommentTriggerDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          onSubmit={handleSubmit}
-          defaultValues={nodeData}
-        />
+        {dialogOpen && (
+          <YoutubeCommentTriggerDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            onSubmit={handleSubmit}
+            defaultValues={nodeData}
+          />
+        )}
         <BaseTriggerNode
           {...props}
           icon="/logos/youtube.svg"

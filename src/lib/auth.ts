@@ -39,10 +39,16 @@ export const auth = betterAuth({
   database: prismaAdapter(prisma, {
     provider: "postgresql",
   }),
-  // Accept auth requests from both the local dev origin and the ngrok tunnel.
-  // Without this, opening the app over ngrok fails the origin/CSRF check with a
-  // 403 (the request Origin won't match BETTER_AUTH_URL=localhost).
+  // Accept auth requests from the ngrok tunnel (kept) plus — in development
+  // only — the localhost origin, so the UI can be browsed directly at
+  // http://localhost:3000 (fast, no tunnel) while ngrok keeps serving inbound
+  // webhooks unchanged. localhost is NOT trusted in production builds. Without a
+  // matching trusted origin, better-auth rejects the request with a 403 on the
+  // origin/CSRF check.
   trustedOrigins: [
+    process.env.NODE_ENV === "development"
+      ? "http://localhost:3000"
+      : undefined,
     process.env.NEXT_PUBLIC_APP_URL,
     process.env.NGROK_URL,
   ].filter((origin): origin is string => Boolean(origin)),

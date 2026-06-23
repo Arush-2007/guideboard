@@ -28,6 +28,9 @@ import { useSetAtom } from 'jotai';
 import { editorAtom } from '../store/atoms';
 import { NodeType } from '@/generated/prisma';
 import { ExecuteWorkflowButton } from './execute-workflow-button';
+import { NodeStatusSubscriber } from '@/features/executions/components/node-status-subscriber';
+import { deriveActiveChannels } from '@/features/executions/lib/node-status';
+import { channelNameForNodeType } from '@/features/executions/lib/node-status-registry';
 
 export const EditorLoading = () => {
   return <LoadingView message="Loading editor..." />;
@@ -64,6 +67,26 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
     return nodes.some((node) => node.type === NodeType.MANUAL_TRIGGER);
   }, [nodes]);
 
+  // Stable signature of the distinct node-type set: recomputed on every node
+  // change but only *changes value* when a type appears/disappears. Keying the
+  // active-channel list on it means subscriptions don't churn on node drags.
+  const nodeTypeSignature = useMemo(() => {
+    const types = new Set<string>();
+    for (const node of nodes) {
+      if (node.type) types.add(node.type);
+    }
+    return [...types].sort().join("|");
+  }, [nodes]);
+
+  const activeChannels = useMemo(
+    () =>
+      deriveActiveChannels(
+        nodeTypeSignature ? nodeTypeSignature.split("|") : [],
+        channelNameForNodeType,
+      ),
+    [nodeTypeSignature],
+  );
+
   const defaultEdgeOptions = useMemo(
     () => ({
       markerEnd: {
@@ -88,6 +111,11 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
 
   return (
     <div className="size-full overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm">
+      {/* One realtime subscription per distinct channel on the canvas; each
+          renders nothing and feeds the shared node-status atom. */}
+      {activeChannels.map((channel) => (
+        <NodeStatusSubscriber key={channel} channel={channel} />
+      ))}
       <ReactFlow
         nodes={nodes}
         edges={edges}

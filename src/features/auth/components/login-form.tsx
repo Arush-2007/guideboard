@@ -124,6 +124,7 @@ export function LoginForm() {
                       src="/logos/github.svg"
                       width={20}
                       height={20}
+                      unoptimized
                     />
                     Continue with GitHub
                   </Button>
@@ -139,6 +140,7 @@ export function LoginForm() {
                       src="/logos/google.svg"
                       width={20}
                       height={20}
+                      unoptimized
                     />
                     Continue with Google
                   </Button>

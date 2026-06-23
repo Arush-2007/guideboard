@@ -11,8 +11,13 @@ export function useNotifications() {
 
   const { data: failures = [], isLoading } = useQuery({
     ...trpc.executions.getRecentFailures.queryOptions(),
-    refetchInterval: 30_000,
-    staleTime: 15_000,
+    // Background badge poll: 60s, and paused while the tab is hidden
+    // (refetchIntervalInBackground defaults to false). The unseen-count badge
+    // needs this data even when the popover is closed, so it can't be gated on
+    // popover open.
+    refetchInterval: 60_000,
+    refetchIntervalInBackground: false,
+    staleTime: 30_000,
   });
 
   // Initialize to 0 (SSR-safe); read localStorage only after mount

@@ -139,6 +139,7 @@ export const AiReplyGeneratorDialog = ({
                 width={16}
                 height={16}
                 className="dark:invert"
+                unoptimized
               />
             </span>
             AI Reply Generator
@@ -166,10 +167,7 @@ export const AiReplyGeneratorDialog = ({
                 <FormItem>
                   <FormLabel>Keyword (optional)</FormLabel>
                   <FormControl>
-                    <Input
-                      placeholder="e.g. price, buy, cost"
-                      {...field}
-                    />
+                    <Input placeholder="e.g. price, buy, cost" {...field} />
                   </FormControl>
                   <FormDescription>
                     Used to route comments into two separate reply tracks below.
@@ -238,7 +236,8 @@ export const AiReplyGeneratorDialog = ({
                         Reply to comments without keyword
                       </FormLabel>
                       <FormDescription className="text-xs">
-                        AI replies when the comment does NOT contain the keyword.
+                        AI replies when the comment does NOT contain the
+                        keyword.
                       </FormDescription>
                     </div>
                     <FormControl>
@@ -330,6 +329,7 @@ export const AiReplyGeneratorDialog = ({
                               width={14}
                               height={14}
                               className="dark:invert"
+                              unoptimized
                             />
                             {cred.name}
                           </div>
@@ -369,6 +369,7 @@ export const AiReplyGeneratorDialog = ({
                               alt="Gemini"
                               width={14}
                               height={14}
+                              unoptimized
                             />
                             {cred.name}
                           </div>
@@ -408,6 +409,7 @@ export const AiReplyGeneratorDialog = ({
                               alt="OpenAI"
                               width={14}
                               height={14}
+                              unoptimized
                             />
                             {cred.name}
                           </div>
@@ -447,6 +449,7 @@ export const AiReplyGeneratorDialog = ({
                               alt="Groq"
                               width={14}
                               height={14}
+                              unoptimized
                             />
                             {cred.name}
                           </div>

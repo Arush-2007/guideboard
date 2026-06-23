@@ -309,6 +309,7 @@ model Connection {
   updatedAt DateTime @updatedAt
 
   @@unique([fromNodeId, toNodeId, fromOutput, toInput])
+  @@index([workflowId])
 }
 
 enum ExecutionStatus {

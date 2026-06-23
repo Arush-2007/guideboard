@@ -1,13 +1,16 @@
 "use client";
 
+import dynamic from "next/dynamic";
+
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
 import { BaseExecutionNode } from "../base-execution-node";
-import { AnthropicDialog, AnthropicFormValues } from "./dialog";
+import type { AnthropicFormValues } from "./dialog";
+const AnthropicDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.AnthropicDialog),
+);
 import { useNodeStatus } from "../../hooks/use-node-status";
-import { fetchAnthropicRealtimeToken } from "./actions";
-import { ANTHROPIC_CHANNEL_NAME } from "@/inngest/channels/anthropic";
 
 type AnthropicNodeData = {
   variableName?: string;
@@ -25,28 +28,25 @@ export const AnthropicNode = memo((props: NodeProps<AnthropicNodeType>) => {
   const workflowId =
     typeof params?.workflowId === "string" ? params.workflowId : undefined;
 
-  const nodeStatus = useNodeStatus({
-    nodeId: props.id,
-    channel: ANTHROPIC_CHANNEL_NAME,
-    topic: "status",
-    refreshToken: fetchAnthropicRealtimeToken,
-  });
+  const nodeStatus = useNodeStatus(props.id);
 
   const handleOpenSettings = () => setDialogOpen(true);
 
   const handleSubmit = (values: AnthropicFormValues) => {
-    setNodes((nodes) => nodes.map((node) => {
-      if (node.id === props.id) {
-        return {
-          ...node,
-          data: {
-            ...node.data,
-            ...values,
-          }
+    setNodes((nodes) =>
+      nodes.map((node) => {
+        if (node.id === props.id) {
+          return {
+            ...node,
+            data: {
+              ...node.data,
+              ...values,
+            },
+          };
         }
-      }
-      return node;
-    }))
+        return node;
+      }),
+    );
   };
 
   const nodeData = props.data;
@@ -56,14 +56,16 @@ export const AnthropicNode = memo((props: NodeProps<AnthropicNodeType>) => {
 
   return (
     <>
-      <AnthropicDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSubmit={handleSubmit}
-        defaultValues={nodeData}
-        currentNodeId={props.id}
-        workflowId={workflowId}
-      />
+      {dialogOpen && (
+        <AnthropicDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
       <BaseExecutionNode
         {...props}
         id={props.id}
@@ -75,7 +77,7 @@ export const AnthropicNode = memo((props: NodeProps<AnthropicNodeType>) => {
         onDoubleClick={handleOpenSettings}
       />
     </>
-  )
+  );
 });
 
 AnthropicNode.displayName = "AnthropicNode";
