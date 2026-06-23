@@ -3,6 +3,6 @@
 import { instagramReplyChannel } from "@/inngest/channels/instagram-reply-comment";
 import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export function fetchInstagramReplyRealtimeToken() {
+export async function fetchInstagramReplyRealtimeToken() {
   return mintUserStatusToken(instagramReplyChannel);
 }

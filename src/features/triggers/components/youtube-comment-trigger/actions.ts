@@ -8,7 +8,7 @@ import { headers } from "next/headers";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 
-export function fetchYoutubeCommentTriggerRealtimeToken() {
+export async function fetchYoutubeCommentTriggerRealtimeToken() {
   return mintUserStatusToken(youtubeCommentTriggerChannel);
 }
 

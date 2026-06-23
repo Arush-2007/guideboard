@@ -3,6 +3,6 @@
 import { anthropicChannel } from "@/inngest/channels/anthropic";
 import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export function fetchAnthropicRealtimeToken() {
+export async function fetchAnthropicRealtimeToken() {
   return mintUserStatusToken(anthropicChannel);
 }

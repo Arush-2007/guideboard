@@ -3,6 +3,6 @@
 import { openAiChannel } from "@/inngest/channels/openai";
 import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export function fetchOpenAiRealtimeToken() {
+export async function fetchOpenAiRealtimeToken() {
   return mintUserStatusToken(openAiChannel);
 }

@@ -3,6 +3,6 @@
 import { aiTextChannel } from "@/inngest/channels/ai-text";
 import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 
-export function fetchAiTextRealtimeToken() {
+export async function fetchAiTextRealtimeToken() {
   return mintUserStatusToken(aiTextChannel);
 }
