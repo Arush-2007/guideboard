@@ -1,10 +1,9 @@
-import { generateSlug } from "random-word-slugs";
 import prisma from "@/lib/db";
 import type { Node, Edge } from "@xyflow/react";
 import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
-import { NodeType } from "@/generated/prisma";
+import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import { TRPCError } from "@trpc/server";
 import {
@@ -76,21 +75,16 @@ export const workflowsRouter = createTRPCRouter({
 
       return workflow;
     }),
-  create: premiumProcedure.mutation(({ ctx }) => {
-    return prisma.workflow.create({
-      data: {
-        name: generateSlug(3),
-        userId: ctx.auth.user.id,
-        nodes: {
-          create: {
-            type: NodeType.INITIAL,
-            position: { x: 0, y: 0 },
-            name: NodeType.INITIAL,
-          },
+  create: premiumProcedure
+    .input(z.object({ name: z.string().trim().min(1, "Name is required") }))
+    .mutation(({ ctx, input }) => {
+      return prisma.workflow.create({
+        data: {
+          name: input.name.trim(),
+          userId: ctx.auth.user.id,
         },
-      },
-    });
-  }),
+      });
+    }),
   generateFromPrompt: premiumProcedure
     .input(z.object({ prompt: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {

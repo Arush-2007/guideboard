@@ -38,8 +38,8 @@ export const EditorSaveButton = ({ workflowId }: { workflowId: string }) => {
 
   return (
     <div className="ml-auto">
-      <Button size="sm" onClick={handleSave} disabled={saveWorkflow.isPending}>
-        <SaveIcon className="size-4" />
+      <Button size="sm" onClick={handleSave} disabled={saveWorkflow.isPending} className="h-[2.025rem] px-4 text-[1.09rem]">
+        <SaveIcon className="size-5" />
         Save
       </Button>
     </div>
@@ -104,7 +104,7 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
         onChange={(e) => setName(e.target.value)}
         onBlur={handleSave}
         onKeyDown={handleKeyDown}
-        className="h-7 w-auto min-w-[100px] px-2"
+        className="h-9 w-auto min-w-[100px] px-2 text-[1.09rem]"
       />
     )
   }
@@ -119,7 +119,7 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
 export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
   return (
     <Breadcrumb>
-      <BreadcrumbList>
+      <BreadcrumbList className="text-[1.09rem]">
         <BreadcrumbItem>
           <BreadcrumbLink asChild>
             <Link prefetch href="/workflows">
@@ -136,12 +136,14 @@ export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
 
 export const EditorHeader = ({ workflowId }: { workflowId: string }) => {
   return (
-    <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    <header className="sticky top-0 z-20 flex h-[2.97675rem] shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <SidebarTrigger />
-      <div className="flex flex-row items-center justify-between gap-x-4 w-full">
-        <EditorBreadcrumbs workflowId={workflowId} />
-        <EditorSaveButton workflowId={workflowId} />
+      <div className="pointer-events-none absolute left-1/2 -translate-x-1/2">
+        <div className="pointer-events-auto">
+          <EditorBreadcrumbs workflowId={workflowId} />
+        </div>
       </div>
+      <EditorSaveButton workflowId={workflowId} />
     </header>
   );
 };

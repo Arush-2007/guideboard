@@ -41,7 +41,7 @@ export function WorkflowNode({
           isVisible
           className="max-w-[200px] text-center"
         >
-          <p className="text-xs font-medium">
+          <p className="text-[0.6rem] font-medium leading-tight">
             {name}
           </p>
         </NodeToolbar>

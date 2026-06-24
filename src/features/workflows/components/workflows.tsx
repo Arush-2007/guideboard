@@ -32,7 +32,7 @@ import { useRouter } from "next/navigation";
 import { useWorkflowsParams } from "../hooks/use-workflows-params";
 import { useEntitySearch } from "@/hooks/use-entity-search";
 import type { Workflow } from "@/generated/prisma";
-import { Loader2Icon, SparklesIcon, WorkflowIcon } from "lucide-react";
+import { Loader2Icon, PlusIcon, SparklesIcon, WorkflowIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -65,24 +65,87 @@ export const WorkflowsList = () => {
   )
 };
 
-export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
+export const CreateWorkflowDialog = ({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) => {
   const router = useRouter();
   const createWorkflow = useCreateWorkflow();
   const { handleError, modal } = useUpgradeModal();
+  const [name, setName] = useState("");
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = name.trim();
+    if (!trimmed) return;
+
+    createWorkflow.mutate(
+      { name: trimmed },
+      {
+        onSuccess: (data) => {
+          setName("");
+          onOpenChange(false);
+          router.push(`/workflows/${data.id}`);
+        },
+        onError: (error) => {
+          handleError(error);
+        },
+      },
+    );
+  };
+
+  return (
+    <>
+      {modal}
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <WorkflowIcon className="size-4" />
+              Name your workflow
+            </DialogTitle>
+            <DialogDescription>
+              Give your new workflow a name to get started.
+            </DialogDescription>
+          </DialogHeader>
+          <form onSubmit={handleSubmit} className="flex flex-col gap-3 pt-2">
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Lead capture to Slack"
+              className="h-10 rounded-xl border-border/70 bg-background/80"
+              disabled={createWorkflow.isPending}
+              autoFocus
+            />
+            <Button
+              type="submit"
+              size="sm"
+              className="h-10 self-end rounded-full px-5"
+              disabled={createWorkflow.isPending || !name.trim()}
+            >
+              {createWorkflow.isPending ? (
+                <Loader2Icon className="size-4 animate-spin" />
+              ) : (
+                <PlusIcon className="size-4" />
+              )}
+              Create
+            </Button>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+};
+
+export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
+  const router = useRouter();
   const [aiOpen, setAiOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const generate = useGenerateWorkflowFromPrompt();
-
-  const handleCreate = () => {
-    createWorkflow.mutate(undefined, {
-      onSuccess: (data) => {
-        router.push(`/workflows/${data.id}`);
-      },
-      onError: (error) => {
-        handleError(error);
-      },
-    });
-  };
 
   const handleGenerate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -106,7 +169,7 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
 
   return (
     <>
-      {modal}
+      <CreateWorkflowDialog open={createOpen} onOpenChange={setCreateOpen} />
       <Dialog open={aiOpen} onOpenChange={setAiOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
@@ -146,10 +209,9 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
       <EntityHeader
         title="Workflows"
         description="Create and manage your workflows"
-        onNew={handleCreate}
+        onNew={() => setCreateOpen(true)}
         newButtonLabel="New workflow"
         disabled={disabled}
-        isCreating={createWorkflow.isPending}
         actions={
           <Button
             variant="outline"
@@ -206,26 +268,13 @@ export const WorkflowsError = () => {
 };
 
 export const WorkflowsEmpty = () => {
-  const router = useRouter();
-  const createWorkflow = useCreateWorkflow();
-  const { handleError, modal } = useUpgradeModal();
-
-  const handleCreate = () => {
-    createWorkflow.mutate(undefined, {
-      onError: (error) => {
-        handleError(error);
-      },
-      onSuccess: (data) => {
-        router.push(`/workflows/${data.id}`);
-      }
-    });
-  };
+  const [createOpen, setCreateOpen] = useState(false);
 
   return (
     <>
-      {modal}
+      <CreateWorkflowDialog open={createOpen} onOpenChange={setCreateOpen} />
       <EmptyView
-        onNew={handleCreate}
+        onNew={() => setCreateOpen(true)}
         message="You haven't created any workflows yet. Get started by creating your first workflow"
       />
     </>
