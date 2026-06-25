@@ -4,7 +4,6 @@ import { formatDistanceToNow } from "date-fns";
 import {
   EmptyView,
   EntityContainer,
-  EntityHeader,
   EntityItem,
   EntityList,
   EntityPagination,
@@ -140,7 +139,10 @@ export const CreateWorkflowDialog = ({
   );
 };
 
-export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
+// Page-level toolbar: the "New workflow" / "Generate with AI" actions on the
+// left and the workflows search box on the right. Rendered in the container's
+// search slot since the standalone page header card was removed.
+export const WorkflowsToolbar = () => {
   const router = useRouter();
   const [aiOpen, setAiOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -206,25 +208,28 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
           </form>
         </DialogContent>
       </Dialog>
-      <EntityHeader
-        title="Workflows"
-        description="Create and manage your workflows"
-        onNew={() => setCreateOpen(true)}
-        newButtonLabel="New workflow"
-        disabled={disabled}
-        actions={
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            className="rounded-full px-5"
+            onClick={() => setCreateOpen(true)}
+          >
+            <PlusIcon className="size-4" />
+            New workflow
+          </Button>
           <Button
             variant="outline"
             size="sm"
             className="rounded-full px-5"
             onClick={() => setAiOpen(true)}
-            disabled={disabled}
           >
             <SparklesIcon className="size-4" />
             Generate with AI
           </Button>
-        }
-      />
+        </div>
+        <WorkflowsSearch />
+      </div>
     </>
   );
 };
@@ -232,6 +237,11 @@ export const WorkflowsHeader = ({ disabled }: { disabled?: boolean }) => {
 export const WorkflowsPagination = () => {
   const workflows = useSuspenseWorkflows();
   const [params, setParams] = useWorkflowsParams();
+
+  // Nothing to paginate through with a single page — hide the bar entirely.
+  if (workflows.data.totalPages <= 1) {
+    return null;
+  }
 
   return (
     <EntityPagination
@@ -250,8 +260,7 @@ export const WorkflowsContainer = ({
 }) => {
   return (
     <EntityContainer
-      header={<WorkflowsHeader />}
-      search={<WorkflowsSearch />}
+      search={<WorkflowsToolbar />}
       pagination={<WorkflowsPagination />}
     >
       {children}

@@ -2,12 +2,11 @@ import { SparklesIcon } from "lucide-react";
 import Link from "next/link";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { AppHeaderSearch } from "@/components/app-header-search";
 import { AppHeaderNotifications } from "@/components/app-header-notifications";
 
 export const AppHeader = () => {
   return (
-    <header className="sticky top-0 z-30 border-b border-border/70 bg-background/90 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70">
+    <header className="shrink-0 z-30 border-b border-border/70 bg-background/90 backdrop-blur-xl supports-[backdrop-filter]:bg-background/70">
       <div className="mx-auto flex h-16 w-full max-w-[1400px] items-center gap-3 px-4 md:px-6">
         <SidebarTrigger />
         <Link
@@ -19,11 +18,7 @@ export const AppHeader = () => {
           </span>
           Guideboard
         </Link>
-        <AppHeaderSearch />
         <div className="ml-auto flex items-center gap-2">
-          <span className="hidden rounded-full border border-primary/20 bg-primary/10 px-3.5 py-1.5 text-xs font-semibold text-primary sm:inline-flex">
-            Workspace
-          </span>
           <ThemeToggle />
           <AppHeaderNotifications />
         </div>
