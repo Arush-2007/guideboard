@@ -1,9 +1,10 @@
-import { createTRPCRouter } from '../init';
-import { workflowsRouter } from '@/features/workflows/server/routers';
-import { credentialsRouter } from '@/features/credentials/server/routers';
-import { executionsRouter } from '@/features/executions/server/routers';
-import { aiReplySettingsRouter } from '@/features/instagram-settings/server/routers';
-import { conversationsRouter } from '@/features/conversations/server/router';
+import { conversationsRouter } from "@/features/conversations/server/router";
+import { credentialsRouter } from "@/features/credentials/server/routers";
+import { executionsRouter } from "@/features/executions/server/routers";
+import { aiReplySettingsRouter } from "@/features/instagram-settings/server/routers";
+import { scheduleRouter } from "@/features/triggers/server/schedule-router";
+import { workflowsRouter } from "@/features/workflows/server/routers";
+import { createTRPCRouter } from "../init";
 
 export const appRouter = createTRPCRouter({
   workflows: workflowsRouter,
@@ -11,6 +12,7 @@ export const appRouter = createTRPCRouter({
   executions: executionsRouter,
   aiReplySettings: aiReplySettingsRouter,
   conversations: conversationsRouter,
+  schedule: scheduleRouter,
 });
 // export type definition of API
 export type AppRouter = typeof appRouter;

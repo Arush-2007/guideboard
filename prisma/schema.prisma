@@ -32,6 +32,7 @@ model User {
   youtubeCommentPolls  YoutubeCommentPoll[]
   gmailPolls           GmailPoll[]
   googleSheetsPolls    GoogleSheetsPoll[]
+  schedulePolls        SchedulePoll[]
   googleCredential     GoogleCredential?
   conversations        Conversation[]
   notificationSettings NotificationSettings?
@@ -208,6 +209,31 @@ model GoogleSheetsPoll {
   @@index([workflowId, spreadsheetId])
 }
 
+// Cron-driven trigger. One row per workflow that has a SCHEDULE_TRIGGER node,
+// provisioned/cleaned by `syncTriggerPollsForWorkflow`. `pollSchedules` (a
+// per-minute Inngest cron) scans for due rows via the `nextRunAt` index — an
+// O(due) lookup, not O(all) — fans one event per row to `handleSchedulePoll`,
+// which dispatches the workflow and advances `nextRunAt` to the next firing.
+model SchedulePoll {
+  id         String    @id @default(cuid())
+  userId     String
+  workflowId String    @unique
+  // Standard 5-field cron expression (minute granularity), interpreted in `timezone`.
+  cron       String
+  // IANA timezone name (e.g. "America/New_York"); drives DST-correct firing.
+  timezone   String
+  // Next time this schedule is due to fire (UTC). Indexed for the due-row scan.
+  nextRunAt  DateTime
+  lastRunAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([nextRunAt])
+}
+
 enum CredentialType {
   OPENAI
   ANTHROPIC
@@ -232,6 +258,7 @@ model Workflow {
   youtubeCommentPolls YoutubeCommentPoll[]
   gmailPolls GmailPoll[]
   googleSheetsPolls GoogleSheetsPoll[]
+  schedulePolls SchedulePoll[]
   conversations Conversation[]
 
   userId String
@@ -261,6 +288,7 @@ enum NodeType {
   TYPEFORM_TRIGGER
   GMAIL_TRIGGER
   GOOGLE_SHEETS_TRIGGER
+  SCHEDULE_TRIGGER
   INSTAGRAM_COMMENT_TRIGGER
   INSTAGRAM_REPLY_COMMENT
   YOUTUBE_COMMENT_TRIGGER

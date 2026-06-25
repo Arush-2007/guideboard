@@ -1,31 +1,31 @@
-import { InitialNode } from "@/components/initial-node";
-import { NodeType } from "@/generated/prisma";
 import type { NodeTypes } from "@xyflow/react";
-
-import { HttpRequestNode } from "@/features/executions/components/http-request/node";
-import { ConditionNode } from "@/features/executions/components/condition/node";
-import { ManualTriggerNode } from "@/features/triggers/components/manual-trigger/node";
-import { GoogleFormTrigger } from "@/features/triggers/components/google-form-trigger/node";
-import { TypeformTrigger } from "@/features/triggers/components/typeform-trigger/node";
-import { GmailTriggerNode } from "@/features/triggers/components/gmail-trigger/node";
-import { GoogleSheetsTriggerNode } from "@/features/triggers/components/google-sheets-trigger/node";
-import { InstagramCommentTriggerNode } from "@/features/triggers/components/instagram-comment-trigger/node";
-import { InstagramReplyNode } from "@/features/executions/components/instagram-reply-comment/node";
-import { YoutubeCommentTriggerNode } from "@/features/triggers/components/youtube-comment-trigger/node";
-import { YoutubeReplyNode } from "@/features/executions/components/youtube-reply-comment/node";
+import { InitialNode } from "@/components/initial-node";
 import { AiReplyGeneratorNode } from "@/features/executions/components/ai-reply-generator/node";
-import { GeminiNode } from "@/features/executions/components/gemini/node";
-import { OpenAiNode } from "@/features/executions/components/openai/node";
+import { AiTextNode } from "@/features/executions/components/ai-text/node";
 import { AnthropicNode } from "@/features/executions/components/anthropic/node";
+import { ConditionNode } from "@/features/executions/components/condition/node";
 import { DiscordNode } from "@/features/executions/components/discord/node";
-import { SlackNode } from "@/features/executions/components/slack/node";
-import { NotionNode } from "@/features/executions/components/notion/node";
-import { TelegramActionNode } from "@/features/executions/components/telegram-action/node";
-import { TelegramTrigger } from "@/features/triggers/components/telegram-trigger/node";
-import { WhatsappActionNode } from "@/features/executions/components/whatsapp-action/node";
+import { GeminiNode } from "@/features/executions/components/gemini/node";
 import { GmailActionNode } from "@/features/executions/components/gmail-action/node";
 import { GoogleSheetsActionNode } from "@/features/executions/components/google-sheets-action/node";
-import { AiTextNode } from "@/features/executions/components/ai-text/node";
+import { HttpRequestNode } from "@/features/executions/components/http-request/node";
+import { InstagramReplyNode } from "@/features/executions/components/instagram-reply-comment/node";
+import { NotionNode } from "@/features/executions/components/notion/node";
+import { OpenAiNode } from "@/features/executions/components/openai/node";
+import { SlackNode } from "@/features/executions/components/slack/node";
+import { TelegramActionNode } from "@/features/executions/components/telegram-action/node";
+import { WhatsappActionNode } from "@/features/executions/components/whatsapp-action/node";
+import { YoutubeReplyNode } from "@/features/executions/components/youtube-reply-comment/node";
+import { GmailTriggerNode } from "@/features/triggers/components/gmail-trigger/node";
+import { GoogleFormTrigger } from "@/features/triggers/components/google-form-trigger/node";
+import { GoogleSheetsTriggerNode } from "@/features/triggers/components/google-sheets-trigger/node";
+import { InstagramCommentTriggerNode } from "@/features/triggers/components/instagram-comment-trigger/node";
+import { ManualTriggerNode } from "@/features/triggers/components/manual-trigger/node";
+import { ScheduleTriggerNode } from "@/features/triggers/components/schedule-trigger/node";
+import { TelegramTrigger } from "@/features/triggers/components/telegram-trigger/node";
+import { TypeformTrigger } from "@/features/triggers/components/typeform-trigger/node";
+import { YoutubeCommentTriggerNode } from "@/features/triggers/components/youtube-comment-trigger/node";
+import { NodeType } from "@/generated/prisma";
 
 export const nodeComponents = {
   [NodeType.INITIAL]: InitialNode,
@@ -35,6 +35,7 @@ export const nodeComponents = {
   [NodeType.TYPEFORM_TRIGGER]: TypeformTrigger,
   [NodeType.GMAIL_TRIGGER]: GmailTriggerNode,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: GoogleSheetsTriggerNode,
+  [NodeType.SCHEDULE_TRIGGER]: ScheduleTriggerNode,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: InstagramCommentTriggerNode,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: InstagramReplyNode,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: YoutubeCommentTriggerNode,

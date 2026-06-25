@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
+import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
 
 /**
  * Shared persistence + validation for AI-generated workflows.
@@ -127,10 +128,11 @@ type SyncableNode = { type?: string | null; data?: unknown };
 
 /**
  * Reconciles the polling-trigger tables (`YoutubeCommentPoll`, `GmailPoll`,
- * `GoogleSheetsPoll`) with the trigger nodes present in a workflow: upserts a
- * poll row when the matching trigger exists and is configured, and removes
- * stale rows when it doesn't. Called on every create and edit so the cron
- * pollers in `src/inngest/functions.ts` see an accurate set of work.
+ * `GoogleSheetsPoll`, `SchedulePoll`) with the trigger nodes present in a
+ * workflow: upserts a poll row when the matching trigger exists and is
+ * configured, and removes stale rows when it doesn't. Called on every create
+ * and edit so the cron pollers in `src/inngest/functions.ts` see an accurate
+ * set of work.
  */
 export async function syncTriggerPollsForWorkflow(
   userId: string,
@@ -202,5 +204,46 @@ export async function syncTriggerPollsForWorkflow(
     }
   } else {
     await prisma.googleSheetsPoll.deleteMany({ where: { workflowId } });
+  }
+
+  const scheduleTrigger = nodes.find((n) => n.type === "SCHEDULE_TRIGGER");
+
+  if (scheduleTrigger) {
+    const data = scheduleTrigger.data as
+      | { cron?: string; timezone?: string }
+      | undefined;
+    const cron = data?.cron;
+    const timezone = data?.timezone;
+
+    if (cron && timezone && isValidSchedule(cron, timezone)) {
+      // Only recompute `nextRunAt` when the cron/timezone actually changed, so
+      // an unrelated edit to the workflow doesn't shift an already-scheduled
+      // firing. A new or retimed schedule gets its next run computed from now.
+      const existing = await prisma.schedulePoll.findUnique({
+        where: { workflowId },
+        select: { cron: true, timezone: true },
+      });
+      const unchanged =
+        existing?.cron === cron && existing?.timezone === timezone;
+
+      if (unchanged) {
+        await prisma.schedulePoll.update({
+          where: { workflowId },
+          data: { userId },
+        });
+      } else {
+        const nextRunAt = computeNextRunAt(cron, timezone);
+        await prisma.schedulePoll.upsert({
+          where: { workflowId },
+          update: { userId, cron, timezone, nextRunAt },
+          create: { userId, workflowId, cron, timezone, nextRunAt },
+        });
+      }
+    } else {
+      // Trigger present but not validly configured yet — no poll row.
+      await prisma.schedulePoll.deleteMany({ where: { workflowId } });
+    }
+  } else {
+    await prisma.schedulePoll.deleteMany({ where: { workflowId } });
   }
 }

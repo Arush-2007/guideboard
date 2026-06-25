@@ -41,6 +41,17 @@ export type NodeOutputDescriptor =
 // here simply contribute no mappable fields yet (the `raw`/templating escape
 // hatch still works).
 export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
+  [NodeType.SCHEDULE_TRIGGER]: {
+    rootKind: "fixed",
+    rootKey: "schedule",
+    fields: [
+      {
+        path: "scheduledAt",
+        label: "Scheduled time (ISO)",
+        example: "2026-06-25T13:00:00.000Z",
+      },
+    ],
+  },
   [NodeType.TELEGRAM_TRIGGER]: {
     rootKind: "fixed",
     rootKey: "telegram",

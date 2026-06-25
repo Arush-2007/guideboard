@@ -200,6 +200,17 @@ const googleSheetsTriggerSchema = z
   })
   .passthrough();
 
+// Deep cron/timezone validity is enforced at save time (the dialog preview +
+// `syncTriggerPollsForWorkflow`, both via `isValidSchedule`). Here we only
+// require the two fields to be present so `cron-parser` stays out of every
+// import path of this module; the executor just needs a configured schedule.
+const scheduleTriggerSchema = z
+  .object({
+    cron: z.string().min(1, "Schedule is required"),
+    timezone: z.string().min(1, "Timezone is required"),
+  })
+  .passthrough();
+
 // Shared "match the columns" mapping shape: target field/column -> template
 // string (may contain !#path#! placeholders). Reused by any node that maps
 // upstream data onto named targets.
@@ -248,6 +259,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.TYPEFORM_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GMAIL_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerSchema,
+  [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerSchema,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: instagramCommentTriggerSchema,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: instagramReplySchema,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: youtubeCommentTriggerSchema,

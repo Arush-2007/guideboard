@@ -1,29 +1,30 @@
-import { NodeType } from "@/generated/prisma";
-import { NodeExecutor } from "../types";
-import { manualTriggerExecutor } from "@/features/triggers/components/manual-trigger/executor";
-import { httpRequestExecutor } from "../components/http-request/executor";
-import { conditionExecutor } from "../components/condition/executor";
-import { googleFormTriggerExecutor } from "@/features/triggers/components/google-form-trigger/executor";
-import { typeformTriggerExecutor } from "@/features/triggers/components/typeform-trigger/executor";
-import { instagramCommentTriggerExecutor } from "@/features/triggers/components/instagram-comment-trigger/executor";
-import { instagramReplyExecutor } from "../components/instagram-reply-comment/executor";
-import { youtubeCommentTriggerExecutor } from "@/features/triggers/components/youtube-comment-trigger/executor";
-import { youtubeReplyExecutor } from "../components/youtube-reply-comment/executor";
-import { aiReplyGeneratorExecutor } from "../components/ai-reply-generator/executor";
-import { geminiExecutor } from "../components/gemini/executor";
-import { openAiExecutor } from "../components/openai/executor";
-import { anthropicExecutor } from "../components/anthropic/executor";
-import { discordExecutor } from "../components/discord/executor";
-import { slackExecutor } from "../components/slack/executor";
-import { notionExecutor } from "../components/notion/executor";
-import { telegramActionExecutor } from "../components/telegram-action/executor";
-import { telegramTriggerExecutor } from "@/features/triggers/components/telegram-trigger/executor";
-import { whatsappActionExecutor } from "../components/whatsapp-action/executor";
-import { gmailActionExecutor } from "../components/gmail-action/executor";
 import { gmailTriggerExecutor } from "@/features/triggers/components/gmail-trigger/executor";
-import { googleSheetsActionExecutor } from "../components/google-sheets-action/executor";
+import { googleFormTriggerExecutor } from "@/features/triggers/components/google-form-trigger/executor";
 import { googleSheetsTriggerExecutor } from "@/features/triggers/components/google-sheets-trigger/executor";
+import { instagramCommentTriggerExecutor } from "@/features/triggers/components/instagram-comment-trigger/executor";
+import { manualTriggerExecutor } from "@/features/triggers/components/manual-trigger/executor";
+import { scheduleTriggerExecutor } from "@/features/triggers/components/schedule-trigger/executor";
+import { telegramTriggerExecutor } from "@/features/triggers/components/telegram-trigger/executor";
+import { typeformTriggerExecutor } from "@/features/triggers/components/typeform-trigger/executor";
+import { youtubeCommentTriggerExecutor } from "@/features/triggers/components/youtube-comment-trigger/executor";
+import { NodeType } from "@/generated/prisma";
+import { aiReplyGeneratorExecutor } from "../components/ai-reply-generator/executor";
 import { aiTextExecutor } from "../components/ai-text/executor";
+import { anthropicExecutor } from "../components/anthropic/executor";
+import { conditionExecutor } from "../components/condition/executor";
+import { discordExecutor } from "../components/discord/executor";
+import { geminiExecutor } from "../components/gemini/executor";
+import { gmailActionExecutor } from "../components/gmail-action/executor";
+import { googleSheetsActionExecutor } from "../components/google-sheets-action/executor";
+import { httpRequestExecutor } from "../components/http-request/executor";
+import { instagramReplyExecutor } from "../components/instagram-reply-comment/executor";
+import { notionExecutor } from "../components/notion/executor";
+import { openAiExecutor } from "../components/openai/executor";
+import { slackExecutor } from "../components/slack/executor";
+import { telegramActionExecutor } from "../components/telegram-action/executor";
+import { whatsappActionExecutor } from "../components/whatsapp-action/executor";
+import { youtubeReplyExecutor } from "../components/youtube-reply-comment/executor";
+import type { NodeExecutor } from "../types";
 
 export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.INITIAL]: manualTriggerExecutor,
@@ -51,6 +52,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.GMAIL_TRIGGER]: gmailTriggerExecutor,
   [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionExecutor,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerExecutor,
+  [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerExecutor,
 };
 
 export const getExecutor = (type: NodeType): NodeExecutor => {

@@ -15,6 +15,7 @@ import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
 import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
+import { processSchedulePoll } from "./schedule-poll";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
 /**
@@ -605,6 +606,49 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         },
       });
     });
+  },
+);
+
+// Dispatcher: scans for SchedulePoll rows whose `nextRunAt` is due (indexed on
+// `nextRunAt`, so this is O(due) not O(all)) and fans out one
+// `polls/schedule.check` event per row. Runs every minute for minute-grained
+// schedules. Per-poll work (dispatch + advance) lives in `handleSchedulePoll`.
+export const pollSchedules = inngest.createFunction(
+  { id: "poll-schedules", retries: 1 },
+  { cron: "* * * * *" },
+  async ({ step }) => {
+    const polls = await step.run("fetch-due-schedule-poll-ids", async () => {
+      return prisma.schedulePoll.findMany({
+        where: { nextRunAt: { lte: new Date() } },
+        select: { id: true },
+      });
+    });
+
+    if (polls.length === 0) return { dispatched: 0 };
+
+    await step.sendEvent(
+      "dispatch-schedule-polls",
+      polls.map((poll) => ({
+        name: "polls/schedule.check",
+        data: { pollId: poll.id },
+      })),
+    );
+
+    return { dispatched: polls.length };
+  },
+);
+
+// Handler: dispatches the due workflow and advances `nextRunAt`. Isolated
+// retries + concurrency cap so one slow schedule can't block the rest; the
+// `schedule:<pollId>:<scheduledISO>` idempotency key prevents double-fire
+// across overlapping ticks. Logic lives in `processSchedulePoll` so it's
+// testable without an Inngest runtime.
+export const handleSchedulePoll = inngest.createFunction(
+  { id: "handle-schedule-poll", retries: 1, concurrency: { limit: 20 } },
+  { event: "polls/schedule.check" },
+  async ({ event, step }) => {
+    const { pollId } = event.data as { pollId: string };
+    await step.run("process-schedule-poll", () => processSchedulePoll(pollId));
   },
 );
 

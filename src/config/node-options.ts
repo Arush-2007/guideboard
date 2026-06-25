@@ -1,5 +1,6 @@
 import {
   BrainCircuit,
+  Clock,
   Filter,
   GlobeIcon,
   MousePointerIcon,
@@ -49,6 +50,12 @@ export const triggerNodeOptions: NodeOption[] = [
     label: "Google Sheets",
     description: "Runs the flow when a new row is detected",
     icon: "/logos/google-sheets.svg",
+  },
+  {
+    type: NodeType.SCHEDULE_TRIGGER,
+    label: "Schedule",
+    description: "Runs the flow on a recurring schedule (hourly, daily, cron)",
+    icon: Clock,
   },
   {
     type: NodeType.INSTAGRAM_COMMENT_TRIGGER,

@@ -21,6 +21,7 @@ import { fetchGoogleFormTriggerRealtimeToken } from "@/features/triggers/compone
 import { fetchGoogleSheetsTriggerRealtimeToken } from "@/features/triggers/components/google-sheets-trigger/actions";
 import { fetchInstagramCommentTriggerRealtimeToken } from "@/features/triggers/components/instagram-comment-trigger/actions";
 import { fetchManualTriggerRealtimeToken } from "@/features/triggers/components/manual-trigger/actions";
+import { fetchScheduleTriggerRealtimeToken } from "@/features/triggers/components/schedule-trigger/actions";
 import { fetchTelegramTriggerRealtimeToken } from "@/features/triggers/components/telegram-trigger/actions";
 import { fetchTypeformTriggerRealtimeToken } from "@/features/triggers/components/typeform-trigger/actions";
 import { fetchYoutubeCommentTriggerRealtimeToken } from "@/features/triggers/components/youtube-comment-trigger/actions";
@@ -43,6 +44,7 @@ import { INSTAGRAM_REPLY_COMMENT_CHANNEL_NAME } from "@/inngest/channels/instagr
 import { MANUAL_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/manual-trigger";
 import { NOTION_CHANNEL_NAME } from "@/inngest/channels/notion";
 import { OPENAI_CHANNEL_NAME } from "@/inngest/channels/openai";
+import { SCHEDULE_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/schedule-trigger";
 import { SLACK_CHANNEL_NAME } from "@/inngest/channels/slack";
 import { TELEGRAM_ACTION_CHANNEL_NAME } from "@/inngest/channels/telegram-action";
 import { TELEGRAM_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/telegram-trigger";
@@ -97,6 +99,10 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.GOOGLE_SHEETS_TRIGGER]: {
       channelName: GOOGLE_SHEETS_TRIGGER_CHANNEL_NAME,
       refreshToken: fetchGoogleSheetsTriggerRealtimeToken,
+    },
+    [NodeType.SCHEDULE_TRIGGER]: {
+      channelName: SCHEDULE_TRIGGER_CHANNEL_NAME,
+      refreshToken: fetchScheduleTriggerRealtimeToken,
     },
     [NodeType.INSTAGRAM_COMMENT_TRIGGER]: {
       channelName: INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME,

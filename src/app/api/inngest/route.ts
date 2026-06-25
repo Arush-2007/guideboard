@@ -4,9 +4,11 @@ import {
   executeWorkflow,
   handleGmailPoll,
   handleGoogleSheetsPoll,
+  handleSchedulePoll,
   handleYoutubePoll,
   pollGmail,
   pollGoogleSheets,
+  pollSchedules,
   pollYoutubeComments,
   pruneOldExecutions,
 } from "@/inngest/functions";
@@ -18,9 +20,11 @@ export const { GET, POST, PUT } = serve({
     pollGmail,
     pollGoogleSheets,
     pollYoutubeComments,
+    pollSchedules,
     handleGmailPoll,
     handleGoogleSheetsPoll,
     handleYoutubePoll,
+    handleSchedulePoll,
     pruneOldExecutions,
   ],
 });
