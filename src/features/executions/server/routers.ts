@@ -1,8 +1,9 @@
-import prisma from "@/lib/db";
-import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
-import { ExecutionStatus } from "@/generated/prisma";
+import { ExecutionStatus, NodeExecutionStatus } from "@/generated/prisma";
+import { sendWorkflowExecution } from "@/inngest/utils";
+import prisma from "@/lib/db";
+import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 
 export const executionsRouter = createTRPCRouter({
   getRecentFailures: protectedProcedure.query(async ({ ctx }) => {
@@ -25,11 +26,11 @@ export const executionsRouter = createTRPCRouter({
     .input(z.object({ id: z.string() }))
     .query(({ ctx, input }) => {
       return prisma.execution.findUniqueOrThrow({
-        where: { 
-          id: input.id, 
-          workflow: { 
-            userId: ctx.auth.user.id
-          }
+        where: {
+          id: input.id,
+          workflow: {
+            userId: ctx.auth.user.id,
+          },
         },
         include: {
           workflow: {
@@ -38,8 +39,130 @@ export const executionsRouter = createTRPCRouter({
               name: true,
             },
           },
-        }
+          nodeExecutions: {
+            orderBy: { sequence: "asc" },
+          },
+        },
       });
+    }),
+  rerun: protectedProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      // Ownership-checked load; reuses the persisted trigger payload so the new
+      // run is identical to the original. No idempotency key -> always fresh.
+      const execution = await prisma.execution.findUniqueOrThrow({
+        where: {
+          id: input.id,
+          workflow: { userId: ctx.auth.user.id },
+        },
+        select: { workflowId: true, input: true },
+      });
+
+      await sendWorkflowExecution({
+        workflowId: execution.workflowId,
+        initialData: (execution.input as Record<string, unknown>) ?? {},
+      });
+
+      return { success: true };
+    }),
+  getNotificationSettings: protectedProcedure.query(async ({ ctx }) => {
+    const settings = await prisma.notificationSettings.findUnique({
+      where: { userId: ctx.auth.user.id },
+      select: { notifyOnFailure: true },
+    });
+    // Default on when the user has never touched the setting.
+    return { notifyOnFailure: settings?.notifyOnFailure ?? true };
+  }),
+  updateNotificationSettings: protectedProcedure
+    .input(z.object({ notifyOnFailure: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      return prisma.notificationSettings.upsert({
+        where: { userId: ctx.auth.user.id },
+        create: {
+          userId: ctx.auth.user.id,
+          notifyOnFailure: input.notifyOnFailure,
+        },
+        update: { notifyOnFailure: input.notifyOnFailure },
+        select: { notifyOnFailure: true },
+      });
+    }),
+  // Lightweight analytics over the user's runs in the last `days`. Every query
+  // is scoped by `workflow.userId` and hits existing indexes
+  // (Execution[workflowId,status,startedAt], NodeExecution[executionId,sequence]);
+  // the two raw queries are parameterized date-bucket/avg aggregations.
+  getStats: protectedProcedure
+    .input(z.object({ days: z.number().min(1).max(365).default(30) }))
+    .query(async ({ ctx, input }) => {
+      const userId = ctx.auth.user.id;
+      const cutoff = new Date(Date.now() - input.days * 24 * 60 * 60 * 1000);
+      const scope = {
+        workflow: { userId },
+        startedAt: { gte: cutoff },
+      };
+
+      const [byStatus, durationRows, dailyRows, topFailingNodes] =
+        await Promise.all([
+          prisma.execution.groupBy({
+            by: ["status"],
+            where: scope,
+            _count: { _all: true },
+          }),
+          prisma.$queryRaw<Array<{ avg_seconds: number | null }>>`
+            SELECT AVG(EXTRACT(EPOCH FROM (e."completedAt" - e."startedAt")))::float AS avg_seconds
+            FROM "Execution" e
+            JOIN "Workflow" w ON w."id" = e."workflowId"
+            WHERE w."userId" = ${userId}
+              AND e."startedAt" >= ${cutoff}
+              AND e."completedAt" IS NOT NULL
+              AND e."status"::text = 'SUCCESS'
+          `,
+          prisma.$queryRaw<Array<{ day: Date; count: number }>>`
+            SELECT date_trunc('day', e."startedAt") AS day, COUNT(*)::int AS count
+            FROM "Execution" e
+            JOIN "Workflow" w ON w."id" = e."workflowId"
+            WHERE w."userId" = ${userId} AND e."startedAt" >= ${cutoff}
+            GROUP BY day
+            ORDER BY day ASC
+          `,
+          prisma.nodeExecution.groupBy({
+            by: ["nodeType"],
+            where: {
+              status: NodeExecutionStatus.FAILED,
+              execution: scope,
+            },
+            _count: { _all: true },
+            orderBy: { _count: { nodeType: "desc" } },
+            take: 5,
+          }),
+        ]);
+
+      const countFor = (status: ExecutionStatus) =>
+        byStatus.find((row) => row.status === status)?._count._all ?? 0;
+
+      const success = countFor(ExecutionStatus.SUCCESS);
+      const failed = countFor(ExecutionStatus.FAILED);
+      const running = countFor(ExecutionStatus.RUNNING);
+      const total = success + failed + running;
+      const completed = success + failed;
+
+      return {
+        days: input.days,
+        total,
+        success,
+        failed,
+        running,
+        // Over completed runs only; null when there's nothing to rate yet.
+        successRate: completed > 0 ? success / completed : null,
+        avgDurationSeconds: durationRows[0]?.avg_seconds ?? null,
+        runsPerDay: dailyRows.map((row) => ({
+          day: row.day.toISOString(),
+          count: Number(row.count),
+        })),
+        topFailingNodes: topFailingNodes.map((row) => ({
+          nodeType: row.nodeType,
+          count: row._count._all,
+        })),
+      };
     }),
   getMany: protectedProcedure
     .input(
@@ -50,7 +173,7 @@ export const executionsRouter = createTRPCRouter({
           .min(PAGINATION.MIN_PAGE_SIZE)
           .max(PAGINATION.MAX_PAGE_SIZE)
           .default(PAGINATION.DEFAULT_PAGE_SIZE),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const { page, pageSize } = input;
@@ -59,7 +182,7 @@ export const executionsRouter = createTRPCRouter({
         prisma.execution.findMany({
           skip: (page - 1) * pageSize,
           take: pageSize,
-          where: { 
+          where: {
             workflow: {
               userId: ctx.auth.user.id,
             },

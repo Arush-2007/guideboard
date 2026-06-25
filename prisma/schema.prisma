@@ -34,9 +34,20 @@ model User {
   googleSheetsPolls    GoogleSheetsPoll[]
   googleCredential     GoogleCredential?
   conversations        Conversation[]
+  notificationSettings NotificationSettings?
 
   @@unique([email])
   @@map("user")
+}
+
+model NotificationSettings {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  notifyOnFailure Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Session {
@@ -318,6 +329,12 @@ enum ExecutionStatus {
   FAILED
 }
 
+enum NodeExecutionStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
 model Execution {
   id String @id @default(cuid())
 
@@ -335,8 +352,45 @@ model Execution {
 
   idempotencyKey String? @unique
 
+  // The trigger payload (initialData) this run started with, persisted so a run
+  // can be re-dispatched verbatim via the `rerun` mutation.
+  input Json?
+
   output Json?
+
+  nodeExecutions NodeExecution[]
 
   @@index([workflowId, startedAt])
   @@index([workflowId, status, startedAt])
+}
+
+// Per-node record of a single run. Node identity is denormalized (plain nodeId
+// string + snapshot of type/name) rather than a FK to Node: nodes get edited or
+// deleted while executions persist 30 days, and a cascade FK would erase
+// history. Cascade from Execution means pruneOldExecutions cleans these up.
+//
+// Intentionally NO @@unique([executionId, nodeId]): retry idempotency comes from
+// stable per-node Inngest step ids, and a unique constraint would block Tier 2
+// loops / branch re-entry (a node running more than once per run).
+model NodeExecution {
+  id          String    @id @default(cuid())
+  executionId String
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  nodeId   String
+  nodeType NodeType
+  nodeName String
+  sequence Int
+
+  status     NodeExecutionStatus @default(RUNNING)
+  input      Json?
+  output     Json?
+  error      String?             @db.Text
+  errorStack String?             @db.Text
+
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  durationMs  Int?
+
+  @@index([executionId, sequence])
 }

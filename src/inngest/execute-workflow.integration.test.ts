@@ -8,12 +8,29 @@ import {
   describe,
   expect,
   it,
+  vi,
 } from "vitest";
-import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
+
+// The harness statically imports `appRouter`, whose graph reaches
+// `@/lib/auth` -> `@/lib/email` -> `import "server-only"`, which throws under
+// vitest. This file never exercises auth (it drives the engine directly), so we
+// stub auth out exactly like the other *.integration.test.ts files do.
+vi.mock("next/headers", () => ({
+  headers: async () => new Headers(),
+}));
+vi.mock("@/lib/auth", () => ({
+  auth: {
+    api: {
+      getSession: async () => null,
+    },
+  },
+}));
+
 import type { StepTools } from "@/features/executions/types";
+import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
-import { runWorkflowNodes } from "./run-workflow";
+import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
 import { topologicalSort } from "./utils";
 
 /**
@@ -296,5 +313,126 @@ describe("executeWorkflow engine (5-node workflow)", () => {
         publish,
       }),
     ).rejects.toThrow(/condition not met/i);
+  });
+});
+
+describe("runWorkflowNodes recorder (per-node observability)", () => {
+  // Faithful step shim: Inngest serializes `step.run` output, so the condition
+  // node — which returns `context` THROUGH step.run — yields a deep copy with
+  // all-new references. This is exactly the case a reference-based diff gets
+  // wrong; the production-equivalent shim must serialize so the test guards it.
+  const serializingStep = {
+    run: async (_name: string, fn: () => unknown) =>
+      JSON.parse(JSON.stringify((await fn()) ?? null)),
+  } as unknown as StepTools;
+
+  type Captured = {
+    order: string[];
+    statuses: Record<string, string>;
+    outputs: Record<string, unknown>;
+  };
+
+  const makeRecorder = (captured: Captured): NodeRecorder => ({
+    async record({ nodeId, status, output }) {
+      captured.order.push(nodeId);
+      captured.statuses[nodeId] = status;
+      if (output !== undefined) captured.outputs[nodeId] = output;
+    },
+  });
+
+  const buildWorkflow = async (conditionValue: string) => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Recorder workflow", userId },
+    });
+    await prisma.node.createMany({
+      data: [
+        {
+          id: "r_trigger",
+          workflowId: workflow.id,
+          type: NodeType.MANUAL_TRIGGER,
+          name: "Manual trigger",
+          position: { x: 0, y: 0 },
+          data: {},
+        },
+        {
+          id: "r_get",
+          workflowId: workflow.id,
+          type: NodeType.HTTP_REQUEST,
+          name: "Fetch user",
+          position: { x: 250, y: 0 },
+          data: { endpoint: `${baseUrl}/users/1`, method: "GET" },
+        },
+        {
+          id: "r_cond",
+          workflowId: workflow.id,
+          type: NodeType.CONDITION,
+          name: "Only if HTTP 200",
+          position: { x: 500, y: 0 },
+          data: {
+            field: "http_request_r_get.httpResponse.status",
+            operator: "equals",
+            value: conditionValue,
+            stopOnFail: true,
+          },
+        },
+      ],
+    });
+    await prisma.connection.createMany({
+      data: [
+        { workflowId: workflow.id, fromNodeId: "r_trigger", toNodeId: "r_get" },
+        { workflowId: workflow.id, fromNodeId: "r_get", toNodeId: "r_cond" },
+      ],
+    });
+    return prisma.workflow.findUniqueOrThrow({
+      where: { id: workflow.id },
+      include: { nodes: true, connections: true },
+    });
+  };
+
+  it("records new-keys-only output — condition node (adds nothing) is empty", async () => {
+    const loaded = await buildWorkflow("200"); // passes
+    const captured: Captured = { order: [], statuses: {}, outputs: {} };
+
+    await runWorkflowNodes({
+      sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
+      userId,
+      initialData: { lead: { name: "Ada" } },
+      step: serializingStep,
+      publish,
+      recorder: makeRecorder(captured),
+    });
+
+    // One record per node, in order, all successful.
+    expect(captured.order).toEqual(["r_trigger", "r_get", "r_cond"]);
+    expect(captured.statuses.r_cond).toBe("SUCCESS");
+
+    // The HTTP node contributed exactly its namespaced output key.
+    expect(Object.keys(captured.outputs.r_get as object)).toEqual([
+      "http_request_r_get",
+    ]);
+
+    // REGRESSION GUARD: condition returns the (serialized, all-new-references)
+    // context but added no key, so its recorded output must be empty. A
+    // reference diff would wrongly capture the entire context here.
+    expect(captured.outputs.r_cond).toEqual({});
+  });
+
+  it("records a FAILED node (with no output) when it throws", async () => {
+    const loaded = await buildWorkflow("999"); // condition never matches -> throws
+    const captured: Captured = { order: [], statuses: {}, outputs: {} };
+
+    await expect(
+      runWorkflowNodes({
+        sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
+        userId,
+        initialData: { lead: { name: "Ada" } },
+        step: serializingStep,
+        publish,
+        recorder: makeRecorder(captured),
+      }),
+    ).rejects.toThrow(/condition not met/i);
+
+    expect(captured.statuses.r_cond).toBe("FAILED");
+    expect(captured.outputs.r_cond).toBeUndefined();
   });
 });

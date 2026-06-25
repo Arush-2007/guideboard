@@ -1,26 +1,174 @@
 import { NonRetriableError } from "inngest";
 import ky from "ky";
-import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
+import { buildFailureEmail } from "@/features/executions/lib/failure-email";
+import type { StepTools } from "@/features/executions/types";
+import {
+  ExecutionStatus,
+  NodeExecutionStatus,
+  NodeType,
+  type Prisma,
+} from "@/generated/prisma";
+import { clampJson } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
+import { sendEmail } from "@/lib/email";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
-import { runWorkflowNodes } from "./run-workflow";
+import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
+
+/**
+ * Prisma-backed NodeRecorder: writes one NodeExecution row per node, once when
+ * the node settles, wrapped in a stable-id `step.run` so Inngest checkpoints it
+ * and retries stay idempotent. One write-on-settle (vs a RUNNING insert + an
+ * update) halves the durable steps and DB writes per node and leaves no orphan
+ * RUNNING rows. `input`/`output` are size-capped via `clampJson` here so the
+ * engine stays Prisma-free.
+ */
+function createPrismaNodeRecorder({
+  step,
+  executionId,
+}: {
+  step: StepTools;
+  executionId: string;
+}): NodeRecorder {
+  return {
+    async record({
+      nodeId,
+      nodeType,
+      nodeName,
+      sequence,
+      status,
+      input,
+      output,
+      error,
+      durationMs,
+    }) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : error != null
+            ? String(error)
+            : null;
+      const stack = error instanceof Error ? (error.stack ?? null) : null;
+      // startedAt is back-dated from the settle time so the row reflects the
+      // node's real span; durationMs is the source of truth either way.
+      const completedAt = new Date();
+      const startedAt = new Date(completedAt.getTime() - durationMs);
+
+      await step.run(`node-record:${nodeId}`, () =>
+        prisma.nodeExecution.create({
+          data: {
+            executionId,
+            nodeId,
+            nodeType,
+            nodeName,
+            sequence,
+            status:
+              status === "FAILED"
+                ? NodeExecutionStatus.FAILED
+                : NodeExecutionStatus.SUCCESS,
+            input: clampJson(input) as Prisma.InputJsonValue,
+            output:
+              output !== undefined
+                ? (clampJson(output) as Prisma.InputJsonValue)
+                : undefined,
+            error: message,
+            errorStack: stack,
+            startedAt,
+            completedAt,
+            durationMs,
+          },
+          select: { id: true },
+        }),
+      );
+    },
+  };
+}
+
+/**
+ * Best-effort failure alert. Honors the per-user opt-out (default on when no
+ * NotificationSettings row exists) and names the offending node when a FAILED
+ * NodeExecution exists — degrading gracefully when the run failed before any
+ * node ran (e.g. a cyclic workflow). Never throws to its caller.
+ */
+async function sendWorkflowFailureEmail({
+  executionId,
+  workflowName,
+  userId,
+  userEmail,
+  error,
+}: {
+  executionId: string;
+  workflowName: string;
+  userId: string;
+  userEmail: string | null;
+  error: string;
+}) {
+  if (!userEmail) return;
+
+  const settings = await prisma.notificationSettings.findUnique({
+    where: { userId },
+    select: { notifyOnFailure: true },
+  });
+  if (settings && settings.notifyOnFailure === false) return;
+
+  const failedNode = await prisma.nodeExecution.findFirst({
+    where: { executionId, status: NodeExecutionStatus.FAILED },
+    orderBy: { sequence: "desc" },
+    select: { nodeName: true, nodeType: true },
+  });
+
+  const { subject, html, text } = buildFailureEmail({
+    workflowName,
+    executionId,
+    error,
+    failedNode: failedNode
+      ? { name: failedNode.nodeName, type: failedNode.nodeType }
+      : undefined,
+    appUrl: process.env.BETTER_AUTH_URL,
+  });
+
+  await sendEmail({ to: userEmail, subject, html, text });
+}
 
 export const executeWorkflow = inngest.createFunction(
   {
     id: "execute-workflow",
     retries: process.env.NODE_ENV === "production" ? 3 : 0,
-    onFailure: async ({ event, step }) => {
-      return prisma.execution.update({
+    onFailure: async ({ event }) => {
+      const execution = await prisma.execution.update({
         where: { inngestEventId: event.data.event.id },
         data: {
           status: ExecutionStatus.FAILED,
           error: event.data.error.message,
           errorStack: event.data.error.stack,
+          completedAt: new Date(),
+        },
+        select: {
+          id: true,
+          workflow: {
+            select: {
+              name: true,
+              user: { select: { id: true, email: true } },
+            },
+          },
         },
       });
+
+      // Best-effort: an email failure (or missing RESEND_API_KEY) must never
+      // break the failure handler itself.
+      try {
+        await sendWorkflowFailureEmail({
+          executionId: execution.id,
+          workflowName: execution.workflow.name,
+          userId: execution.workflow.user.id,
+          userEmail: execution.workflow.user.email,
+          error: event.data.error.message,
+        });
+      } catch (err) {
+        console.error("Failed to send workflow failure email", err);
+      }
     },
   },
   {
@@ -60,13 +208,16 @@ export const executeWorkflow = inngest.createFunction(
       }
     }
 
-    await step.run("create-execution", async () => {
+    const { id: executionId } = await step.run("create-execution", async () => {
       return prisma.execution.create({
         data: {
           workflowId,
           inngestEventId,
           idempotencyKey: idempotencyKey ?? null,
+          // Persist the trigger payload so the run can be re-dispatched verbatim.
+          input: (initialData ?? {}) as Prisma.InputJsonValue,
         },
+        select: { id: true },
       });
     });
 
@@ -89,12 +240,14 @@ export const executeWorkflow = inngest.createFunction(
     );
 
     // Run each node sequentially, threading context from one to the next.
+    // The recorder writes a NodeExecution row per node for observability.
     const context = await runWorkflowNodes({
       sortedNodes,
       userId,
       initialData,
       step,
       publish,
+      recorder: createPrismaNodeRecorder({ step, executionId }),
     });
 
     await step.run("update-execution", async () => {
