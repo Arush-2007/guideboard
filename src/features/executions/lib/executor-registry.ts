@@ -6,6 +6,7 @@ import { manualTriggerExecutor } from "@/features/triggers/components/manual-tri
 import { scheduleTriggerExecutor } from "@/features/triggers/components/schedule-trigger/executor";
 import { telegramTriggerExecutor } from "@/features/triggers/components/telegram-trigger/executor";
 import { typeformTriggerExecutor } from "@/features/triggers/components/typeform-trigger/executor";
+import { webhookTriggerExecutor } from "@/features/triggers/components/webhook-trigger/executor";
 import { youtubeCommentTriggerExecutor } from "@/features/triggers/components/youtube-comment-trigger/executor";
 import { NodeType } from "@/generated/prisma";
 import { aiReplyGeneratorExecutor } from "../components/ai-reply-generator/executor";
@@ -53,6 +54,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionExecutor,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerExecutor,
   [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerExecutor,
+  [NodeType.WEBHOOK_TRIGGER]: webhookTriggerExecutor,
 };
 
 export const getExecutor = (type: NodeType): NodeExecutor => {

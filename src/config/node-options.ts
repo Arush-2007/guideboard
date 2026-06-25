@@ -4,6 +4,7 @@ import {
   Filter,
   GlobeIcon,
   MousePointerIcon,
+  Webhook,
 } from "lucide-react";
 import { NodeType } from "@/generated/prisma";
 
@@ -56,6 +57,12 @@ export const triggerNodeOptions: NodeOption[] = [
     label: "Schedule",
     description: "Runs the flow on a recurring schedule (hourly, daily, cron)",
     icon: Clock,
+  },
+  {
+    type: NodeType.WEBHOOK_TRIGGER,
+    label: "Webhook",
+    description: "Runs the flow when its unique URL receives a POST request",
+    icon: Webhook,
   },
   {
     type: NodeType.INSTAGRAM_COMMENT_TRIGGER,

@@ -52,6 +52,19 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       },
     ],
   },
+  [NodeType.WEBHOOK_TRIGGER]: {
+    rootKind: "fixed",
+    rootKey: "webhook",
+    fields: [
+      {
+        // Request body is arbitrary JSON; expose the root so users can drill in
+        // via the templating escape hatch (e.g. `!#webhook.body.email#!`).
+        path: "body",
+        label: "Request body (JSON)",
+        example: '{ "email": "ada@example.com" }',
+      },
+    ],
+  },
   [NodeType.TELEGRAM_TRIGGER]: {
     rootKind: "fixed",
     rootKey: "telegram",

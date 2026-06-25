@@ -260,6 +260,9 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.GMAIL_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerSchema,
   [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerSchema,
+  // Token + secret live in the WebhookTrigger table (server-owned), so the node
+  // itself carries no user config.
+  [NodeType.WEBHOOK_TRIGGER]: emptyPassthroughSchema,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: instagramCommentTriggerSchema,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: instagramReplySchema,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: youtubeCommentTriggerSchema,

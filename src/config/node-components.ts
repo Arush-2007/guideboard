@@ -24,6 +24,7 @@ import { ManualTriggerNode } from "@/features/triggers/components/manual-trigger
 import { ScheduleTriggerNode } from "@/features/triggers/components/schedule-trigger/node";
 import { TelegramTrigger } from "@/features/triggers/components/telegram-trigger/node";
 import { TypeformTrigger } from "@/features/triggers/components/typeform-trigger/node";
+import { WebhookTriggerNode } from "@/features/triggers/components/webhook-trigger/node";
 import { YoutubeCommentTriggerNode } from "@/features/triggers/components/youtube-comment-trigger/node";
 import { NodeType } from "@/generated/prisma";
 
@@ -36,6 +37,7 @@ export const nodeComponents = {
   [NodeType.GMAIL_TRIGGER]: GmailTriggerNode,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: GoogleSheetsTriggerNode,
   [NodeType.SCHEDULE_TRIGGER]: ScheduleTriggerNode,
+  [NodeType.WEBHOOK_TRIGGER]: WebhookTriggerNode,
   [NodeType.INSTAGRAM_COMMENT_TRIGGER]: InstagramCommentTriggerNode,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: InstagramReplyNode,
   [NodeType.YOUTUBE_COMMENT_TRIGGER]: YoutubeCommentTriggerNode,

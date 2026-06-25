@@ -24,6 +24,7 @@ import { fetchManualTriggerRealtimeToken } from "@/features/triggers/components/
 import { fetchScheduleTriggerRealtimeToken } from "@/features/triggers/components/schedule-trigger/actions";
 import { fetchTelegramTriggerRealtimeToken } from "@/features/triggers/components/telegram-trigger/actions";
 import { fetchTypeformTriggerRealtimeToken } from "@/features/triggers/components/typeform-trigger/actions";
+import { fetchWebhookTriggerRealtimeToken } from "@/features/triggers/components/webhook-trigger/actions";
 import { fetchYoutubeCommentTriggerRealtimeToken } from "@/features/triggers/components/youtube-comment-trigger/actions";
 import { NodeType } from "@/generated/prisma";
 // --- Channel name constants (one per node type that streams status) ---
@@ -49,6 +50,7 @@ import { SLACK_CHANNEL_NAME } from "@/inngest/channels/slack";
 import { TELEGRAM_ACTION_CHANNEL_NAME } from "@/inngest/channels/telegram-action";
 import { TELEGRAM_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/telegram-trigger";
 import { TYPEFORM_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/typeform-trigger";
+import { WEBHOOK_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/webhook-trigger";
 import { WHATSAPP_ACTION_CHANNEL_NAME } from "@/inngest/channels/whatsapp-action";
 import { YOUTUBE_COMMENT_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/youtube-comment-trigger";
 import { YOUTUBE_REPLY_COMMENT_CHANNEL_NAME } from "@/inngest/channels/youtube-reply-comment";
@@ -103,6 +105,10 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.SCHEDULE_TRIGGER]: {
       channelName: SCHEDULE_TRIGGER_CHANNEL_NAME,
       refreshToken: fetchScheduleTriggerRealtimeToken,
+    },
+    [NodeType.WEBHOOK_TRIGGER]: {
+      channelName: WEBHOOK_TRIGGER_CHANNEL_NAME,
+      refreshToken: fetchWebhookTriggerRealtimeToken,
     },
     [NodeType.INSTAGRAM_COMMENT_TRIGGER]: {
       channelName: INSTAGRAM_COMMENT_TRIGGER_CHANNEL_NAME,

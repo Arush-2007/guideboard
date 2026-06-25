@@ -1,7 +1,10 @@
+import { randomBytes } from "node:crypto";
+import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
+import { encrypt } from "@/lib/encryption";
 import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
 
 /**
@@ -245,5 +248,26 @@ export async function syncTriggerPollsForWorkflow(
     }
   } else {
     await prisma.schedulePoll.deleteMany({ where: { workflowId } });
+  }
+
+  // Generic webhook: presence of the node alone provisions a row. The `update`
+  // is intentionally a no-op on token/secret so the public URL stays STABLE
+  // across edits — rotation only happens via the explicit `webhook.regenerate`
+  // mutation. The token is an unguessable cuid; the secret is encrypted at rest.
+  const webhookTrigger = nodes.find((n) => n.type === "WEBHOOK_TRIGGER");
+
+  if (webhookTrigger) {
+    await prisma.webhookTrigger.upsert({
+      where: { workflowId },
+      update: { userId },
+      create: {
+        userId,
+        workflowId,
+        token: createId(),
+        secret: encrypt(randomBytes(32).toString("hex")),
+      },
+    });
+  } else {
+    await prisma.webhookTrigger.deleteMany({ where: { workflowId } });
   }
 }

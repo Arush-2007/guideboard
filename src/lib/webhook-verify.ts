@@ -25,6 +25,22 @@ function verifySha256PrefixedHmac(
 }
 
 /**
+ * Generic Guideboard webhook signature — `sha256=<hex>` of the raw body using
+ * the per-trigger secret. Callers of a `WEBHOOK_TRIGGER` URL may sign their
+ * payload with `X-Guideboard-Signature: sha256=<hex>`; the generic webhook
+ * route enforces it only when the header is present (token secrecy is the
+ * baseline, HMAC is opt-in integrity). Reuses the same timing-safe primitive as
+ * the provider verifiers above so there's one HMAC implementation.
+ */
+export function verifyGenericWebhookSignature(
+  rawBody: string,
+  signatureHeader: string | null,
+  secret: string,
+): boolean {
+  return verifySha256PrefixedHmac(rawBody, signatureHeader, secret);
+}
+
+/**
  * Instagram / Meta `X-Hub-Signature-256` — `sha256=<hex>` of raw body using app secret.
  */
 export function verifyInstagramWebhookSignature(
@@ -57,8 +73,7 @@ export function verifyYoutubeWebhookSignature(
   secret: string,
 ): boolean {
   if (!signatureHeader?.startsWith("sha1=")) return false;
-  const expected =
-    "sha1=" + createHmac("sha1", secret).update(rawBody, "utf8").digest("hex");
+  const expected = `sha1=${createHmac("sha1", secret).update(rawBody, "utf8").digest("hex")}`;
   try {
     const a = Buffer.from(signatureHeader);
     const b = Buffer.from(expected);
