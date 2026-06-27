@@ -5,7 +5,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
-import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
 import { aiTextChannel } from "@/inngest/channels/ai-text";
@@ -27,13 +26,6 @@ const providerToCredentialType: Record<AiTextProvider, CredentialType> = {
   anthropic: CredentialType.ANTHROPIC,
   gemini: CredentialType.GEMINI,
   groq: CredentialType.GROQ,
-};
-
-const providerLabel: Record<AiTextProvider, string> = {
-  openai: "OpenAI",
-  anthropic: "Anthropic",
-  gemini: "Gemini",
-  groq: "Groq",
 };
 
 export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
@@ -197,6 +189,6 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
         status: "error",
       }),
     );
-    throw describeProviderError(error, providerLabel[provider]);
+    throw error;
   }
 };

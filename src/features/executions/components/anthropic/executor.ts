@@ -2,7 +2,6 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
-import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { anthropicChannel } from "@/inngest/channels/anthropic";
@@ -114,6 +113,6 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
         status: "error",
       }),
     );
-    throw describeProviderError(error, "Anthropic");
+    throw error;
   }
 };

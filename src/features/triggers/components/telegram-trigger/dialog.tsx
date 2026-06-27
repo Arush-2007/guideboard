@@ -1,8 +1,5 @@
 "use client";
 
-import { CopyIcon } from "lucide-react";
-import { useParams } from "next/navigation";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,24 +10,24 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CopyIcon } from "lucide-react";
+import { useParams } from "next/navigation";
+import { toast } from "sonner";
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export const TelegramTriggerDialog = ({ open, onOpenChange }: Props) => {
+export const TelegramTriggerDialog = ({
+  open,
+  onOpenChange,
+}: Props) => {
   const params = useParams();
   const workflowId = params.workflowId as string;
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
   const webhookUrl = `${baseUrl}/api/webhooks/telegram?workflowId=${workflowId}`;
-
-  // PowerShell-native setWebhook command. PowerShell aliases `curl` to
-  // Invoke-WebRequest (which rejects repeated -d flags), so we hand users
-  // Invoke-RestMethod with a hashtable body instead. TOKEN and the webhook
-  // secret stay as placeholders for the user to fill in.
-  const registerCommand = `Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot<TOKEN>/setWebhook" -Body @{ url = "${webhookUrl}"; secret_token = "<TELEGRAM_WEBHOOK_SECRET>"; drop_pending_updates = "true" }`;
 
   const copyToClipboard = async (text: string, successMessage: string) => {
     try {
@@ -83,27 +80,13 @@ export const TelegramTriggerDialog = ({ open, onOpenChange }: Props) => {
               <li>Send /mybots and select your bot</li>
               <li>Go to Bot Settings → API Token to get your token</li>
               <li>
-                Run this in PowerShell, replacing &lt;TOKEN&gt; with your bot
-                token and &lt;TELEGRAM_WEBHOOK_SECRET&gt; with the value from
-                your environment:
+                Run this command replacing TOKEN and SECRET:
               </li>
             </ol>
-            <div className="flex items-start gap-2">
-              <p className="text-xs text-muted-foreground font-mono break-all flex-1">
-                {registerCommand}
-              </p>
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                className="shrink-0"
-                onClick={() =>
-                  copyToClipboard(registerCommand, "Command copied")
-                }
-              >
-                <CopyIcon className="size-4" />
-              </Button>
-            </div>
+            <p className="text-xs text-muted-foreground font-mono break-all">
+              curl -X POST https://api.telegram.org/bot{"{TOKEN}"}/setWebhook
+              -d url={webhookUrl} -d secret_token={"{TELEGRAM_WEBHOOK_SECRET}"}
+            </p>
           </div>
         </div>
       </DialogContent>
