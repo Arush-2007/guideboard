@@ -266,3 +266,30 @@
 .react-flow__node.selected #base-node {
   @apply ring-3 ring-muted-foreground/25 shadow-lg;
 }
+
+/* Configuration dialog scrollbar: a blue thumb (--primary, the same blue as the
+   Save button) on a track in the dialog's own surface color (--background).
+   Theme-aware via the tokens, so it tracks light/dark automatically. */
+[data-slot="dialog-content"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--primary) var(--background);
+}
+
+[data-slot="dialog-content"]::-webkit-scrollbar {
+  width: 10px;
+}
+
+[data-slot="dialog-content"]::-webkit-scrollbar-track {
+  background: var(--background);
+}
+
+[data-slot="dialog-content"]::-webkit-scrollbar-thumb {
+  background-color: var(--primary);
+  border-radius: 9999px;
+  /* Border in the track color insets the thumb so it reads as a rounded pill. */
+  border: 2px solid var(--background);
+}
+
+[data-slot="dialog-content"]::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in oklch, var(--primary) 85%, white);
+}

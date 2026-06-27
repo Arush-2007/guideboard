@@ -12,7 +12,7 @@ interface WorkflowNodeProps {
   onSettings?: () => void;
   name?: string;
   description?: string;
-};
+}
 
 export function WorkflowNode({
   children,
@@ -41,11 +41,9 @@ export function WorkflowNode({
           isVisible
           className="max-w-[200px] text-center"
         >
-          <p className="text-[0.6rem] font-medium leading-tight">
-            {name}
-          </p>
+          <p className="text-[0.6rem] font-medium leading-tight">{name}</p>
         </NodeToolbar>
       )}
     </>
   );
-};
+}

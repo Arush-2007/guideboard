@@ -63,7 +63,7 @@ export const VariableInput = React.forwardRef<
           disabled={disabled}
           {...rest}
         />
-        <div className="absolute right-1 top-1/2 z-10 -translate-y-1/2">
+        <div className="absolute bottom-1 right-1 z-10">
           <VariablePicker
             currentNodeId={currentNodeId}
             workflowId={workflowId}
