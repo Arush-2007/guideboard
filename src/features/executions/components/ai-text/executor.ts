@@ -39,6 +39,7 @@ const providerLabel: Record<AiTextProvider, string> = {
 export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -82,8 +83,6 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
   const userPrompt = renderTemplate(config.prompt, context);
-  const outputKey = `${NodeType.AI_TEXT.toLowerCase()}_${nodeId}`;
-
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {

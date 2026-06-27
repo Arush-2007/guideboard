@@ -1,17 +1,22 @@
-import prisma from "@/lib/db";
-import type { Node, Edge } from "@xyflow/react";
-import { createTRPCRouter, premiumProcedure, protectedProcedure } from "@/trpc/init";
+import { TRPCError } from "@trpc/server";
+import type { Edge } from "@xyflow/react";
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
 import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
-import { TRPCError } from "@trpc/server";
+import prisma from "@/lib/db";
+import { nextNodeRef, nodeTypeHasRef } from "@/lib/node-ref";
 import {
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
   syncTriggerPollsForWorkflow,
   validateGeneratedWorkflowGraph,
 } from "@/lib/workflow-persistence";
+import {
+  createTRPCRouter,
+  premiumProcedure,
+  protectedProcedure,
+} from "@/trpc/init";
 
 const ANTHROPIC_WORKFLOW_SYSTEM_PROMPT = `You are a workflow automation builder for an app called Guideboard.
 The user describes what they want to automate in plain English.
@@ -44,7 +49,7 @@ Always start with a trigger node.
 Keep workflows simple — 2 to 4 nodes maximum.`;
 
 function stripMarkdownCodeFences(text: string): string {
-  let t = text.trim();
+  const t = text.trim();
   if (!t.startsWith("```")) {
     return t;
   }
@@ -183,16 +188,17 @@ export const workflowsRouter = createTRPCRouter({
           id: input.id,
           userId: ctx.auth.user.id,
         },
-      })
+      });
     }),
   update: protectedProcedure
     .input(
-      z.object({ 
-        id: z.string(), 
+      z.object({
+        id: z.string(),
         nodes: z.array(
           z.object({
             id: z.string(),
             type: z.string().nullish(),
+            ref: z.string().nullish(),
             position: z.object({ x: z.number(), y: z.number() }),
             data: z.record(z.string(), z.any()).optional(),
           }),
@@ -214,6 +220,39 @@ export const workflowsRouter = createTRPCRouter({
         where: { id, userId: ctx.auth.user.id },
       });
 
+      // Snapshot existing refs by node id BEFORE we replace the rows. The save
+      // is a full delete+recreate, so we recover each node's frozen `ref` by its
+      // (stable) id; new ref-eligible nodes get the next number. This keeps refs
+      // stable across saves even if the client doesn't round-trip them.
+      const existingRefs = await prisma.node.findMany({
+        where: { workflowId: id },
+        select: { id: true, ref: true },
+      });
+      const refById = new Map(existingRefs.map((n) => [n.id, n.ref]));
+
+      const usedRefs = new Set<string>();
+      for (const node of nodes) {
+        const known = node.ref ?? refById.get(node.id);
+        if (known) usedRefs.add(known);
+      }
+
+      const nodeCreateData = nodes.map((node) => {
+        let ref = node.ref ?? refById.get(node.id) ?? null;
+        if (!ref && node.type && nodeTypeHasRef(node.type)) {
+          ref = nextNodeRef(node.type, usedRefs);
+          usedRefs.add(ref);
+        }
+        return {
+          id: node.id,
+          workflowId: id,
+          name: node.type || "unknown",
+          type: node.type as NodeType,
+          ref,
+          position: node.position,
+          data: node.data || {},
+        };
+      });
+
       // Transaction to ensure consistency
       await prisma.$transaction(async (tx) => {
         // Delete existing nodes and connections (cascade deletes connections)
@@ -223,14 +262,7 @@ export const workflowsRouter = createTRPCRouter({
 
         // Create nodes
         await tx.node.createMany({
-          data: nodes.map((node) => ({
-            id: node.id,
-            workflowId: id,
-            name: node.type || "unknown",
-            type: node.type as NodeType,
-            position: node.position,
-            data: node.data || {},
-          })),
+          data: nodeCreateData,
         });
 
         // Create connections
@@ -272,11 +304,14 @@ export const workflowsRouter = createTRPCRouter({
         include: { nodes: true, connections: true },
       });
 
-      // Transform server nodes to react-flow compatible nodes
-      const nodes: Node[] = workflow.nodes.map((node) => ({
+      // Transform server nodes to react-flow compatible nodes. `ref` is carried
+      // as a top-level field so the variable picker can show friendly names
+      // (e.g. AI_TEXT_1) for upstream nodes.
+      const nodes = workflow.nodes.map((node) => ({
         id: node.id,
         type: node.type,
-        position: node.position as { x: number, y: number },
+        ref: node.ref,
+        position: node.position as { x: number; y: number },
         data: (node.data as Record<string, unknown>) || {},
       }));
 
@@ -306,7 +341,7 @@ export const workflowsRouter = createTRPCRouter({
           .max(PAGINATION.MAX_PAGE_SIZE)
           .default(PAGINATION.DEFAULT_PAGE_SIZE),
         search: z.string().default(""),
-      })
+      }),
     )
     .query(async ({ ctx, input }) => {
       const { page, pageSize, search } = input;
@@ -315,7 +350,7 @@ export const workflowsRouter = createTRPCRouter({
         prisma.workflow.findMany({
           skip: (page - 1) * pageSize,
           take: pageSize,
-          where: { 
+          where: {
             userId: ctx.auth.user.id,
             name: {
               contains: search,

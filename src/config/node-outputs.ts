@@ -1,4 +1,5 @@
 import { NodeType } from "@/generated/prisma";
+import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
  * Per-node OUTPUT schema registry.
@@ -136,18 +137,20 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
 
 /**
  * Resolves the full `context` path for a field of a given placed node.
- * For "fixed" roots the nodeId is ignored.
+ * For "fixed" roots the nodeId/ref are ignored; for "perNode" roots the node's
+ * `ref` (e.g. `AI_TEXT_1`) is the key, falling back to `<type>_<id>`.
  */
 export function resolveOutputPath(
   type: NodeType,
   nodeId: string,
   fieldPath: string,
+  ref?: string | null,
 ): string | null {
   const descriptor = nodeOutputs[type];
   if (!descriptor) return null;
   const root =
     descriptor.rootKind === "fixed"
       ? descriptor.rootKey
-      : `${type.toLowerCase()}_${nodeId}`;
+      : getOutputKeyForNode(type, nodeId, ref);
   return `${root}.${fieldPath}`;
 }

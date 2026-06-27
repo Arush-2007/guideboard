@@ -1,6 +1,7 @@
 import type { Edge } from "@xyflow/react";
 import { nodeOutputs, resolveOutputPath } from "@/config/node-outputs";
 import type { NodeType } from "@/generated/prisma";
+import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
  * Pure logic behind the variable picker (`<VariablePicker>`). Kept React-free so
@@ -9,11 +10,6 @@ import type { NodeType } from "@/generated/prisma";
  * for field-level paths (falling back to the whole-output blob for node types
  * not yet declared there).
  */
-
-/** Same pattern as executors: `${NodeType.toLowerCase()}_${nodeId}`. */
-export function getOutputKeyForNode(nodeType: string, nodeId: string): string {
-  return `${nodeType.toLowerCase()}_${nodeId}`;
-}
 
 /**
  * All nodes with a directed edge into `currentNodeId` (transitive) — every
@@ -50,7 +46,7 @@ export type UpstreamFieldRow = {
   example?: string;
 };
 
-type GraphNode = { id: string; type?: string | null };
+type GraphNode = { id: string; type?: string | null; ref?: string | null };
 
 /**
  * Flattened, ordered list of pickable fields from every node upstream of
@@ -71,12 +67,15 @@ export function getUpstreamFields(
     if (!node?.type) continue;
 
     const type = node.type as NodeType;
-    const nodeLabel = String(node.type).replace(/_/g, " ").toLowerCase();
+    // Prefer the stable ref (e.g. "AI_TEXT_1") as the group header; fall back to
+    // the humanized type for nodes that don't carry a ref (triggers, etc.).
+    const nodeLabel =
+      node.ref ?? String(node.type).replace(/_/g, " ").toLowerCase();
     const descriptor = nodeOutputs[type];
 
     if (descriptor) {
       for (const field of descriptor.fields) {
-        const path = resolveOutputPath(type, id, field.path);
+        const path = resolveOutputPath(type, id, field.path, node.ref);
         if (!path) continue;
         rows.push({
           nodeId: id,
@@ -95,7 +94,7 @@ export function getUpstreamFields(
         nodeType: String(node.type),
         nodeLabel,
         fieldLabel: "Whole output",
-        insertText: `!#${getOutputKeyForNode(String(node.type), id)}#!`,
+        insertText: `!#${getOutputKeyForNode(String(node.type), id, node.ref)}#!`,
       });
     }
   }

@@ -47,6 +47,7 @@ describe("aiTextExecutor (the USP node)", () => {
           "If !#telegram.text#! is an internship application reply Yes else No",
       },
       nodeId: "a1",
+      outputKey: "AI_TEXT_1",
       userId: "u1",
       context: { telegram: { text: "I want to intern with you" } },
       step,
@@ -59,8 +60,8 @@ describe("aiTextExecutor (the USP node)", () => {
       "If I want to intern with you is an internship application reply Yes else No",
     );
 
-    // Result is exposed under the documented `output` key.
-    expect(result.ai_text_a1).toEqual({ output: "Yes" });
+    // Result is exposed under the node's ref (outputKey) -> `output` key.
+    expect(result.AI_TEXT_1).toEqual({ output: "Yes" });
     // Upstream context is preserved for downstream nodes.
     expect((result.telegram as any).text).toBe("I want to intern with you");
   });
@@ -77,6 +78,7 @@ describe("aiTextExecutor (the USP node)", () => {
       aiTextExecutor({
         data: { provider: "anthropic", credentialId: "cred1", prompt: "hi" },
         nodeId: "a1",
+        outputKey: "AI_TEXT_1",
         userId: "u1",
         context: {},
         step,

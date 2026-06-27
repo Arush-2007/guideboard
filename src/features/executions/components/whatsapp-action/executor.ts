@@ -24,6 +24,7 @@ type WhatsappActionData = {
 export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -53,8 +54,6 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
       error instanceof Error ? error.message : "Invalid node config",
     );
   }
-
-  const outputKey = `${NodeType.WHATSAPP_ACTION.toLowerCase()}_${nodeId}`;
 
   // Combine the fan-out list with the legacy single field; render each phone
   // template against the context, trim, drop blanks, de-duplicate.

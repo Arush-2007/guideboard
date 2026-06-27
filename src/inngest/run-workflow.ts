@@ -2,6 +2,7 @@ import type { Realtime } from "@inngest/realtime";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import type { StepTools, WorkflowContext } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
+import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
  * The fields the engine actually reads off each node. Kept structural (rather
@@ -13,6 +14,8 @@ export type ExecutableNode = {
   id: string;
   type: NodeType;
   name: string;
+  /** Stable per-workflow reference key (e.g. `AI_TEXT_1`); see `node-ref.ts`. */
+  ref?: string | null;
   data: unknown;
 };
 
@@ -122,6 +125,7 @@ export async function runWorkflowNodes({
       const after = await executor({
         data: node.data as Record<string, unknown>,
         nodeId: node.id,
+        outputKey: getOutputKeyForNode(node.type, node.id, node.ref),
         userId,
         context: before,
         step,

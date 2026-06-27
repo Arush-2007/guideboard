@@ -25,6 +25,7 @@ function toBase64Url(value: string): string {
 export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -51,8 +52,6 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
       error instanceof Error ? error.message : "Invalid node config",
     );
   }
-
-  const outputKey = `${NodeType.GMAIL_ACTION.toLowerCase()}_${nodeId}`;
 
   // `to` may be an array of recipient templates (new) or a single string
   // (legacy). Render each, drop blanks, and join into one RFC 2822 To header.

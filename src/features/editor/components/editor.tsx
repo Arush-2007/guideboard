@@ -31,6 +31,7 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
+import { nextNodeRef, nodeTypeHasRef } from "@/lib/node-ref";
 import {
   editorAtom,
   STAGED_NODE_MIME,
@@ -161,12 +162,23 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
           (node) => node.type === NodeType.INITIAL,
         );
 
-        const newNode: Node = {
+        // Assign the frozen ref at drop time (before any field can reference
+        // this node), so the variable picker shows `AI_TEXT_1` immediately and
+        // references are ref-based from the start — no rewrite ever needed.
+        const existingRefs = current
+          .map((node) => (node as { ref?: string | null }).ref)
+          .filter((ref): ref is string => Boolean(ref));
+        const ref = nodeTypeHasRef(staged.type)
+          ? nextNodeRef(staged.type, existingRefs)
+          : null;
+
+        const newNode = {
           id: createId(),
           type: staged.type,
           position,
           data: {},
-        };
+          ref,
+        } as Node;
 
         return hasInitialTrigger ? [newNode] : [...current, newNode];
       });
