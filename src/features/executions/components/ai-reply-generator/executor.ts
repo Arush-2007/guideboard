@@ -1,13 +1,12 @@
-import { createOpenAI } from "@ai-sdk/openai";
-import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
-import { parseNodeConfig } from "@/config/node-schemas";
-import { describeProviderError } from "@/features/executions/lib/provider-error";
+import { generateText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
 import type { NodeExecutor } from "@/features/executions/types";
-import { NodeType } from "@/generated/prisma";
 import { aiReplyGeneratorChannel } from "@/inngest/channels/ai-reply-generator";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { NodeType } from "@/generated/prisma";
+import { parseNodeConfig } from "@/config/node-schemas";
 
 type AiReplyGeneratorData = {
   keyword?: string;
@@ -20,13 +19,6 @@ type AiReplyGeneratorData = {
   geminiCredentialId?: string;
   openaiCredentialId?: string;
   groqCredentialId?: string;
-};
-
-const providerLabel: Record<"xai" | "gemini" | "openai" | "groq", string> = {
-  xai: "xAI",
-  gemini: "Gemini",
-  openai: "OpenAI",
-  groq: "Groq",
 };
 
 type ResolvedCredential = {
@@ -234,6 +226,6 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
     await publish(
       aiReplyGeneratorChannel(userId).status({ nodeId, status: "error" }),
     );
-    throw describeProviderError(error, providerLabel[resolved.provider]);
+    throw error;
   }
 };

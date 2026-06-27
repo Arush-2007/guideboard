@@ -2,7 +2,6 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
-import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { openAiChannel } from "@/inngest/channels/openai";
@@ -110,6 +109,6 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
         status: "error",
       }),
     );
-    throw describeProviderError(error, "OpenAI");
+    throw error;
   }
 };

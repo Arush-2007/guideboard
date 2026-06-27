@@ -2,7 +2,6 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
-import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { geminiChannel } from "@/inngest/channels/gemini";
@@ -110,6 +109,6 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
         status: "error",
       }),
     );
-    throw describeProviderError(error, "Gemini");
+    throw error;
   }
 };

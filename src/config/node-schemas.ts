@@ -39,7 +39,7 @@ const httpRequestSchema = z
 
 const conditionSchema = z
   .object({
-    field: z.string().min(1, "Field is required"),
+    field: z.string().min(1, "Field path is required"),
     operator: z.enum([
       "contains",
       "not_contains",
