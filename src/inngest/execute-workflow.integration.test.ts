@@ -137,7 +137,7 @@ describe("executeWorkflow engine (5-node workflow)", () => {
         name: "Only if HTTP 200",
         position: { x: 500, y: 0 },
         data: {
-          field: "http_request_n_get.httpResponse.status",
+          field: "!#http_request_n_get.httpResponse.status#!",
           operator: "equals",
           value: "200",
           stopOnFail: true,
@@ -272,7 +272,7 @@ describe("executeWorkflow engine (5-node workflow)", () => {
           name: "Impossible gate",
           position: { x: 250, y: 0 },
           data: {
-            field: "lead.tier",
+            field: "!#lead.tier#!",
             operator: "equals",
             value: "enterprise",
             stopOnFail: true,
@@ -369,7 +369,7 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
           name: "Only if HTTP 200",
           position: { x: 500, y: 0 },
           data: {
-            field: "http_request_r_get.httpResponse.status",
+            field: "!#http_request_r_get.httpResponse.status#!",
             operator: "equals",
             value: conditionValue,
             stopOnFail: true,
