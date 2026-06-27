@@ -340,6 +340,13 @@ model Node {
   position Json
   data Json @default("{}")
 
+  // Stable, human-readable reference key, unique within a workflow, e.g.
+  // "AI_TEXT_1". Assigned once when the node is created and frozen thereafter,
+  // so downstream `!#AI_TEXT_1.output#!` references never break. It IS the key
+  // this node's output is written under in the run context. Nullable during the
+  // backfill window; resolution falls back to `<type>_<id>` when absent.
+  ref String?
+
   credentialId String?
   credential Credential? @relation(fields: [credentialId], references: [id])
 
@@ -349,6 +356,7 @@ model Node {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([workflowId, ref])
   @@index([workflowId])
 }
 

@@ -10,9 +10,9 @@ const ctx = {
   http_request_n1: { httpResponse: { status: 200, data: { name: "Leanne" } } },
 };
 
-describe("renderTemplate — !#...#! placeholders", () => {
+describe("renderTemplate — @<...>@ placeholders", () => {
   it("substitutes a simple path", () => {
-    expect(renderTemplate("Hello !#telegram.from.firstName#!", ctx)).toBe(
+    expect(renderTemplate("Hello @<telegram.from.firstName>@", ctx)).toBe(
       "Hello Ada",
     );
   });
@@ -20,31 +20,31 @@ describe("renderTemplate — !#...#! placeholders", () => {
   it("substitutes multiple placeholders and tolerates inner whitespace", () => {
     expect(
       renderTemplate(
-        "!# telegram.from.firstName #! !#telegram.from.lastName#!",
+        "@< telegram.from.firstName >@ @<telegram.from.lastName>@",
         ctx,
       ),
     ).toBe("Ada Lovelace");
   });
 
   it("resolves a missing path to an empty string", () => {
-    expect(renderTemplate("[!#telegram.nope.gone#!]", ctx)).toBe("[]");
+    expect(renderTemplate("[@<telegram.nope.gone>@]", ctx)).toBe("[]");
   });
 
   it("JSON-stringifies object values", () => {
-    expect(renderTemplate("!#telegram.contact#!", ctx)).toBe(
+    expect(renderTemplate("@<telegram.contact>@", ctx)).toBe(
       '{"phoneNumber":"+15551234567"}',
     );
   });
 
   it("coerces numbers", () => {
     expect(
-      renderTemplate("status=!#http_request_n1.httpResponse.status#!", ctx),
+      renderTemplate("status=@<http_request_n1.httpResponse.status>@", ctx),
     ).toBe("status=200");
   });
 
   it("does NOT collide with JSON braces (the Handlebars failure mode)", () => {
     const body =
-      '{"name":"!#http_request_n1.httpResponse.data.name#!","status":!#http_request_n1.httpResponse.status#!}';
+      '{"name":"@<http_request_n1.httpResponse.data.name>@","status":@<http_request_n1.httpResponse.status>@}';
     const out = renderTemplate(body, ctx);
     expect(JSON.parse(out)).toEqual({ name: "Leanne", status: 200 });
   });
@@ -72,7 +72,7 @@ describe("renderTemplate — {{...}} back-compat", () => {
   it("supports both syntaxes in one template", () => {
     expect(
       renderTemplate(
-        "{{telegram.from.firstName}} / !#telegram.from.lastName#!",
+        "{{telegram.from.firstName}} / @<telegram.from.lastName>@",
         ctx,
       ),
     ).toBe("Ada / Lovelace");
@@ -83,8 +83,8 @@ describe("resolveMapping", () => {
   it("renders each target's template against context", () => {
     const out = resolveMapping(
       {
-        Name: "!#telegram.from.firstName#! !#telegram.from.lastName#!",
-        Phone: "!#telegram.contact.phoneNumber#!",
+        Name: "@<telegram.from.firstName>@ @<telegram.from.lastName>@",
+        Phone: "@<telegram.contact.phoneNumber>@",
         Note: "static text",
       },
       ctx,

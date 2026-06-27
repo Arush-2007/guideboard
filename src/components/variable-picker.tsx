@@ -6,10 +6,10 @@ import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
+  PopoverAnchor,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   getUpstreamFields,
   type UpstreamFieldRow,
@@ -25,15 +25,15 @@ export type VariablePickerProps = {
   className?: string;
   /**
    * Insert the bare dotted context path (e.g. `ai_text_abc.output`) instead of
-   * the `!#path#!` template form. Used by inputs that consume a raw path rather
+   * the `@<path>@` template form. Used by inputs that consume a raw path rather
    * than a rendered template — e.g. the Condition node's "Field path".
    */
   bare?: boolean;
 };
 
-/** Strips the `!#path#!` template wrapper down to the bare dotted path. */
+/** Strips the `@<path>@` template wrapper down to the bare dotted path. */
 function toBarePath(insertText: string): string {
-  return insertText.replace(/^!#\s*/, "").replace(/\s*#!$/, "");
+  return insertText.replace(/^@<\s*/, "").replace(/\s*>@$/, "");
 }
 
 export function VariablePicker({
@@ -79,8 +79,20 @@ export function VariablePicker({
           <Braces className="size-4" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-80 p-0">
-        <div className="border-b px-3 py-2 text-sm font-medium">
+      {/* Anchor the panel to a fixed point at the right edge of the centered
+          config dialog, so it opens in the SAME place every time — independent
+          of which field's button was clicked. ml-72 (18rem) ≈ half the dialog's
+          sm:max-w-xl width; top-1/2 + align="center" keeps it vertically
+          centered next to the dialog. */}
+      <PopoverAnchor className="pointer-events-none fixed top-1/2 left-1/2 ml-72 h-0 w-0" />
+      <PopoverContent
+        side="right"
+        align="center"
+        sideOffset={16}
+        collisionPadding={16}
+        className="w-80 border-primary/60 p-0"
+      >
+        <div className="border-b px-3 py-2 text-center text-sm font-medium">
           Insert a field from a previous step
         </div>
         {groups.length === 0 ? (
@@ -88,48 +100,50 @@ export function VariablePicker({
             No previous steps are connected before this one yet.
           </div>
         ) : (
-          <ScrollArea className="max-h-72">
-            <div className="p-1">
-              {groups.map((group) => (
-                <div key={group.fields[0].nodeId} className="mb-1">
-                  <div className="px-2 py-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                    {group.nodeLabel}
-                  </div>
-                  <ul>
-                    {group.fields.map((row) => {
-                      const inserted = bare
-                        ? toBarePath(row.insertText)
-                        : row.insertText;
-                      return (
-                        <li key={row.insertText}>
-                          <button
-                            type="button"
-                            className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-                            onClick={() => {
-                              onSelect(inserted);
-                              setOpen(false);
-                            }}
-                          >
-                            <span className="font-medium text-foreground">
-                              {row.fieldLabel}
-                            </span>
-                            <span className="font-mono text-xs text-muted-foreground">
-                              {inserted}
-                              {row.example ? (
-                                <span className="ml-2 not-italic text-muted-foreground/70">
-                                  e.g. {row.example}
-                                </span>
-                              ) : null}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
+          <div
+            className="themed-scrollbar max-h-[60vh] overflow-y-auto overscroll-contain p-1"
+            onWheel={(e) => {
+              // The parent modal Dialog's scroll-lock (react-remove-scroll)
+              // blocks wheel/trackpad scrolling on this portaled popover, so
+              // drive the scroll manually — two-finger scrolling now works
+              // (dragging the scrollbar already did).
+              e.currentTarget.scrollTop += e.deltaY;
+            }}
+          >
+            {groups.map((group) => (
+              <div key={group.fields[0].nodeId} className="mb-1">
+                <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {group.nodeLabel}
                 </div>
-              ))}
-            </div>
-          </ScrollArea>
+                <ul>
+                  {group.fields.map((row) => {
+                    const inserted = bare
+                      ? toBarePath(row.insertText)
+                      : row.insertText;
+                    return (
+                      <li key={row.insertText}>
+                        <button
+                          type="button"
+                          className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+                          onClick={() => {
+                            onSelect(inserted);
+                            setOpen(false);
+                          }}
+                        >
+                          <span className="font-medium text-foreground">
+                            {row.fieldLabel}
+                          </span>
+                          <span className="w-full break-all font-mono text-xs text-muted-foreground">
+                            {inserted}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ))}
+          </div>
         )}
       </PopoverContent>
     </Popover>

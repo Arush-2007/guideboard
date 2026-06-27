@@ -2,6 +2,7 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
+import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { anthropicChannel } from "@/inngest/channels/anthropic";
@@ -18,6 +19,7 @@ type AnthropicData = {
 export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -49,8 +51,6 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
     ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
   const userPrompt = renderTemplate(config.userPrompt, context);
-  const outputKey = `${NodeType.ANTHROPIC.toLowerCase()}_${nodeId}`;
-
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {
@@ -113,6 +113,6 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
         status: "error",
       }),
     );
-    throw error;
+    throw describeProviderError(error, "Anthropic");
   }
 };

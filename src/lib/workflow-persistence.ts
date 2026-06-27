@@ -5,6 +5,12 @@ import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
+import {
+  legacyOutputKey,
+  nextNodeRef,
+  nodeTypeHasRef,
+  rewriteRefsInJson,
+} from "@/lib/node-ref";
 import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
 
 /**
@@ -95,14 +101,34 @@ export async function persistGeneratedWorkflow(
       data: { name: parsed.name, userId },
     });
 
+    // Assign a frozen ref to each ref-eligible node, then rewrite any legacy
+    // `<type>_<id>` references the model emitted to the new refs, so generated
+    // references resolve against the ref-keyed context.
+    const usedRefs = new Set<string>();
+    const legacyKeyToRef = new Map<string, string>();
+    const nodeRefById = new Map<string, string | null>();
+    for (const node of parsed.nodes) {
+      if (!nodeTypeHasRef(node.type)) {
+        nodeRefById.set(node.id, null);
+        continue;
+      }
+      const ref = nextNodeRef(node.type, usedRefs);
+      usedRefs.add(ref);
+      legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
+      nodeRefById.set(node.id, ref);
+    }
+
     await tx.node.createMany({
       data: parsed.nodes.map((node) => ({
         id: node.id,
         workflowId: wf.id,
         name: node.type,
         type: node.type as NodeType,
+        ref: nodeRefById.get(node.id) ?? null,
         position: node.position,
-        data: node.data ?? {},
+        data: JSON.parse(
+          rewriteRefsInJson(JSON.stringify(node.data ?? {}), legacyKeyToRef),
+        ),
       })),
     });
 

@@ -16,6 +16,7 @@ type DiscordData = {
 export const discordExecutor: NodeExecutor<DiscordData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -48,8 +49,6 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
   const username = config.username
     ? decode(renderTemplate(config.username, context))
     : undefined;
-  const outputKey = `${NodeType.DISCORD.toLowerCase()}_${nodeId}`;
-
   try {
     const result = await step.run("discord-webhook", async () => {
       if (!config.webhookUrl) {

@@ -2,6 +2,7 @@ import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
+import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { geminiChannel } from "@/inngest/channels/gemini";
@@ -18,6 +19,7 @@ type GeminiData = {
 export const geminiExecutor: NodeExecutor<GeminiData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -49,8 +51,6 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
     ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
   const userPrompt = renderTemplate(config.userPrompt, context);
-  const outputKey = `${NodeType.GEMINI.toLowerCase()}_${nodeId}`;
-
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {
@@ -109,6 +109,6 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
         status: "error",
       }),
     );
-    throw error;
+    throw describeProviderError(error, "Gemini");
   }
 };

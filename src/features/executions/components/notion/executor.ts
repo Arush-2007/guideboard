@@ -69,6 +69,7 @@ function contentToParagraphBlocks(body: string) {
 export const notionExecutor: NodeExecutor<NotionActionData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -130,8 +131,6 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
   const title = decode(renderTemplate(config.pageTitle ?? "", context)).trim();
   const body = decode(renderTemplate(config.content ?? "", context));
   const children = contentToParagraphBlocks(body);
-  const outputKey = `${NodeType.NOTION_ACTION.toLowerCase()}_${nodeId}`;
-
   const notionHeaders = {
     Authorization: `Bearer ${token}`,
     "Notion-Version": NOTION_VERSION,

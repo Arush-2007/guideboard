@@ -7,9 +7,9 @@ import Handlebars from "handlebars";
  *
  * Two syntaxes are supported:
  *
- *  - `!#path#!`  — the primary, user-facing placeholder. Inserted by the field
+ *  - `@<path>@`  — the primary, user-facing placeholder. Inserted by the field
  *    picker (`<TemplateInput>`), it carries a canonical context path such as
- *    `!#telegram.from.firstName#!`. Resolved by direct substitution, so it
+ *    `@<telegram.from.firstName>@`. Resolved by direct substitution, so it
  *    never collides with JSON braces (the failure mode plain Handlebars hits
  *    when a `{{x}}` sits right before a `}` in a JSON body).
  *
@@ -17,7 +17,7 @@ import Handlebars from "handlebars";
  *    users. The `json` helper (`{{json some.obj}}`) is registered here, once.
  *
  * Handlebars runs first (only when `{{` is present), then placeholders are
- * substituted, so a value pulled in via `!#...#!` is never re-parsed as a
+ * substituted, so a value pulled in via `@<...>@` is never re-parsed as a
  * template.
  */
 
@@ -25,7 +25,7 @@ Handlebars.registerHelper("json", (value) => {
   return new Handlebars.SafeString(JSON.stringify(value, null, 2));
 });
 
-const PLACEHOLDER_RE = /!#\s*([^#]+?)\s*#!/g;
+const PLACEHOLDER_RE = /@<\s*([^>]+?)\s*>@/g;
 
 function getByPath(obj: unknown, path: string): unknown {
   const keys = path
@@ -50,7 +50,7 @@ function stringify(value: unknown): string {
 }
 
 /**
- * Renders `template` against `context`, resolving both `!#path#!` placeholders
+ * Renders `template` against `context`, resolving both `@<path>@` placeholders
  * and `{{...}}` Handlebars expressions. Missing paths resolve to an empty
  * string. A non-string template is returned unchanged-as-string for safety.
  */

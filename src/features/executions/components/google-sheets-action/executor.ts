@@ -53,7 +53,7 @@ function parseValuesJson(raw: string): string[][] {
 
 export const googleSheetsActionExecutor: NodeExecutor<
   GoogleSheetsActionData
-> = async ({ data, nodeId, userId, context, step, publish }) => {
+> = async ({ data, nodeId, outputKey, userId, context, step, publish }) => {
   await publish(
     googleSheetsActionChannel(userId).status({
       nodeId,
@@ -78,8 +78,6 @@ export const googleSheetsActionExecutor: NodeExecutor<
       error instanceof Error ? error.message : "Invalid node config",
     );
   }
-
-  const outputKey = `${NodeType.GOOGLE_SHEETS_ACTION.toLowerCase()}_${nodeId}`;
   const action = config.action ?? "append_row";
   const spreadsheetId = decode(
     renderTemplate(config.spreadsheetId ?? "", context),

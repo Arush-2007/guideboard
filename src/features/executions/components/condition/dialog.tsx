@@ -44,7 +44,7 @@ const operatorEnum = z.enum([
 ]);
 
 const formSchema = z.object({
-  field: z.string().min(1, { message: "Field path is required" }),
+  field: z.string().min(1, { message: "Field is required" }),
   operator: operatorEnum,
   value: z.string(),
   stopOnFail: z.boolean(),
@@ -104,8 +104,8 @@ export const ConditionDialog = ({
         <DialogHeader>
           <DialogTitle>Condition</DialogTitle>
           <DialogDescription>
-            Filter the workflow by comparing a value from context using dot
-            notation (e.g. commentText or myVar.nested).
+            Filter the workflow by comparing two operands. Each side can be a
+            fixed value or a reference to a previous node's output.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -118,21 +118,19 @@ export const ConditionDialog = ({
               name="field"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Field path</FormLabel>
+                  <FormLabel>Field</FormLabel>
                   <FormControl>
                     <VariableInput
-                      placeholder="e.g. ai_text_abc.output"
+                      placeholder="A fixed value, or @<ai_text_abc.output>@"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
-                      bare
                       {...field}
                     />
                   </FormControl>
                   <FormDescription>
-                    The field to test. Pick one with the{" "}
-                    <span className="font-mono">{"{ }"}</span> button — it
-                    inserts a bare dot path (no{" "}
-                    <span className="font-mono">{"!#…#!"}</span>).
+                    The value to test. Type a fixed value, or insert a reference
+                    to a previous node with the{" "}
+                    <span className="font-mono">{"{ }"}</span> button.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -178,15 +176,17 @@ export const ConditionDialog = ({
                     <FormLabel>Value</FormLabel>
                     <FormControl>
                       <VariableInput
-                        placeholder="Compare to…"
+                        placeholder="A fixed value, or @<node.output>@"
                         currentNodeId={currentNodeId}
                         workflowId={workflowId}
                         {...field}
                       />
                     </FormControl>
                     <FormDescription>
-                      Compared as string unless both sides are valid numbers for
-                      greater/less than.
+                      Type a fixed value, or insert a reference to a previous
+                      node with the <span className="font-mono">{"{ }"}</span>{" "}
+                      button. Compared as string unless both sides are valid
+                      numbers for greater/less than.
                     </FormDescription>
                     <FormMessage />
                   </FormItem>

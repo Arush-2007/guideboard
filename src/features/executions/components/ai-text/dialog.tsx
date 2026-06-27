@@ -281,7 +281,7 @@ export const AiTextDialog = ({
                   <FormControl>
                     <VariableTextarea
                       placeholder={
-                        "If !#telegram.text#! is an internship application, reply with exactly: Yes — otherwise reply: No"
+                        "If @<telegram.text>@ is an internship application, reply with exactly: Yes — otherwise reply: No"
                       }
                       className="min-h-[120px] font-mono text-sm"
                       currentNodeId={currentNodeId}

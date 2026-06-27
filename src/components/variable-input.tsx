@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 export type VariableInputProps = React.ComponentProps<typeof Input> & {
   currentNodeId: string;
   workflowId?: string;
-  /** Insert a bare dotted path instead of the `!#path#!` template form. */
+  /** Insert a bare dotted path instead of the `@<path>@` template form. */
   bare?: boolean;
 };
 
@@ -63,7 +63,7 @@ export const VariableInput = React.forwardRef<
           disabled={disabled}
           {...rest}
         />
-        <div className="absolute right-1 top-1/2 z-10 -translate-y-1/2">
+        <div className="absolute bottom-1 right-1 z-10">
           <VariablePicker
             currentNodeId={currentNodeId}
             workflowId={workflowId}

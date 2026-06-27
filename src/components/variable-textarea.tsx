@@ -3,8 +3,8 @@
 import * as React from "react";
 import { Textarea } from "@/components/ui/textarea";
 import { VariablePicker } from "@/components/variable-picker";
-import { cn } from "@/lib/utils";
 import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
+import { cn } from "@/lib/utils";
 
 export type VariableTextareaProps = React.ComponentProps<typeof Textarea> & {
   currentNodeId: string;
@@ -51,8 +51,18 @@ export const VariableTextarea = React.forwardRef<
     };
 
     return (
-      <div className="w-full space-y-1">
-        <div className="flex justify-end">
+      <div className="relative w-full">
+        <Textarea
+          ref={setRefs}
+          // Reserve space at the bottom so the picker button (bottom-right)
+          // never sits over typed text.
+          className={cn("pb-10", className)}
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+          {...rest}
+        />
+        <div className="absolute bottom-2 right-2 z-10">
           <VariablePicker
             currentNodeId={currentNodeId}
             workflowId={workflowId}
@@ -60,14 +70,6 @@ export const VariableTextarea = React.forwardRef<
             disabled={disabled}
           />
         </div>
-        <Textarea
-          ref={setRefs}
-          className={cn(className)}
-          value={value}
-          onChange={onChange}
-          disabled={disabled}
-          {...rest}
-        />
       </div>
     );
   },

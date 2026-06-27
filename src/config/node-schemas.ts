@@ -39,7 +39,7 @@ const httpRequestSchema = z
 
 const conditionSchema = z
   .object({
-    field: z.string().min(1, "Field path is required"),
+    field: z.string().min(1, "Field is required"),
     operator: z.enum([
       "contains",
       "not_contains",
@@ -212,7 +212,7 @@ const scheduleTriggerSchema = z
   .passthrough();
 
 // Shared "match the columns" mapping shape: target field/column -> template
-// string (may contain !#path#! placeholders). Reused by any node that maps
+// string (may contain @<path>@ placeholders). Reused by any node that maps
 // upstream data onto named targets.
 const mappingSchema = z.record(z.string(), z.string());
 

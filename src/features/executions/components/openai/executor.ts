@@ -2,6 +2,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
+import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { openAiChannel } from "@/inngest/channels/openai";
@@ -18,6 +19,7 @@ type OpenAiData = {
 export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -49,8 +51,6 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
     ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
   const userPrompt = renderTemplate(config.userPrompt, context);
-  const outputKey = `${NodeType.OPENAI.toLowerCase()}_${nodeId}`;
-
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {
@@ -109,6 +109,6 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
         status: "error",
       }),
     );
-    throw error;
+    throw describeProviderError(error, "OpenAI");
   }
 };

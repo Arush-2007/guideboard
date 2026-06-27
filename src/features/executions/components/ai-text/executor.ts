@@ -5,6 +5,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { generateText } from "ai";
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
+import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
 import { aiTextChannel } from "@/inngest/channels/ai-text";
@@ -28,9 +29,17 @@ const providerToCredentialType: Record<AiTextProvider, CredentialType> = {
   groq: CredentialType.GROQ,
 };
 
+const providerLabel: Record<AiTextProvider, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  groq: "Groq",
+};
+
 export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -74,8 +83,6 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     ? renderTemplate(config.systemPrompt, context)
     : "You are a helpful assistant.";
   const userPrompt = renderTemplate(config.prompt, context);
-  const outputKey = `${NodeType.AI_TEXT.toLowerCase()}_${nodeId}`;
-
   const credential = await step.run("get-credential", () => {
     return prisma.credential.findUnique({
       where: {
@@ -178,7 +185,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
       ...context,
       [outputKey]: {
         // The AI node's result, referenced downstream as
-        // !#ai_text_<id>.output#! (declared in node-outputs.ts).
+        // @<ai_text_<id>.output>@ (declared in node-outputs.ts).
         output: text,
       },
     };
@@ -189,6 +196,6 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
         status: "error",
       }),
     );
-    throw error;
+    throw describeProviderError(error, providerLabel[provider]);
   }
 };

@@ -20,6 +20,7 @@ const TELEGRAM_MAX_MESSAGE = 4096;
 export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -98,8 +99,6 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
   const chatId = decode(rawChatId).trim();
   const rawMessage = renderTemplate(config.message ?? "", context);
   const text = decode(rawMessage).slice(0, TELEGRAM_MAX_MESSAGE);
-  const outputKey = `${NodeType.TELEGRAM_ACTION.toLowerCase()}_${nodeId}`;
-
   try {
     const result = await step.run("telegram-send-message", async () => {
       if (!chatId) {

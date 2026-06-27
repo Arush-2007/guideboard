@@ -143,7 +143,7 @@ export const SlackDialog = ({
                   <FormLabel>Message</FormLabel>
                   <FormControl>
                     <VariableTextarea
-                      placeholder="New application from !#telegram.from.firstName#! — please review"
+                      placeholder="New application from @<telegram.from.firstName>@ — please review"
                       className="min-h-[100px] text-sm"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}

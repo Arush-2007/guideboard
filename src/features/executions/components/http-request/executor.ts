@@ -15,6 +15,7 @@ type HttpRequestData = {
 export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -41,8 +42,6 @@ export const httpRequestExecutor: NodeExecutor<HttpRequestData> = async ({
       error instanceof Error ? error.message : "Invalid node config",
     );
   }
-  const outputKey = `${NodeType.HTTP_REQUEST.toLowerCase()}_${nodeId}`;
-
   try {
     const result = await step.run("http-request", async () => {
       if (!config.endpoint) {

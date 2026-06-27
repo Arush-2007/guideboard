@@ -17,6 +17,7 @@ type SlackData = {
 export const slackExecutor: NodeExecutor<SlackData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -46,8 +47,6 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
 
   const rawContent = renderTemplate(config.content, context);
   const content = decode(rawContent);
-  const outputKey = `${NodeType.SLACK.toLowerCase()}_${nodeId}`;
-
   // Combine the fan-out list with the legacy single field, de-duplicated.
   const webhookUrls = [
     ...(Array.isArray(config.webhookUrls) ? config.webhookUrls : []),
