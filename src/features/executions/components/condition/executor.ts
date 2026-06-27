@@ -1,9 +1,6 @@
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
-import type {
-  NodeExecutor,
-  WorkflowContext,
-} from "@/features/executions/types";
+import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { conditionChannel } from "@/inngest/channels/condition";
 import { renderTemplate } from "@/lib/templating";
@@ -24,24 +21,6 @@ type ConditionData = {
   value?: string;
   stopOnFail?: boolean;
 };
-
-function getByPath(obj: WorkflowContext, path: string): unknown {
-  const keys = path
-    .split(".")
-    .map((k) => k.trim())
-    .filter(Boolean);
-  let current: unknown = obj;
-  for (const key of keys) {
-    if (current === null || current === undefined) {
-      return undefined;
-    }
-    if (typeof current !== "object") {
-      return undefined;
-    }
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
 
 function isEmptyValue(value: unknown): boolean {
   if (value === undefined || value === null) {
@@ -150,12 +129,11 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
         );
       }
 
-      // Tolerate a `!#path#!` wrapper (e.g. legacy data or a manual paste):
-      // the field is a bare context path, so strip the template markers.
-      const barePath = field.replace(/^!#\s*/, "").replace(/\s*#!$/, "");
-      const fieldValue = getByPath(context, barePath);
-      // Render the compare value so users can reference upstream data
-      // (e.g. `!#telegram.text#!`), consistent with every other node.
+      // Both sides go through the single templating entry point: `!#path#!`
+      // (or `{{...}}`) is resolved against the context, anything else is a
+      // literal. So either operand can be a fixed value or a reference to a
+      // previous node's output (e.g. comparing two node outputs).
+      const fieldValue = renderTemplate(field, context);
       const compareValue = renderTemplate(config.value ?? "", context);
       const passes = evaluateCondition(operator, fieldValue, compareValue);
 
