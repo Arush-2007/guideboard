@@ -33,9 +33,9 @@ describe("isSerialHeader", () => {
 describe("buildSheetRow", () => {
   const headers = ["S.No", "Name", "Mobile No", "Category", "Untouched"];
   const mappings = {
-    Name: "!#telegram.from.firstName#!",
-    "Mobile No": "!#telegram.contact.phoneNumber#!",
-    Category: "!#ai_text_a1.output#!",
+    Name: "@<telegram.from.firstName>@",
+    "Mobile No": "@<telegram.contact.phoneNumber>@",
+    Category: "@<ai_text_a1.output>@",
   };
 
   it("orders cells by header, resolves mappings, auto-fills serial, blanks the rest", () => {
@@ -51,7 +51,7 @@ describe("buildSheetRow", () => {
   it("respects an explicitly mapped serial column over auto-fill", () => {
     const row = buildSheetRow({
       headers: ["S.No", "Name"],
-      mappings: { "S.No": "100", Name: "!#telegram.from.firstName#!" },
+      mappings: { "S.No": "100", Name: "@<telegram.from.firstName>@" },
       context,
       currentDataRowCount: 4,
     });
@@ -61,7 +61,7 @@ describe("buildSheetRow", () => {
   it("tolerates header whitespace when matching mappings", () => {
     const row = buildSheetRow({
       headers: ["  Name  "],
-      mappings: { Name: "!#telegram.from.firstName#!" },
+      mappings: { Name: "@<telegram.from.firstName>@" },
       context,
       currentDataRowCount: 0,
     });

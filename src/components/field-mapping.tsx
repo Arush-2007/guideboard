@@ -12,7 +12,7 @@ export type FieldMappingTarget = { key: string; label: string };
 export type FieldMappingProps = {
   /** The target fields/columns to map onto (e.g. the sheet's headers). */
   targets: FieldMappingTarget[];
-  /** Current mapping: target key -> template string (may contain !#path#!). */
+  /** Current mapping: target key -> template string (may contain @<path>@). */
   value: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
   currentNodeId: string;
@@ -25,7 +25,7 @@ function normalize(s: string): string {
 
 /**
  * The reusable "match the columns" UI: each target gets a `<VariableInput>` so
- * the user can type a literal value or insert an upstream field (`!#path#!`)
+ * the user can type a literal value or insert an upstream field (`@<path>@`)
  * via the picker. "Auto-map by name" pre-fills targets whose name matches an
  * available upstream field. Reads the live canvas (not the saved copy).
  */

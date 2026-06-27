@@ -44,7 +44,7 @@ describe("aiTextExecutor (the USP node)", () => {
         provider: "anthropic",
         credentialId: "cred1",
         prompt:
-          "If !#telegram.text#! is an internship application reply Yes else No",
+          "If @<telegram.text>@ is an internship application reply Yes else No",
       },
       nodeId: "a1",
       outputKey: "AI_TEXT_1",

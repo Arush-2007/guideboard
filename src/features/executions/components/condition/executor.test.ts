@@ -24,7 +24,7 @@ describe("conditionExecutor operand resolution", () => {
     await expect(
       run(
         {
-          field: "!#ai_text_a1.output#!",
+          field: "@<ai_text_a1.output>@",
           operator: "equals",
           value: "Yes",
           stopOnFail: true,
@@ -39,9 +39,9 @@ describe("conditionExecutor operand resolution", () => {
     await expect(
       run(
         {
-          field: "!#ai_text_a1.output#!",
+          field: "@<ai_text_a1.output>@",
           operator: "equals",
-          value: "!#ai_text_b1.output#!",
+          value: "@<ai_text_b1.output>@",
           stopOnFail: true,
         },
         { ai_text_a1: { output: "match" }, ai_text_b1: { output: "match" } },
@@ -51,9 +51,9 @@ describe("conditionExecutor operand resolution", () => {
     await expect(
       run(
         {
-          field: "!#ai_text_a1.output#!",
+          field: "@<ai_text_a1.output>@",
           operator: "equals",
-          value: "!#ai_text_b1.output#!",
+          value: "@<ai_text_b1.output>@",
           stopOnFail: true,
         },
         { ai_text_a1: { output: "x" }, ai_text_b1: { output: "y" } },
@@ -71,9 +71,9 @@ describe("conditionExecutor operand resolution", () => {
   });
 
   it("treats a bare dot-path (no markers) as a literal, not a reference", async () => {
-    // Pure semantics: a reference MUST be wrapped in !#...#!. A bare path is
+    // Pure semantics: a reference MUST be wrapped in @<...>@. A bare path is
     // just text, so it does not equal the resolved AI output. (Existing rows
-    // are converted to the !#...#! form by the backfill migration.)
+    // are converted to the @<...>@ form by the backfill migration.)
     await expect(
       run(
         {

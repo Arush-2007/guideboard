@@ -121,7 +121,7 @@ export const ConditionDialog = ({
                   <FormLabel>Field</FormLabel>
                   <FormControl>
                     <VariableInput
-                      placeholder="A fixed value, or !#ai_text_abc.output#!"
+                      placeholder="A fixed value, or @<ai_text_abc.output>@"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
                       {...field}
@@ -176,7 +176,7 @@ export const ConditionDialog = ({
                     <FormLabel>Value</FormLabel>
                     <FormControl>
                       <VariableInput
-                        placeholder="A fixed value, or !#node.output#!"
+                        placeholder="A fixed value, or @<node.output>@"
                         currentNodeId={currentNodeId}
                         workflowId={workflowId}
                         {...field}

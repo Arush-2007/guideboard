@@ -45,12 +45,19 @@ describe("getOutputKeyForNode", () => {
 });
 
 describe("nodeTypeHasRef", () => {
-  it("is true for per-node-output nodes and false for triggers/fixed-key nodes", () => {
+  it("is true for every non-trigger node (actions, AI, Condition, reply nodes)", () => {
     expect(nodeTypeHasRef("AI_TEXT")).toBe(true);
     expect(nodeTypeHasRef("GMAIL_ACTION")).toBe(true);
+    expect(nodeTypeHasRef("CONDITION")).toBe(true);
+    expect(nodeTypeHasRef("AI_REPLY_GENERATOR")).toBe(true);
+    expect(nodeTypeHasRef("YOUTUBE_REPLY_COMMENT")).toBe(true);
+  });
+
+  it("is false for triggers and the INITIAL placeholder", () => {
     expect(nodeTypeHasRef("TELEGRAM_TRIGGER")).toBe(false);
-    expect(nodeTypeHasRef("CONDITION")).toBe(false);
-    expect(nodeTypeHasRef("AI_REPLY_GENERATOR")).toBe(false);
+    expect(nodeTypeHasRef("WEBHOOK_TRIGGER")).toBe(false);
+    expect(nodeTypeHasRef("GMAIL_TRIGGER")).toBe(false);
+    expect(nodeTypeHasRef("INITIAL")).toBe(false);
   });
 });
 
@@ -61,11 +68,11 @@ describe("rewriteRefsInJson", () => {
       [legacyOutputKey("HTTP_REQUEST", "xyz"), "HTTP_REQUEST_1"],
     ]);
     const json = JSON.stringify({
-      field: "!#ai_text_abc.output#!",
-      url: "!#http_request_xyz.httpResponse.status#!",
+      field: "@<ai_text_abc.output>@",
+      url: "@<http_request_xyz.httpResponse.status>@",
     });
     const out = JSON.parse(rewriteRefsInJson(json, map));
-    expect(out.field).toBe("!#AI_TEXT_1.output#!");
-    expect(out.url).toBe("!#HTTP_REQUEST_1.httpResponse.status#!");
+    expect(out.field).toBe("@<AI_TEXT_1.output>@");
+    expect(out.url).toBe("@<HTTP_REQUEST_1.httpResponse.status>@");
   });
 });

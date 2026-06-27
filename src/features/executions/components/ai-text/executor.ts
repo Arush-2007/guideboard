@@ -185,7 +185,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
       ...context,
       [outputKey]: {
         // The AI node's result, referenced downstream as
-        // !#ai_text_<id>.output#! (declared in node-outputs.ts).
+        // @<ai_text_<id>.output>@ (declared in node-outputs.ts).
         output: text,
       },
     };

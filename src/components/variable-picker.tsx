@@ -25,15 +25,15 @@ export type VariablePickerProps = {
   className?: string;
   /**
    * Insert the bare dotted context path (e.g. `ai_text_abc.output`) instead of
-   * the `!#path#!` template form. Used by inputs that consume a raw path rather
+   * the `@<path>@` template form. Used by inputs that consume a raw path rather
    * than a rendered template — e.g. the Condition node's "Field path".
    */
   bare?: boolean;
 };
 
-/** Strips the `!#path#!` template wrapper down to the bare dotted path. */
+/** Strips the `@<path>@` template wrapper down to the bare dotted path. */
 function toBarePath(insertText: string): string {
-  return insertText.replace(/^!#\s*/, "").replace(/\s*#!$/, "");
+  return insertText.replace(/^@<\s*/, "").replace(/\s*>@$/, "");
 }
 
 export function VariablePicker({

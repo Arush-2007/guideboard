@@ -129,7 +129,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
         );
       }
 
-      // Both sides go through the single templating entry point: `!#path#!`
+      // Both sides go through the single templating entry point: `@<path>@`
       // (or `{{...}}`) is resolved against the context, anything else is a
       // literal. So either operand can be a fixed value or a reference to a
       // previous node's output (e.g. comparing two node outputs).

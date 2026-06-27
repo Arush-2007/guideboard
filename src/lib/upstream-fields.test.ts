@@ -22,11 +22,11 @@ describe("getUpstreamNodeIds", () => {
 });
 
 describe("getUpstreamFields", () => {
-  it("expands a declared trigger into field-level !#path#! entries", () => {
+  it("expands a declared trigger into field-level @<path>@ entries", () => {
     const rows = getUpstreamFields("c1", nodes, edges);
 
     const firstName = rows.find(
-      (r) => r.insertText === "!#telegram.from.firstName#!",
+      (r) => r.insertText === "@<telegram.from.firstName>@",
     );
     expect(firstName).toBeDefined();
     expect(firstName?.fieldLabel).toBe("Sender first name");
@@ -38,7 +38,7 @@ describe("getUpstreamFields", () => {
     );
     // Contact phone is exposed (needed for the "name + number" use case).
     expect(
-      rows.some((r) => r.insertText === "!#telegram.contact.phoneNumber#!"),
+      rows.some((r) => r.insertText === "@<telegram.contact.phoneNumber>@"),
     ).toBe(true);
   });
 
@@ -47,7 +47,7 @@ describe("getUpstreamFields", () => {
     const http = rows.find((r) => r.nodeId === "h1");
     expect(http).toBeDefined();
     expect(http?.fieldLabel).toBe("Whole output");
-    expect(http?.insertText).toBe("!#http_request_h1#!");
+    expect(http?.insertText).toBe("@<http_request_h1>@");
   });
 
   it("excludes downstream and self fields", () => {
@@ -65,7 +65,7 @@ describe("getUpstreamFields", () => {
     const rows = getUpstreamFields("c2", aiNodes, aiEdges);
     expect(rows).toContainEqual(
       expect.objectContaining({
-        insertText: "!#ai_text_a1.output#!",
+        insertText: "@<ai_text_a1.output>@",
         fieldLabel: "AI output",
       }),
     );

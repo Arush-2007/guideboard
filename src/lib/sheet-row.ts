@@ -7,7 +7,7 @@ import { renderTemplate } from "./templating";
  * user re-configuring the node.
  *
  * For each header:
- *  - if the user mapped a value (a template string, possibly with `!#...#!`),
+ *  - if the user mapped a value (a template string, possibly with `@<...>@`),
  *    it is rendered against the workflow context;
  *  - else if the header looks like a serial-number column AND was left
  *    unmapped, it is auto-filled with the next row number;

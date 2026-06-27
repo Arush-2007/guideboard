@@ -41,7 +41,7 @@ export type UpstreamFieldRow = {
   nodeLabel: string;
   /** Friendly field name, e.g. "Sender first name" (or "Whole output"). */
   fieldLabel: string;
-  /** The text inserted into the field, e.g. `!#telegram.from.firstName#!`. */
+  /** The text inserted into the field, e.g. `@<telegram.from.firstName>@`. */
   insertText: string;
   example?: string;
 };
@@ -82,7 +82,7 @@ export function getUpstreamFields(
           nodeType: String(node.type),
           nodeLabel,
           fieldLabel: field.label,
-          insertText: `!#${path}#!`,
+          insertText: `@<${path}>@`,
           example: field.example,
         });
       }
@@ -94,7 +94,7 @@ export function getUpstreamFields(
         nodeType: String(node.type),
         nodeLabel,
         fieldLabel: "Whole output",
-        insertText: `!#${getOutputKeyForNode(String(node.type), id, node.ref)}#!`,
+        insertText: `@<${getOutputKeyForNode(String(node.type), id, node.ref)}>@`,
       });
     }
   }

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { VariableInput } from "@/components/variable-input";
 
 export type RecipientListProps = {
-  /** Current recipients. Each entry may be a literal value or a `!#path#!`
+  /** Current recipients. Each entry may be a literal value or a `@<path>@`
    * template. Always render at least one (blank) row. */
   value: string[];
   onChange: (next: string[]) => void;
@@ -18,7 +18,7 @@ export type RecipientListProps = {
 /**
  * Reusable "send to many" UI: a dynamic list of rows, each a `VariableInput`
  * so a recipient can be a fixed value (email/phone) OR pulled from an upstream
- * node via the field picker (`!#telegram.from.username#!`). Used by every
+ * node via the field picker (`@<telegram.from.username>@`). Used by every
  * notify-style action (Email, WhatsApp, …). Reads the live canvas through
  * `VariableInput` → `VariablePicker`.
  */

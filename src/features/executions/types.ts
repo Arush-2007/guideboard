@@ -12,7 +12,7 @@ export interface NodeExecutorParams<TData = Record<string, unknown>> {
    * The context key this node writes its output under — the node's stable
    * `ref` (e.g. `AI_TEXT_1`), resolved once by the engine. Executors must use
    * this instead of recomputing a key, so the write key always matches what the
-   * variable picker advertises and downstream `!#...#!` references resolve.
+   * variable picker advertises and downstream `@<...>@` references resolve.
    */
   outputKey: string;
   userId: string;

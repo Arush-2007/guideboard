@@ -59,7 +59,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     fields: [
       {
         // Request body is arbitrary JSON; expose the root so users can drill in
-        // via the templating escape hatch (e.g. `!#webhook.body.email#!`).
+        // via the templating escape hatch (e.g. `@<webhook.body.email>@`).
         path: "body",
         label: "Request body (JSON)",
         example: '{ "email": "ada@example.com" }',

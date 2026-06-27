@@ -127,7 +127,7 @@ export const WhatsappActionDialog = ({
                       onChange={field.onChange}
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
-                      placeholder="911234567890 or !#field#!"
+                      placeholder="911234567890 or @<field>@"
                     />
                   </FormControl>
                   <FormDescription>
@@ -148,7 +148,7 @@ export const WhatsappActionDialog = ({
                   <FormLabel>Message</FormLabel>
                   <FormControl>
                     <VariableTextarea
-                      placeholder="Hi !#telegram.from.firstName#!, …"
+                      placeholder="Hi @<telegram.from.firstName>@, …"
                       className="min-h-[100px] text-sm"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}

@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 export type VariableInputProps = React.ComponentProps<typeof Input> & {
   currentNodeId: string;
   workflowId?: string;
-  /** Insert a bare dotted path instead of the `!#path#!` template form. */
+  /** Insert a bare dotted path instead of the `@<path>@` template form. */
   bare?: boolean;
 };
 

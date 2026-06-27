@@ -212,7 +212,7 @@ const scheduleTriggerSchema = z
   .passthrough();
 
 // Shared "match the columns" mapping shape: target field/column -> template
-// string (may contain !#path#! placeholders). Reused by any node that maps
+// string (may contain @<path>@ placeholders). Reused by any node that maps
 // upstream data onto named targets.
 const mappingSchema = z.record(z.string(), z.string());
 

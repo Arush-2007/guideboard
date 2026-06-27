@@ -2,38 +2,37 @@
  * Single source of truth for a node's reference key — the human-readable,
  * per-workflow-unique identifier (e.g. `AI_TEXT_1`) that a node's output is
  * written under in the run context and that users reference downstream as
- * `!#AI_TEXT_1.output#!`.
+ * `@<AI_TEXT_1.output>@`.
  *
  * Kept dependency-free (no React, no Prisma) so the engine, the variable
  * picker, the editor, and the conversational builder all share one definition.
  */
 
 /**
- * Node types that write their output under a per-node key (the engine's
- * `outputKey`). These are exactly the nodes that get a `ref`. Triggers seed
- * fixed context keys (e.g. `telegram`) and other nodes write fixed keys (e.g.
- * the AI reply generator's `aiReply`) or nothing (Condition), so they keep
- * `ref = null` and their existing behavior. Add a type here when its executor
- * starts writing `outputKey`.
+ * Trigger (and placeholder) node types that DON'T get a ref. Triggers seed
+ * fixed context keys (e.g. `telegram`, `webhook`) — renaming those is a separate
+ * step — and `INITIAL` is the empty-canvas placeholder, not a real node. This is
+ * a denylist so EVERY other node type (actions, AI, Condition, reply nodes, and
+ * any future node) automatically gets a friendly `TYPE_N` ref without having to
+ * be added to a list.
  */
-export const REF_NODE_TYPES: ReadonlySet<string> = new Set([
-  "AI_TEXT",
-  "ANTHROPIC",
-  "DISCORD",
-  "GEMINI",
-  "GMAIL_ACTION",
-  "GOOGLE_SHEETS_ACTION",
-  "HTTP_REQUEST",
-  "NOTION_ACTION",
-  "OPENAI",
-  "SLACK",
-  "TELEGRAM_ACTION",
-  "WHATSAPP_ACTION",
+export const NON_REF_NODE_TYPES: ReadonlySet<string> = new Set([
+  "INITIAL",
+  "MANUAL_TRIGGER",
+  "GOOGLE_FORM_TRIGGER",
+  "TYPEFORM_TRIGGER",
+  "GMAIL_TRIGGER",
+  "GOOGLE_SHEETS_TRIGGER",
+  "SCHEDULE_TRIGGER",
+  "WEBHOOK_TRIGGER",
+  "INSTAGRAM_COMMENT_TRIGGER",
+  "YOUTUBE_COMMENT_TRIGGER",
+  "TELEGRAM_TRIGGER",
 ]);
 
-/** Whether a node of this type is assigned a `ref` (see `REF_NODE_TYPES`). */
+/** Whether a node of this type is assigned a `ref` — everything but triggers. */
 export function nodeTypeHasRef(type: string): boolean {
-  return REF_NODE_TYPES.has(type);
+  return !NON_REF_NODE_TYPES.has(type);
 }
 
 /** The legacy per-node context key (`<type>_<id>`) a ref replaces. */
