@@ -5,6 +5,7 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
+import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { verifyTelegramWebhookSecretToken } from "@/lib/webhook-verify";
 
@@ -131,7 +132,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error("Telegram webhook error:", error);
+    logger.error("Telegram webhook error", error);
     return NextResponse.json(
       { success: false, error: "Failed to process Telegram update" },
       { status: 500 },

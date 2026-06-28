@@ -11,6 +11,7 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
+import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { timingSafeStringEqual } from "@/lib/webhook-verify";
 
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
         );
       }
     } else {
-      console.warn(
+      logger.warn(
         "GOOGLE_FORM_WEBHOOK_SECRET is not set — Google Form webhook is unauthenticated",
       );
     }
@@ -76,7 +77,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error("Google form webhook error:", error);
+    logger.error("Google form webhook error", error);
     return NextResponse.json(
       { success: false, error: "Failed to process Google Form submission" },
       { status: 500 },

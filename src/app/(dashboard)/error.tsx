@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { logger } from "@/lib/logger";
 
 export default function DashboardRouteError({
   error,
@@ -11,7 +12,7 @@ export default function DashboardRouteError({
   reset: () => void;
 }) {
   useEffect(() => {
-    console.error(error);
+    logger.error("Unhandled UI error", error);
   }, [error]);
 
   return (
