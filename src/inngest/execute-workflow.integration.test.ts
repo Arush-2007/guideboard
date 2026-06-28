@@ -140,7 +140,6 @@ describe("executeWorkflow engine (5-node workflow)", () => {
           field: "@<http_request_n_get.httpResponse.status>@",
           operator: "equals",
           value: "200",
-          stopOnFail: true,
         },
       },
       {
@@ -206,6 +205,7 @@ describe("executeWorkflow engine (5-node workflow)", () => {
 
     const context = await runWorkflowNodes({
       sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
+      connections: loaded.connections,
       userId,
       initialData: { lead: { name: "Ada Lovelace", email: "ada@example.com" } },
       step,
@@ -250,7 +250,7 @@ describe("executeWorkflow engine (5-node workflow)", () => {
     );
   });
 
-  it("stops the workflow when the condition fails (downstream nodes never run)", async () => {
+  it("routes to the false branch and skips downstream when the condition fails", async () => {
     const workflow = await prisma.workflow.create({
       data: { name: "Gated workflow", userId },
     });
@@ -269,25 +269,26 @@ describe("executeWorkflow engine (5-node workflow)", () => {
           id: "g_cond",
           workflowId: workflow.id,
           type: NodeType.CONDITION,
-          name: "Impossible gate",
+          name: "Tier gate",
           position: { x: 250, y: 0 },
           data: {
             field: "@<lead.tier>@",
             operator: "equals",
             value: "enterprise",
-            stopOnFail: true,
           },
         },
         {
           id: "g_post",
           workflowId: workflow.id,
           type: NodeType.HTTP_REQUEST,
-          name: "Should never run",
+          name: "Only on the true branch",
           position: { x: 500, y: 0 },
           data: { endpoint: `${baseUrl}/post`, method: "POST" },
         },
       ],
     });
+    // g_post hangs off the condition's `true` output, so a failed (false)
+    // condition leaves it unreachable.
     await prisma.connection.createMany({
       data: [
         {
@@ -295,7 +296,12 @@ describe("executeWorkflow engine (5-node workflow)", () => {
           fromNodeId: "g_trigger",
           toNodeId: "g_cond",
         },
-        { workflowId: workflow.id, fromNodeId: "g_cond", toNodeId: "g_post" },
+        {
+          workflowId: workflow.id,
+          fromNodeId: "g_cond",
+          toNodeId: "g_post",
+          fromOutput: "true",
+        },
       ],
     });
 
@@ -304,23 +310,33 @@ describe("executeWorkflow engine (5-node workflow)", () => {
       include: { nodes: true, connections: true },
     });
 
-    await expect(
-      runWorkflowNodes({
-        sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
-        userId,
-        initialData: { lead: { name: "Ada", tier: "free" } },
-        step,
-        publish,
-      }),
-    ).rejects.toThrow(/condition not met/i);
+    const statuses: Record<string, string> = {};
+    await runWorkflowNodes({
+      sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
+      connections: loaded.connections,
+      userId,
+      initialData: { lead: { name: "Ada", tier: "free" } },
+      step,
+      publish,
+      recorder: {
+        async record({ nodeId, status }) {
+          statuses[nodeId] = status;
+        },
+      },
+    });
+
+    // The run completes (no throw): the gate evaluated false and routed to its
+    // unconnected branch, so the downstream POST is skipped, not failed.
+    expect(statuses.g_cond).toBe("SUCCESS");
+    expect(statuses.g_post).toBe("SKIPPED");
   });
 });
 
 describe("runWorkflowNodes recorder (per-node observability)", () => {
-  // Faithful step shim: Inngest serializes `step.run` output, so the condition
-  // node — which returns `context` THROUGH step.run — yields a deep copy with
-  // all-new references. This is exactly the case a reference-based diff gets
-  // wrong; the production-equivalent shim must serialize so the test guards it.
+  // Faithful step shim: Inngest serializes every `step.run` output, so any node
+  // whose output is threaded back through a step yields a deep copy with
+  // all-new references. `newKeysDiff` must key off property presence, not
+  // reference identity; serializing here keeps the test honest about that.
   const serializingStep = {
     run: async (_name: string, fn: () => unknown) =>
       JSON.parse(JSON.stringify((await fn()) ?? null)),
@@ -372,7 +388,6 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
             field: "@<http_request_r_get.httpResponse.status>@",
             operator: "equals",
             value: conditionValue,
-            stopOnFail: true,
           },
         },
       ],
@@ -395,6 +410,7 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
 
     await runWorkflowNodes({
       sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
+      connections: loaded.connections,
       userId,
       initialData: { lead: { name: "Ada" } },
       step: serializingStep,
@@ -411,28 +427,64 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
       "http_request_r_get",
     ]);
 
-    // REGRESSION GUARD: condition returns the (serialized, all-new-references)
-    // context but added no key, so its recorded output must be empty. A
-    // reference diff would wrongly capture the entire context here.
+    // REGRESSION GUARD: the condition routed (true) but added no context key, so
+    // its recorded output must be empty. `newKeysDiff` keys off property
+    // presence; a reference diff would wrongly capture the whole context here.
     expect(captured.outputs.r_cond).toEqual({});
   });
 
   it("records a FAILED node (with no output) when it throws", async () => {
-    const loaded = await buildWorkflow("999"); // condition never matches -> throws
+    // A condition with no `operator` fails schema validation inside the executor,
+    // which throws — exercising the engine's per-node FAILED recording path now
+    // that a merely-unmet condition routes (false) instead of throwing.
+    const workflow = await prisma.workflow.create({
+      data: { name: "Failing node workflow", userId },
+    });
+    await prisma.node.createMany({
+      data: [
+        {
+          id: "f_trigger",
+          workflowId: workflow.id,
+          type: NodeType.MANUAL_TRIGGER,
+          name: "Manual trigger",
+          position: { x: 0, y: 0 },
+          data: {},
+        },
+        {
+          id: "f_cond",
+          workflowId: workflow.id,
+          type: NodeType.CONDITION,
+          name: "Misconfigured gate",
+          position: { x: 250, y: 0 },
+          // Missing `operator` -> parseNodeConfig rejects -> executor throws.
+          data: { field: "@<lead.name>@", value: "x" },
+        },
+      ],
+    });
+    await prisma.connection.createMany({
+      data: [
+        { workflowId: workflow.id, fromNodeId: "f_trigger", toNodeId: "f_cond" },
+      ],
+    });
+    const loaded = await prisma.workflow.findUniqueOrThrow({
+      where: { id: workflow.id },
+      include: { nodes: true, connections: true },
+    });
     const captured: Captured = { order: [], statuses: {}, outputs: {} };
 
     await expect(
       runWorkflowNodes({
         sortedNodes: topologicalSort(loaded.nodes, loaded.connections),
+        connections: loaded.connections,
         userId,
         initialData: { lead: { name: "Ada" } },
         step: serializingStep,
         publish,
         recorder: makeRecorder(captured),
       }),
-    ).rejects.toThrow(/condition not met/i);
+    ).rejects.toThrow(/operator/i);
 
-    expect(captured.statuses.r_cond).toBe("FAILED");
-    expect(captured.outputs.r_cond).toBeUndefined();
+    expect(captured.statuses.f_cond).toBe("FAILED");
+    expect(captured.outputs.f_cond).toBeUndefined();
   });
 });

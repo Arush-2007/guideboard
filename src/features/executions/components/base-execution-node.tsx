@@ -4,10 +4,13 @@ import { type NodeProps, Position, useReactFlow } from "@xyflow/react";
 import type { LucideIcon } from "lucide-react";
 import Image from "next/image";
 import { memo, type ReactNode } from "react";
-import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
 import { BaseHandle } from "@/components/react-flow/base-handle";
+import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
+import {
+  type NodeStatus,
+  NodeStatusIndicator,
+} from "@/components/react-flow/node-status-indicator";
 import { WorkflowNode } from "@/components/workflow-node";
-import { type NodeStatus, NodeStatusIndicator } from "@/components/react-flow/node-status-indicator";
 
 interface BaseExecutionNodeProps extends NodeProps {
   icon: LucideIcon | string;
@@ -17,7 +20,16 @@ interface BaseExecutionNodeProps extends NodeProps {
   status?: NodeStatus;
   onSettings?: () => void;
   onDoubleClick?: () => void;
-};
+  /**
+   * Source (output) handles for branching nodes. The handle `id` becomes the
+   * stored `fromOutput` on any edge drawn from it, so it must match what the
+   * executor emits via `routed(...)`. Defaults to a single `source-1` handle,
+   * preserving the original single-output behavior for every non-branching node.
+   */
+  outputs?: { id: string; label?: string }[];
+}
+
+const DEFAULT_OUTPUTS = [{ id: "source-1" }];
 
 export const BaseExecutionNode = memo(
   ({
@@ -29,6 +41,7 @@ export const BaseExecutionNode = memo(
     status = "initial",
     onSettings,
     onDoubleClick,
+    outputs = DEFAULT_OUTPUTS,
   }: BaseExecutionNodeProps) => {
     const { setNodes, setEdges } = useReactFlow();
     const handleDelete = () => {
@@ -39,18 +52,14 @@ export const BaseExecutionNode = memo(
 
       setEdges((currentEdges) => {
         const updatedEdges = currentEdges.filter(
-          (edge) => edge.source !== id && edge.target !== id
+          (edge) => edge.source !== id && edge.target !== id,
         );
         return updatedEdges;
       });
     };
 
     return (
-      <WorkflowNode
-        name={name}
-        onDelete={handleDelete}
-        onSettings={onSettings}
-      >
+      <WorkflowNode name={name} onDelete={handleDelete} onSettings={onSettings}>
         <NodeStatusIndicator
           status={status}
           variant="border"
@@ -63,7 +72,13 @@ export const BaseExecutionNode = memo(
           >
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
-                <Image src={Icon} alt={name} width={32} height={32} unoptimized />
+                <Image
+                  src={Icon}
+                  alt={name}
+                  width={32}
+                  height={32}
+                  unoptimized
+                />
               ) : (
                 <Icon className="size-8 text-muted-foreground" />
               )}
@@ -72,16 +87,32 @@ export const BaseExecutionNode = memo(
                 type="target"
                 position={Position.Left}
               />
-              <BaseHandle
-                id="source-1"
-                type="source"
-                position={Position.Right}
-              />
+              {outputs.map((output, index) => (
+                <BaseHandle
+                  key={output.id}
+                  id={output.id}
+                  type="source"
+                  position={Position.Right}
+                  style={
+                    outputs.length > 1
+                      ? {
+                          top: `${((index + 1) / (outputs.length + 1)) * 100}%`,
+                        }
+                      : undefined
+                  }
+                >
+                  {outputs.length > 1 && output.label ? (
+                    <span className="absolute left-3 -translate-y-1/2 whitespace-nowrap text-[10px] text-muted-foreground">
+                      {output.label}
+                    </span>
+                  ) : null}
+                </BaseHandle>
+              ))}
             </BaseNodeContent>
           </BaseNode>
         </NodeStatusIndicator>
       </WorkflowNode>
-    )
+    );
   },
 );
 

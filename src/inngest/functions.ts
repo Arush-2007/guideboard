@@ -69,7 +69,9 @@ function createPrismaNodeRecorder({
             status:
               status === "FAILED"
                 ? NodeExecutionStatus.FAILED
-                : NodeExecutionStatus.SUCCESS,
+                : status === "SKIPPED"
+                  ? NodeExecutionStatus.SKIPPED
+                  : NodeExecutionStatus.SUCCESS,
             input: clampJson(input) as Prisma.InputJsonValue,
             output:
               output !== undefined
@@ -235,7 +237,7 @@ export const executeWorkflow = inngest.createFunction(
       });
     });
 
-    const { sortedNodes, userId } = await step.run(
+    const { sortedNodes, connections, userId } = await step.run(
       "prepare-workflow",
       async () => {
         const workflow = await prisma.workflow.findUniqueOrThrow({
@@ -248,15 +250,23 @@ export const executeWorkflow = inngest.createFunction(
 
         return {
           sortedNodes: topologicalSort(workflow.nodes, workflow.connections),
+          connections: workflow.connections.map((c) => ({
+            fromNodeId: c.fromNodeId,
+            toNodeId: c.toNodeId,
+            fromOutput: c.fromOutput,
+            toInput: c.toInput,
+          })),
           userId: workflow.userId,
         };
       },
     );
 
-    // Run each node sequentially, threading context from one to the next.
-    // The recorder writes a NodeExecution row per node for observability.
+    // Run each node in topological order, threading context from one to the
+    // next and following only active branches. The recorder writes a
+    // NodeExecution row per node for observability.
     const context = await runWorkflowNodes({
       sortedNodes,
+      connections,
       userId,
       initialData,
       step,

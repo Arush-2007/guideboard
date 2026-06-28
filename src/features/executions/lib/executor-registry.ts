@@ -22,6 +22,7 @@ import { instagramReplyExecutor } from "../components/instagram-reply-comment/ex
 import { notionExecutor } from "../components/notion/executor";
 import { openAiExecutor } from "../components/openai/executor";
 import { slackExecutor } from "../components/slack/executor";
+import { switchExecutor } from "../components/switch/executor";
 import { telegramActionExecutor } from "../components/telegram-action/executor";
 import { whatsappActionExecutor } from "../components/whatsapp-action/executor";
 import { youtubeReplyExecutor } from "../components/youtube-reply-comment/executor";
@@ -42,6 +43,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.GEMINI]: geminiExecutor,
   [NodeType.ANTHROPIC]: anthropicExecutor,
   [NodeType.CONDITION]: conditionExecutor,
+  [NodeType.SWITCH]: switchExecutor,
   [NodeType.OPENAI]: openAiExecutor,
   [NodeType.DISCORD]: discordExecutor,
   [NodeType.SLACK]: slackExecutor,

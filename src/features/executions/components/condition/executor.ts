@@ -1,87 +1,20 @@
 import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
-import type { NodeExecutor } from "@/features/executions/types";
+import {
+  type CompareOperator,
+  evaluateCondition,
+} from "@/features/executions/lib/compare";
+import { type NodeExecutor, routed } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { conditionChannel } from "@/inngest/channels/condition";
 import { renderTemplate } from "@/lib/templating";
-
-type ConditionOperator =
-  | "contains"
-  | "not_contains"
-  | "equals"
-  | "not_equals"
-  | "greater_than"
-  | "less_than"
-  | "is_empty"
-  | "is_not_empty";
+import { CONDITION_OUTPUTS } from "./handles";
 
 type ConditionData = {
   field?: string;
-  operator?: ConditionOperator;
+  operator?: CompareOperator;
   value?: string;
-  stopOnFail?: boolean;
 };
-
-function isEmptyValue(value: unknown): boolean {
-  if (value === undefined || value === null) {
-    return true;
-  }
-  if (typeof value === "string") {
-    return value.trim() === "";
-  }
-  if (Array.isArray(value)) {
-    return value.length === 0;
-  }
-  return false;
-}
-
-function asString(value: unknown): string {
-  if (value === undefined || value === null) {
-    return "";
-  }
-  return String(value);
-}
-
-function evaluateCondition(
-  operator: ConditionOperator,
-  fieldValue: unknown,
-  compareRaw: string,
-): boolean {
-  const sv = asString(fieldValue);
-
-  switch (operator) {
-    case "contains":
-      return sv.includes(compareRaw);
-    case "not_contains":
-      return !sv.includes(compareRaw);
-    case "equals":
-      return sv === compareRaw;
-    case "not_equals":
-      return sv !== compareRaw;
-    case "greater_than": {
-      const a = Number(fieldValue);
-      const b = Number(compareRaw);
-      if (!Number.isNaN(a) && !Number.isNaN(b)) {
-        return a > b;
-      }
-      return sv > compareRaw;
-    }
-    case "less_than": {
-      const a = Number(fieldValue);
-      const b = Number(compareRaw);
-      if (!Number.isNaN(a) && !Number.isNaN(b)) {
-        return a < b;
-      }
-      return sv < compareRaw;
-    }
-    case "is_empty":
-      return isEmptyValue(fieldValue);
-    case "is_not_empty":
-      return !isEmptyValue(fieldValue);
-    default:
-      return false;
-  }
-}
 
 export const conditionExecutor: NodeExecutor<ConditionData> = async ({
   data,
@@ -114,16 +47,10 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
   }
 
   try {
-    const result = await step.run("condition", async () => {
+    const passes = await step.run("condition", () => {
       const field = config.field;
       const operator = config.operator;
       if (!field || !operator) {
-        await publish(
-          conditionChannel(userId).status({
-            nodeId,
-            status: "error",
-          }),
-        );
         throw new NonRetriableError(
           "Condition node: field and operator are required",
         );
@@ -135,22 +62,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
       // previous node's output (e.g. comparing two node outputs).
       const fieldValue = renderTemplate(field, context);
       const compareValue = renderTemplate(config.value ?? "", context);
-      const passes = evaluateCondition(operator, fieldValue, compareValue);
-
-      if (!passes) {
-        const stopOnFail = config.stopOnFail !== false;
-        if (stopOnFail) {
-          await publish(
-            conditionChannel(userId).status({
-              nodeId,
-              status: "error",
-            }),
-          );
-          throw new NonRetriableError("Condition not met");
-        }
-      }
-
-      return context;
+      return evaluateCondition(operator, fieldValue, compareValue);
     });
 
     await publish(
@@ -160,7 +72,20 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
       }),
     );
 
-    return result;
+    // Route to the matching branch instead of stopping the run. An unconnected
+    // branch simply has no active downstream, which naturally ends that path.
+    //
+    // Backward compat: workflows saved before branching wired the condition's
+    // single output via the legacy handle ids ("main"/"source-1"). Emitting them
+    // as aliases of the pass path means a legacy edge stays active exactly when
+    // the old gate would have continued (passes) and inactive when it would have
+    // stopped (fails) — preserving old behavior with no data migration.
+    return routed(
+      context,
+      passes
+        ? [CONDITION_OUTPUTS.TRUE, "main", "source-1"]
+        : [CONDITION_OUTPUTS.FALSE],
+    );
   } catch (error) {
     await publish(
       conditionChannel(userId).status({
