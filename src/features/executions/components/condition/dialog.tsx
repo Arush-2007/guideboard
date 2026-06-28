@@ -29,7 +29,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { VariableInput } from "@/components/variable-input";
 
 const operatorEnum = z.enum([
@@ -47,7 +46,6 @@ const formSchema = z.object({
   field: z.string().min(1, { message: "Field is required" }),
   operator: operatorEnum,
   value: z.string(),
-  stopOnFail: z.boolean(),
 });
 
 export type ConditionFormValues = z.infer<typeof formSchema>;
@@ -75,7 +73,6 @@ export const ConditionDialog = ({
       field: defaultValues.field ?? "",
       operator: defaultValues.operator ?? "equals",
       value: defaultValues.value ?? "",
-      stopOnFail: defaultValues.stopOnFail ?? true,
     },
   });
 
@@ -85,7 +82,6 @@ export const ConditionDialog = ({
         field: defaultValues.field ?? "",
         operator: defaultValues.operator ?? "equals",
         value: defaultValues.value ?? "",
-        stopOnFail: defaultValues.stopOnFail ?? true,
       });
     }
   }, [open, defaultValues, form]);
@@ -104,8 +100,9 @@ export const ConditionDialog = ({
         <DialogHeader>
           <DialogTitle>Condition</DialogTitle>
           <DialogDescription>
-            Filter the workflow by comparing two operands. Each side can be a
-            fixed value or a reference to a previous node's output.
+            Compare two operands and route the workflow down the True or False
+            output. Each side can be a fixed value or a reference to a previous
+            node's output.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -193,28 +190,6 @@ export const ConditionDialog = ({
                 )}
               />
             )}
-
-            <FormField
-              control={form.control}
-              name="stopOnFail"
-              render={({ field }) => (
-                <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                  <div className="space-y-0.5">
-                    <FormLabel className="text-base">Stop on fail</FormLabel>
-                    <FormDescription>
-                      When false, the workflow continues even if the condition
-                      is not met.
-                    </FormDescription>
-                  </div>
-                  <FormControl>
-                    <Switch
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                    />
-                  </FormControl>
-                </FormItem>
-              )}
-            />
 
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>

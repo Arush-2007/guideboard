@@ -60,10 +60,13 @@ describe("aiTextExecutor (the USP node)", () => {
       "If I want to intern with you is an internship application reply Yes else No",
     );
 
+    // aiText is non-branching, so it returns a plain context (not a routed
+    // outcome); narrow for property access.
+    const ctx = result as Record<string, any>;
     // Result is exposed under the node's ref (outputKey) -> `output` key.
-    expect(result.AI_TEXT_1).toEqual({ output: "Yes" });
+    expect(ctx.AI_TEXT_1).toEqual({ output: "Yes" });
     // Upstream context is preserved for downstream nodes.
-    expect((result.telegram as any).text).toBe("I want to intern with you");
+    expect(ctx.telegram.text).toBe("I want to intern with you");
   });
 
   it("throws a non-retriable error when the credential type mismatches the provider", async () => {

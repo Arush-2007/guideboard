@@ -318,6 +318,7 @@ enum NodeType {
   AI_TEXT
   ANTHROPIC
   CONDITION
+  SWITCH
   GEMINI
   OPENAI
   DISCORD
@@ -390,6 +391,7 @@ enum NodeExecutionStatus {
   RUNNING
   SUCCESS
   FAILED
+  SKIPPED
 }
 
 model Execution {

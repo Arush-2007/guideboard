@@ -4,6 +4,7 @@ import {
   Filter,
   GlobeIcon,
   MousePointerIcon,
+  Split,
   Webhook,
 } from "lucide-react";
 import { NodeType } from "@/generated/prisma";
@@ -95,8 +96,14 @@ export const executionNodeOptions: NodeOption[] = [
   {
     type: NodeType.CONDITION,
     label: "Condition",
-    description: "Continue only when a context field matches a rule",
+    description: "Branch to True or False based on a rule",
     icon: Filter,
+  },
+  {
+    type: NodeType.SWITCH,
+    label: "Switch",
+    description: "Route to one of several branches by matching cases in order",
+    icon: Split,
   },
   {
     type: NodeType.AI_TEXT,

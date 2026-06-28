@@ -13,6 +13,7 @@ import { InstagramReplyNode } from "@/features/executions/components/instagram-r
 import { NotionNode } from "@/features/executions/components/notion/node";
 import { OpenAiNode } from "@/features/executions/components/openai/node";
 import { SlackNode } from "@/features/executions/components/slack/node";
+import { SwitchNode } from "@/features/executions/components/switch/node";
 import { TelegramActionNode } from "@/features/executions/components/telegram-action/node";
 import { WhatsappActionNode } from "@/features/executions/components/whatsapp-action/node";
 import { YoutubeReplyNode } from "@/features/executions/components/youtube-reply-comment/node";
@@ -48,6 +49,7 @@ export const nodeComponents = {
   [NodeType.OPENAI]: OpenAiNode,
   [NodeType.ANTHROPIC]: AnthropicNode,
   [NodeType.CONDITION]: ConditionNode,
+  [NodeType.SWITCH]: SwitchNode,
   [NodeType.DISCORD]: DiscordNode,
   [NodeType.SLACK]: SlackNode,
   [NodeType.NOTION_ACTION]: NotionNode,

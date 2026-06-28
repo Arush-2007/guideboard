@@ -51,7 +51,30 @@ const conditionSchema = z
       "is_not_empty",
     ]),
     value: z.string().optional(),
-    stopOnFail: z.boolean().default(true),
+  })
+  .passthrough();
+
+const switchSchema = z
+  .object({
+    cases: z
+      .array(
+        z.object({
+          id: z.string().min(1),
+          field: z.string().min(1, "Field is required"),
+          operator: z.enum([
+            "contains",
+            "not_contains",
+            "equals",
+            "not_equals",
+            "greater_than",
+            "less_than",
+            "is_empty",
+            "is_not_empty",
+          ]),
+          value: z.string().optional(),
+        }),
+      )
+      .optional(),
   })
   .passthrough();
 
@@ -271,6 +294,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.AI_TEXT]: aiTextSchema,
   [NodeType.ANTHROPIC]: openAiFamilySchema,
   [NodeType.CONDITION]: conditionSchema,
+  [NodeType.SWITCH]: switchSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,

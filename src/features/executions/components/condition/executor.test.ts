@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { isRouted, type NodeOutcome } from "@/features/executions/types";
 import { conditionExecutor } from "./executor";
 
 const step = {
@@ -6,8 +7,11 @@ const step = {
 } as any;
 const publish = (async () => {}) as any;
 
-const run = (data: Record<string, unknown>, context: Record<string, unknown>) =>
-  conditionExecutor({
+const run = async (
+  data: Record<string, unknown>,
+  context: Record<string, unknown>,
+): Promise<NodeOutcome> => {
+  const result = await conditionExecutor({
     data,
     nodeId: "c1",
     userId: "u1",
@@ -15,84 +19,78 @@ const run = (data: Record<string, unknown>, context: Record<string, unknown>) =>
     step,
     publish,
   } as any);
+  if (!isRouted(result)) throw new Error("expected a routed outcome");
+  return result;
+};
 
 const aiYes = { ai_text_a1: { output: "Yes" } };
 
-describe("conditionExecutor operand resolution", () => {
-  it("compares an upstream reference (field) against a fixed literal (value)", async () => {
-    // The natural shape: field = node reference, value = literal "Yes".
-    await expect(
-      run(
-        {
-          field: "@<ai_text_a1.output>@",
-          operator: "equals",
-          value: "Yes",
-          stopOnFail: true,
-        },
-        aiYes,
-      ),
-    ).resolves.toMatchObject(aiYes);
+describe("conditionExecutor routing", () => {
+  it("routes to `true` and preserves context when the condition passes", async () => {
+    const outcome = await run(
+      { field: "@<ai_text_a1.output>@", operator: "equals", value: "Yes" },
+      aiYes,
+    );
+    expect(outcome.outputs).toContain("true");
+    expect(outcome.outputs).not.toContain("false");
+    expect(outcome.context).toMatchObject(aiYes);
+  });
+
+  it("emits legacy aliases on the pass path for pre-branching workflows", async () => {
+    // Edges saved before branching carry fromOutput "main"/"source-1"; emitting
+    // them as aliases of the pass path keeps those workflows working unmigrated.
+    const outcome = await run(
+      { field: "Yes", operator: "equals", value: "Yes" },
+      aiYes,
+    );
+    expect(outcome.outputs).toEqual(
+      expect.arrayContaining(["true", "main", "source-1"]),
+    );
+  });
+
+  it("routes to `false` (only) when the condition fails", async () => {
+    const outcome = await run(
+      { field: "@<ai_text_a1.output>@", operator: "equals", value: "Nope" },
+      aiYes,
+    );
+    expect(outcome.outputs).toEqual(["false"]);
   });
 
   it("compares two upstream node outputs against each other", async () => {
-    // The case the user asked for: both sides reference previous nodes.
-    await expect(
-      run(
-        {
-          field: "@<ai_text_a1.output>@",
-          operator: "equals",
-          value: "@<ai_text_b1.output>@",
-          stopOnFail: true,
-        },
-        { ai_text_a1: { output: "match" }, ai_text_b1: { output: "match" } },
-      ),
-    ).resolves.toBeDefined();
+    const matched = await run(
+      {
+        field: "@<ai_text_a1.output>@",
+        operator: "equals",
+        value: "@<ai_text_b1.output>@",
+      },
+      { ai_text_a1: { output: "match" }, ai_text_b1: { output: "match" } },
+    );
+    expect(matched.outputs).toContain("true");
 
-    await expect(
-      run(
-        {
-          field: "@<ai_text_a1.output>@",
-          operator: "equals",
-          value: "@<ai_text_b1.output>@",
-          stopOnFail: true,
-        },
-        { ai_text_a1: { output: "x" }, ai_text_b1: { output: "y" } },
-      ),
-    ).rejects.toThrow(/condition not met/i);
-  });
-
-  it("treats plain text on either side as a fixed literal", async () => {
-    await expect(
-      run(
-        { field: "Yes", operator: "equals", value: "Yes", stopOnFail: true },
-        aiYes,
-      ),
-    ).resolves.toBeDefined();
+    const mismatched = await run(
+      {
+        field: "@<ai_text_a1.output>@",
+        operator: "equals",
+        value: "@<ai_text_b1.output>@",
+      },
+      { ai_text_a1: { output: "x" }, ai_text_b1: { output: "y" } },
+    );
+    expect(mismatched.outputs).toEqual(["false"]);
   });
 
   it("treats a bare dot-path (no markers) as a literal, not a reference", async () => {
-    // Pure semantics: a reference MUST be wrapped in @<...>@. A bare path is
-    // just text, so it does not equal the resolved AI output. (Existing rows
-    // are converted to the @<...>@ form by the backfill migration.)
-    await expect(
-      run(
-        {
-          field: "ai_text_a1.output",
-          operator: "equals",
-          value: "Yes",
-          stopOnFail: true,
-        },
-        aiYes,
-      ),
-    ).rejects.toThrow(/condition not met/i);
+    const outcome = await run(
+      { field: "ai_text_a1.output", operator: "equals", value: "Yes" },
+      aiYes,
+    );
+    expect(outcome.outputs).toEqual(["false"]);
   });
 
-  it("does not stop the workflow when stopOnFail is false", async () => {
+  it("throws a config error when the field is missing", async () => {
+    // The schema (parseNodeConfig) rejects a missing field before the executor's
+    // own guard; either way it's a NonRetriableError mentioning the field.
     await expect(
-      run(
-        { field: "no", operator: "equals", value: "yes", stopOnFail: false },
-        {},
-      ),
-    ).resolves.toBeDefined();
+      run({ operator: "equals", value: "Yes" }, aiYes),
+    ).rejects.toThrow(/field/i);
   });
 });

@@ -13,6 +13,7 @@ import { fetchInstagramReplyRealtimeToken } from "@/features/executions/componen
 import { fetchNotionRealtimeToken } from "@/features/executions/components/notion/actions";
 import { fetchOpenAiRealtimeToken } from "@/features/executions/components/openai/actions";
 import { fetchSlackRealtimeToken } from "@/features/executions/components/slack/actions";
+import { fetchSwitchRealtimeToken } from "@/features/executions/components/switch/actions";
 import { fetchTelegramActionRealtimeToken } from "@/features/executions/components/telegram-action/actions";
 import { fetchWhatsappActionRealtimeToken } from "@/features/executions/components/whatsapp-action/actions";
 import { fetchYoutubeReplyRealtimeToken } from "@/features/executions/components/youtube-reply-comment/actions";
@@ -47,6 +48,7 @@ import { NOTION_CHANNEL_NAME } from "@/inngest/channels/notion";
 import { OPENAI_CHANNEL_NAME } from "@/inngest/channels/openai";
 import { SCHEDULE_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/schedule-trigger";
 import { SLACK_CHANNEL_NAME } from "@/inngest/channels/slack";
+import { SWITCH_CHANNEL_NAME } from "@/inngest/channels/switch";
 import { TELEGRAM_ACTION_CHANNEL_NAME } from "@/inngest/channels/telegram-action";
 import { TELEGRAM_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/telegram-trigger";
 import { TYPEFORM_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/typeform-trigger";
@@ -81,6 +83,10 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.CONDITION]: {
       channelName: CONDITION_CHANNEL_NAME,
       refreshToken: fetchConditionRealtimeToken,
+    },
+    [NodeType.SWITCH]: {
+      channelName: SWITCH_CHANNEL_NAME,
+      refreshToken: fetchSwitchRealtimeToken,
     },
     [NodeType.MANUAL_TRIGGER]: {
       channelName: MANUAL_TRIGGER_CHANNEL_NAME,

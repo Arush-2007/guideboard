@@ -21,6 +21,40 @@ export interface NodeExecutorParams<TData = Record<string, unknown>> {
   publish: Realtime.PublishFn;
 }
 
+/**
+ * Branded result for nodes that route execution down specific output handles.
+ * Most executors just return a `WorkflowContext` (they're non-branching, and the
+ * engine activates *all* their outgoing connections). Branching nodes — Condition,
+ * Switch — return `routed(context, [...handleIds])` instead, and the engine then
+ * activates only the outgoing connections whose `fromOutput` is in `outputs`.
+ *
+ * The symbol brand makes `isRouted` unambiguous: a plain context can never
+ * accidentally look like a `NodeOutcome`.
+ */
+const ROUTED: unique symbol = Symbol("routed");
+
+export interface NodeOutcome {
+  [ROUTED]: true;
+  context: WorkflowContext;
+  /** Active output handle ids, e.g. `["true"]` or `["case_2"]`. */
+  outputs: string[];
+}
+
+export function routed(
+  context: WorkflowContext,
+  outputs: string[],
+): NodeOutcome {
+  return { [ROUTED]: true, context, outputs };
+}
+
+export function isRouted(value: unknown): value is NodeOutcome {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[ROUTED] === true
+  );
+}
+
 export type NodeExecutor<TData = Record<string, unknown>> = (
   params: NodeExecutorParams<TData>,
-) => Promise<WorkflowContext>;
+) => Promise<WorkflowContext | NodeOutcome>;
