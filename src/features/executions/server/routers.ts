@@ -65,6 +65,50 @@ export const executionsRouter = createTRPCRouter({
 
       return { success: true };
     }),
+  // Replay an execution starting at a chosen node: re-run that node and its
+  // descendants only, reusing the exact context that flowed into it the first
+  // time (its recorded `NodeExecution.input`). Lets a user fix one node's config
+  // and replay forward without re-running expensive upstream nodes. No
+  // idempotency key -> always a fresh run (a replay must never dedupe against
+  // the original), and `replayOfExecutionId` links it back for lineage.
+  replayFromNode: protectedProcedure
+    .input(z.object({ executionId: z.string(), nodeId: z.string() }))
+    .mutation(async ({ ctx, input }) => {
+      // Ownership-checked load of the origin run.
+      const execution = await prisma.execution.findUniqueOrThrow({
+        where: {
+          id: input.executionId,
+          workflow: { userId: ctx.auth.user.id },
+        },
+        select: { workflowId: true },
+      });
+
+      // The snapshot of context that entered the chosen node. Take the first
+      // recorded run of that node (by sequence) — deterministic, and the one a
+      // user means when there's only a single run per node today.
+      const snapshot = await prisma.nodeExecution.findFirst({
+        where: { executionId: input.executionId, nodeId: input.nodeId },
+        orderBy: { sequence: "asc" },
+        select: { input: true, status: true },
+      });
+
+      if (!snapshot) {
+        throw new Error("That node has no recorded input to replay from");
+      }
+      if (snapshot.status === NodeExecutionStatus.SKIPPED) {
+        // A skipped node never ran, so there's no meaningful state to replay.
+        throw new Error("Can't replay from a node that was skipped");
+      }
+
+      await sendWorkflowExecution({
+        workflowId: execution.workflowId,
+        initialData: (snapshot.input as Record<string, unknown>) ?? {},
+        replayFromNodeId: input.nodeId,
+        replayOfExecutionId: input.executionId,
+      });
+
+      return { success: true };
+    }),
   getNotificationSettings: protectedProcedure.query(async ({ ctx }) => {
     const settings = await prisma.notificationSettings.findUnique({
       where: { userId: ctx.auth.user.id },

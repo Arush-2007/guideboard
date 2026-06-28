@@ -91,6 +91,38 @@ function newKeysDiff(
 }
 
 /**
+ * Forward-reachable set from `start` over the connection graph, including
+ * `start` itself. Used by replay-from-node: the run executes exactly
+ * `{start} ∪ descendants(start)` and treats everything upstream as already-run
+ * (its output is pre-seeded into the context). Iterative DFS so a deep graph
+ * can't blow the stack; the visited set makes cycles/diamonds O(edges).
+ */
+function forwardReachableFrom(
+  start: string,
+  connections: ExecutableConnection[],
+): Set<string> {
+  const outgoingByNode = new Map<string, string[]>();
+  for (const conn of connections) {
+    const list = outgoingByNode.get(conn.fromNodeId);
+    if (list) list.push(conn.toNodeId);
+    else outgoingByNode.set(conn.fromNodeId, [conn.toNodeId]);
+  }
+
+  const reachable = new Set<string>([start]);
+  const stack = [start];
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    for (const next of outgoingByNode.get(current) ?? []) {
+      if (!reachable.has(next)) {
+        reachable.add(next);
+        stack.push(next);
+      }
+    }
+  }
+  return reachable;
+}
+
+/**
  * Runs a workflow's nodes sequentially, threading the `context` object from one
  * node's output into the next node's input. This is the core of the execution
  * engine; `executeWorkflow` (src/inngest/functions.ts) wraps it with the
@@ -113,6 +145,14 @@ function newKeysDiff(
  * event carrying its input (incoming context), output (new-key diff), and
  * wall-clock duration — the single seam that gives per-node observability for
  * every node type without touching any executor.
+ *
+ * Replay-from-node: when `replayFromNodeId` is set, only that node and its
+ * forward-reachable descendants run; everything upstream is treated as
+ * already-run (skipped, with its output pre-seeded into the context via
+ * `initialData` — the recorded `NodeExecution.input` of the replayed node). The
+ * replayed node is forced reachable (a synthetic root) even though it has
+ * incoming edges, then its descendants activate through the normal branch logic,
+ * so branch decisions downstream are re-derived fresh against the edited config.
  */
 export async function runWorkflowNodes({
   sortedNodes,
@@ -122,6 +162,7 @@ export async function runWorkflowNodes({
   step,
   publish,
   recorder,
+  replayFromNodeId,
 }: {
   sortedNodes: ExecutableNode[];
   connections?: ExecutableConnection[];
@@ -130,8 +171,15 @@ export async function runWorkflowNodes({
   step: StepTools;
   publish: Realtime.PublishFn;
   recorder?: NodeRecorder;
+  replayFromNodeId?: string;
 }): Promise<WorkflowContext> {
   let context: WorkflowContext = initialData || {};
+
+  // Replay slice: the set of nodes that actually run this time. Nodes outside it
+  // are recorded SKIPPED (their output already lives in the seeded context).
+  const replaySlice = replayFromNodeId
+    ? forwardReachableFrom(replayFromNodeId, connections)
+    : null;
 
   // Index incoming connections per node so reachability is O(edges), not O(n²).
   const incomingByNode = new Map<string, ExecutableConnection[]>();
@@ -164,10 +212,24 @@ export async function runWorkflowNodes({
       input: before,
     };
 
+    // Replay: a node outside the replay slice already ran upstream — skip it
+    // (its output is in the seeded context). Checked before reachability so the
+    // original trigger/roots don't re-fire on a replay.
+    if (replaySlice && !replaySlice.has(node.id)) {
+      await recorder?.record({ ...base, status: "SKIPPED", durationMs: 0 });
+      sequence++;
+      continue;
+    }
+
     // Reachability: roots (no incoming edges) always run; everyone else needs at
-    // least one active incoming edge.
+    // least one active incoming edge. On a replay the node we replay from is a
+    // forced root — it runs fresh against the seeded context even though its
+    // real incoming edges' sources were skipped.
     const incoming = incomingByNode.get(node.id) ?? [];
-    const reachable = incoming.length === 0 || incoming.some(isEdgeActive);
+    const reachable =
+      node.id === replayFromNodeId ||
+      incoming.length === 0 ||
+      incoming.some(isEdgeActive);
 
     if (!reachable) {
       await recorder?.record({ ...base, status: "SKIPPED", durationMs: 0 });

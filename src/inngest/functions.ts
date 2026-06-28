@@ -196,11 +196,20 @@ export const executeWorkflow = inngest.createFunction(
   },
   async ({ event, step, publish }) => {
     const inngestEventId = event.id;
-    const { workflowId, initialData, idempotencyKey } = event.data as {
+    const {
+      workflowId,
+      initialData,
+      idempotencyKey,
+      replayFromNodeId,
+      replayOfExecutionId,
+    } = event.data as {
       workflowId?: string;
       // Keep this loose because this JSON is stored directly in Prisma.
       initialData?: any;
       idempotencyKey?: string;
+      // Replay-from-node: see runWorkflowNodes / sendWorkflowExecution.
+      replayFromNodeId?: string;
+      replayOfExecutionId?: string;
     };
 
     if (!inngestEventId || !workflowId) {
@@ -230,8 +239,11 @@ export const executeWorkflow = inngest.createFunction(
           workflowId,
           inngestEventId,
           idempotencyKey: idempotencyKey ?? null,
-          // Persist the trigger payload so the run can be re-dispatched verbatim.
+          // Persist the trigger payload (or, for a replay, the seeded snapshot)
+          // so the run can be re-dispatched verbatim.
           input: (initialData ?? {}) as Prisma.InputJsonValue,
+          // Link a replay back to its origin run; null for ordinary runs.
+          replayOfId: replayOfExecutionId ?? null,
         },
         select: { id: true },
       });
@@ -272,6 +284,7 @@ export const executeWorkflow = inngest.createFunction(
       step,
       publish,
       recorder: createPrismaNodeRecorder({ step, executionId }),
+      replayFromNodeId,
     });
 
     await step.run("update-execution", async () => {

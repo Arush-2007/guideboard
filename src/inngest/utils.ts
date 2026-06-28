@@ -51,12 +51,19 @@ type SendWorkflowExecutionInput = {
   workflowId: string;
   initialData?: Record<string, unknown>;
   idempotencyKey?: string;
+  // Replay-from-node: run only this node + its descendants, seeding the context
+  // from `initialData` (the node's recorded input snapshot). `replayOfExecutionId`
+  // links the new run back to the origin for lineage. Both omitted on normal runs.
+  replayFromNodeId?: string;
+  replayOfExecutionId?: string;
 };
 
 export const sendWorkflowExecution = async ({
   workflowId,
   initialData,
   idempotencyKey,
+  replayFromNodeId,
+  replayOfExecutionId,
 }: SendWorkflowExecutionInput) => {
   return inngest.send({
     name: "workflows/execute.workflow",
@@ -64,6 +71,8 @@ export const sendWorkflowExecution = async ({
       workflowId,
       initialData: initialData ?? {},
       idempotencyKey,
+      replayFromNodeId,
+      replayOfExecutionId,
     },
     id: createId(),
   });

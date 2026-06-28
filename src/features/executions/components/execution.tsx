@@ -6,6 +6,7 @@ import {
   CheckCircle2Icon,
   ClockIcon,
   Loader2Icon,
+  RedoIcon,
   RotateCwIcon,
   XCircleIcon,
 } from "lucide-react";
@@ -26,7 +27,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
-import { ExecutionStatus } from "@/generated/prisma";
+import { ExecutionStatus, NodeExecutionStatus } from "@/generated/prisma";
 import { useTRPC } from "@/trpc/client";
 
 // Both ExecutionStatus and NodeExecutionStatus share the same string members
@@ -77,6 +78,46 @@ const RerunButton = ({ executionId }: { executionId: string }) => {
   );
 };
 
+// Re-runs the workflow starting at this node, reusing the context the node
+// received the first time — so the user can fix one node and replay forward
+// without re-running expensive upstream nodes. Hidden for skipped nodes (they
+// never ran, so there's nothing to replay from).
+const ReplayFromNodeButton = ({
+  executionId,
+  nodeId,
+}: {
+  executionId: string;
+  nodeId: string;
+}) => {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+
+  const replay = useMutation(
+    trpc.executions.replayFromNode.mutationOptions({
+      onSuccess: () => {
+        toast.success("Replay started from this node");
+        queryClient.invalidateQueries(trpc.executions.getMany.queryOptions({}));
+      },
+      onError: (error) => {
+        toast.error(`Failed to replay: ${error.message}`);
+      },
+    }),
+  );
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-7 px-2"
+      disabled={replay.isPending}
+      onClick={() => replay.mutate({ executionId, nodeId })}
+    >
+      <RedoIcon className="size-3.5" />
+      {replay.isPending ? "Starting…" : "Replay from here"}
+    </Button>
+  );
+};
+
 const JsonBlock = ({ label, value }: { label: string; value: unknown }) => (
   <div>
     <p className="text-xs font-medium text-muted-foreground mb-1">{label}</p>
@@ -88,6 +129,7 @@ const JsonBlock = ({ label, value }: { label: string; value: unknown }) => (
 
 type NodeExecutionRow = {
   id: string;
+  nodeId: string;
   nodeName: string;
   nodeType: string;
   status: string;
@@ -97,8 +139,15 @@ type NodeExecutionRow = {
   error: string | null;
 };
 
-const NodeRow = ({ node }: { node: NodeExecutionRow }) => {
+const NodeRow = ({
+  node,
+  executionId,
+}: {
+  node: NodeExecutionRow;
+  executionId: string;
+}) => {
   const [open, setOpen] = useState(false);
+  const isSkipped = node.status === NodeExecutionStatus.SKIPPED;
 
   return (
     <div className="rounded-md border p-3">
@@ -106,11 +155,19 @@ const NodeRow = ({ node }: { node: NodeExecutionRow }) => {
         {getStatusIcon(node.status)}
         <span className="text-sm font-medium">{node.nodeName}</span>
         <span className="text-xs text-muted-foreground">{node.nodeType}</span>
-        {node.durationMs != null ? (
-          <span className="ml-auto text-xs text-muted-foreground">
-            ~{node.durationMs}ms
-          </span>
-        ) : null}
+        <div className="ml-auto flex items-center gap-2">
+          {node.durationMs != null ? (
+            <span className="text-xs text-muted-foreground">
+              ~{node.durationMs}ms
+            </span>
+          ) : null}
+          {!isSkipped ? (
+            <ReplayFromNodeButton
+              executionId={executionId}
+              nodeId={node.nodeId}
+            />
+          ) : null}
+        </div>
       </div>
 
       {node.error ? (
@@ -221,7 +278,7 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
           <div className="mt-6 space-y-2">
             <p className="text-sm font-medium">Nodes</p>
             {execution.nodeExecutions.map((node) => (
-              <NodeRow key={node.id} node={node} />
+              <NodeRow key={node.id} node={node} executionId={execution.id} />
             ))}
           </div>
         )}

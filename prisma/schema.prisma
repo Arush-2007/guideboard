@@ -412,15 +412,24 @@ model Execution {
   idempotencyKey String? @unique
 
   // The trigger payload (initialData) this run started with, persisted so a run
-  // can be re-dispatched verbatim via the `rerun` mutation.
+  // can be re-dispatched verbatim via the `rerun` mutation. For a replay-from-node
+  // run this is the seeded snapshot (the recorded input of the node replayed from).
   input Json?
 
   output Json?
+
+  // Replay lineage: when this run is a "replay from node" of an earlier run, it
+  // points at the origin execution (for observability / linking back). Null for
+  // ordinary runs. SetNull so pruning an origin doesn't cascade-delete replays.
+  replayOfId String?
+  replayOf   Execution?  @relation("ExecutionReplays", fields: [replayOfId], references: [id], onDelete: SetNull)
+  replays    Execution[] @relation("ExecutionReplays")
 
   nodeExecutions NodeExecution[]
 
   @@index([workflowId, startedAt])
   @@index([workflowId, status, startedAt])
+  @@index([replayOfId])
 }
 
 // Per-node record of a single run. Node identity is denormalized (plain nodeId
