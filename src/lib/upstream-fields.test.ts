@@ -43,11 +43,26 @@ describe("getUpstreamFields", () => {
   });
 
   it("falls back to a whole-output blob for undeclared node types", () => {
+    // CONDITION is routing-only and intentionally left undeclared in node-outputs.
+    const undeclaredNodes = [
+      { id: "x1", type: NodeType.CONDITION },
+      { id: "c1", type: NodeType.DISCORD },
+    ];
+    const undeclaredEdges = [{ source: "x1", target: "c1" }];
+    const rows = getUpstreamFields("c1", undeclaredNodes, undeclaredEdges);
+    const cond = rows.find((r) => r.nodeId === "x1");
+    expect(cond).toBeDefined();
+    expect(cond?.fieldLabel).toBe("Whole output");
+    expect(cond?.insertText).toBe("@<condition_x1>@");
+  });
+
+  it("expands a declared action (HTTP request) into nested field paths", () => {
     const rows = getUpstreamFields("c1", nodes, edges);
-    const http = rows.find((r) => r.nodeId === "h1");
-    expect(http).toBeDefined();
-    expect(http?.fieldLabel).toBe("Whole output");
-    expect(http?.insertText).toBe("@<http_request_h1>@");
+    const status = rows.find(
+      (r) => r.insertText === "@<http_request_h1.httpResponse.status>@",
+    );
+    expect(status).toBeDefined();
+    expect(status?.fieldLabel).toBe("Status code");
   });
 
   it("excludes downstream and self fields", () => {
