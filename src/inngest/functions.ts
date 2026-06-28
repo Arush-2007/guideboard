@@ -12,6 +12,7 @@ import { clampJson } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { logger } from "@/lib/logger";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
 import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
@@ -157,6 +158,16 @@ export const executeWorkflow = inngest.createFunction(
         },
       });
 
+      // Single capture point for execution failures: onFailure fires for every
+      // failed run — node executor errors and engine errors (cycles, load/DB)
+      // alike — so reporting here once avoids duplicate Sentry events. Per-node
+      // detail (which node, its input) is already persisted via the NodeRecorder.
+      logger.error("Workflow execution failed", event.data.error, {
+        executionId: execution.id,
+        workflowName: execution.workflow.name,
+        userId: execution.workflow.user.id,
+      });
+
       // Best-effort: an email failure (or missing RESEND_API_KEY) must never
       // break the failure handler itself.
       try {
@@ -168,7 +179,9 @@ export const executeWorkflow = inngest.createFunction(
           error: event.data.error.message,
         });
       } catch (err) {
-        console.error("Failed to send workflow failure email", err);
+        logger.error("Failed to send workflow failure email", err, {
+          executionId: execution.id,
+        });
       }
     },
   },

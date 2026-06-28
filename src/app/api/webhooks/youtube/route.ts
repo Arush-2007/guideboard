@@ -4,6 +4,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
+import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { verifyYoutubeWebhookSignature } from "@/lib/webhook-verify";
 
@@ -60,7 +61,9 @@ export async function POST(request: NextRequest) {
     const rawBody = await request.text();
 
     const signatureHeader = request.headers.get("x-hub-signature");
-    if (!verifyYoutubeWebhookSignature(rawBody, signatureHeader, webhookSecret)) {
+    if (
+      !verifyYoutubeWebhookSignature(rawBody, signatureHeader, webhookSecret)
+    ) {
       return NextResponse.json(
         { success: false, error: "Invalid YouTube webhook signature" },
         { status: 401 },
@@ -112,7 +115,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error("YouTube webhook error:", error);
+    logger.error("YouTube webhook error", error);
     return NextResponse.json(
       { success: false, error: "Failed to process YouTube event" },
       { status: 500 },

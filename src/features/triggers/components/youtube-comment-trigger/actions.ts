@@ -1,12 +1,13 @@
 "use server";
 
-import { youtubeCommentTriggerChannel } from "@/inngest/channels/youtube-comment-trigger";
+import { headers } from "next/headers";
+import { parseNodeConfig } from "@/config/node-schemas";
+import { NodeType } from "@/generated/prisma";
 import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
+import { youtubeCommentTriggerChannel } from "@/inngest/channels/youtube-comment-trigger";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
-import { headers } from "next/headers";
-import { NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
+import { logger } from "@/lib/logger";
 
 export async function fetchYoutubeCommentTriggerRealtimeToken() {
   return mintUserStatusToken(youtubeCommentTriggerChannel);
@@ -32,7 +33,7 @@ export async function saveYoutubeCommentTriggerConfig(
   nodeId: string,
   config: YoutubeCommentTriggerConfig,
 ): Promise<void> {
-  console.log("[saveYoutubeCommentTriggerConfig] nodeId received:", nodeId);
+  logger.debug("[saveYoutubeCommentTriggerConfig] nodeId received", { nodeId });
 
   const parsed = parseNodeConfig(
     NodeType.YOUTUBE_COMMENT_TRIGGER,

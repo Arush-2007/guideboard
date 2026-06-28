@@ -5,10 +5,11 @@
  * is `sha256=<hex>`. The secret must match TYPEFORM_WEBHOOK_SECRET.
  */
 
+import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
+import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { verifyTypeformWebhookSignature } from "@/lib/webhook-verify";
-import { type NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
@@ -111,7 +112,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error("Typeform webhook error:", error);
+    logger.error("Typeform webhook error", error);
     return NextResponse.json(
       { success: false, error: "Failed to process Typeform submission" },
       { status: 500 },

@@ -1,11 +1,12 @@
 import "server-only";
 
+import ky from "ky";
+import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
-import { headers } from "next/headers";
-import ky from "ky";
-import { NextResponse } from "next/server";
+import { logger } from "@/lib/logger";
 
 type GoogleTokenResponse = {
   access_token: string;
@@ -22,7 +23,7 @@ type YoutubeChannelResponse = {
 };
 
 function failRedirect(request: Request, error?: unknown) {
-  console.error("[youtube-oauth-callback] youtube_auth_failed", error);
+  logger.error("[youtube-oauth-callback] youtube_auth_failed", error);
   return NextResponse.redirect(
     new URL("/credentials?error=youtube_auth_failed", request.url),
   );
@@ -71,9 +72,7 @@ export async function GET(request: Request) {
 
     const accessToken = tokenResponse.access_token;
     const refreshToken = tokenResponse.refresh_token;
-    const expiresAt = new Date(
-      Date.now() + tokenResponse.expires_in * 1000,
-    );
+    const expiresAt = new Date(Date.now() + tokenResponse.expires_in * 1000);
 
     if (!refreshToken) {
       return failRedirect(request);
@@ -93,7 +92,10 @@ export async function GET(request: Request) {
     });
     if (!res.ok) {
       const body = await res.text();
-      console.error("[youtube-channels-403]", res.status, body);
+      logger.error("[youtube-channels-403]", undefined, {
+        status: res.status,
+        body,
+      });
       throw new Error("channels fetch failed");
     }
     const channelsResponse = (await res.json()) as YoutubeChannelResponse;

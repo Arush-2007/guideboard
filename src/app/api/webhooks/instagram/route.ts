@@ -5,6 +5,7 @@ import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
 import { refreshInstagramTokenIfNeeded } from "@/lib/instagram-token";
+import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { verifyInstagramWebhookSignature } from "@/lib/webhook-verify";
 
@@ -114,7 +115,7 @@ export async function POST(request: NextRequest) {
     await Promise.all(
       uniqueUserIds.map((userId) =>
         refreshInstagramTokenIfNeeded(userId).catch(() => {
-          console.warn("Instagram token refresh attempt failed");
+          logger.warn("Instagram token refresh attempt failed");
         }),
       ),
     );
@@ -169,7 +170,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true }, { status: 200 });
   } catch (error) {
-    console.error("Instagram webhook error:", error);
+    logger.error("Instagram webhook error", error);
     return NextResponse.json(
       { success: false, error: "Failed to process Instagram event" },
       { status: 500 },
