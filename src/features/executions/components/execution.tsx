@@ -538,6 +538,7 @@ const NodeRow = ({
 export const ExecutionView = ({ executionId }: { executionId: string }) => {
   const { data: execution } = useSuspenseExecution(executionId);
   const [showStackTrace, setShowStackTrace] = useState(false);
+  const [showFinalOutput, setShowFinalOutput] = useState(false);
 
   const duration = execution.completedAt
     ? Math.round(
@@ -702,10 +703,24 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
 
         {execution.output && (
           <div className="mt-6 p-4 bg-muted rounded-md">
-            <p className="text-sm font-medium mb-2">Final output</p>
-            <pre className="text-xs font-mono overflow-auto">
-              {JSON.stringify(execution.output, null, 2)}
-            </pre>
+            <Collapsible
+              open={showFinalOutput}
+              onOpenChange={setShowFinalOutput}
+            >
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium">Final output</p>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" className="h-7 px-2">
+                    {showFinalOutput ? "Hide data" : "Show data"}
+                  </Button>
+                </CollapsibleTrigger>
+              </div>
+              <CollapsibleContent className="mt-2">
+                <pre className="text-xs font-mono overflow-auto">
+                  {JSON.stringify(execution.output, null, 2)}
+                </pre>
+              </CollapsibleContent>
+            </Collapsible>
           </div>
         )}
       </CardContent>
