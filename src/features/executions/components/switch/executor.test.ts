@@ -15,6 +15,7 @@ const run = async (
   const result = await switchExecutor({
     data,
     nodeId: "s1",
+    outputKey: "SWITCH_1",
     userId: "u1",
     context,
     step,
@@ -36,6 +37,9 @@ describe("switchExecutor routing", () => {
       { status: "yes" },
     );
     expect(outcome.outputs).toEqual(["b"]);
+    // Records the matched branch label (the exec view rebuilds the criteria
+    // table from config); the second case matched, so it's "Case 2".
+    expect(outcome.context).toMatchObject({ SWITCH_1: { matched: "Case 2" } });
   });
 
   it("stops at the first match even if a later case also matches", async () => {
@@ -67,5 +71,7 @@ describe("switchExecutor routing", () => {
     const outcome = await run({ cases: [] }, { status: "yes" });
     expect(outcome.outputs).toEqual([SWITCH_DEFAULT_OUTPUT]);
     expect(outcome.context).toMatchObject({ status: "yes" });
+    // Default branch records the label with no field/operator/value criteria.
+    expect(outcome.context).toMatchObject({ SWITCH_1: { matched: "Default" } });
   });
 });

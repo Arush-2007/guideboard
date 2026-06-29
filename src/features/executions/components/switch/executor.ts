@@ -24,6 +24,7 @@ type SwitchData = {
 export const switchExecutor: NodeExecutor<SwitchData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -55,16 +56,20 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
     // Evaluate cases in order; the first match wins. Each operand goes through
     // the single templating entry point, so a case can compare a fixed value or
     // an upstream reference (`@<...>@`). No match falls through to `default`.
+    // We also derive a human label ("Case N" / "Default") for the execution view;
+    // the field/operator/value criteria are reconstructed from config there.
     const matched = await step.run("switch", () => {
-      for (const c of config.cases ?? []) {
+      const cases = config.cases ?? [];
+      for (let i = 0; i < cases.length; i++) {
+        const c = cases[i];
         if (!c.id || !c.field || !c.operator) continue;
         const fieldValue = renderTemplate(c.field, context);
         const compareValue = renderTemplate(c.value ?? "", context);
         if (evaluateCondition(c.operator, fieldValue, compareValue)) {
-          return c.id;
+          return { id: c.id, label: `Case ${i + 1}` };
         }
       }
-      return SWITCH_DEFAULT_OUTPUT;
+      return { id: SWITCH_DEFAULT_OUTPUT, label: "Default" };
     });
 
     await publish(
@@ -74,7 +79,11 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
       }),
     );
 
-    return routed(context, [matched]);
+    // Record the chosen branch under this node's key so the execution view can
+    // show "Case N matched"; route only the matched output's edge.
+    return routed({ ...context, [outputKey]: { matched: matched.label } }, [
+      matched.id,
+    ]);
   } catch (error) {
     await publish(
       switchChannel(userId).status({

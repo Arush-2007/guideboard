@@ -19,6 +19,7 @@ type ConditionData = {
 export const conditionExecutor: NodeExecutor<ConditionData> = async ({
   data,
   nodeId,
+  outputKey,
   userId,
   context,
   step,
@@ -74,6 +75,9 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
 
     // Route to the matching branch instead of stopping the run. An unconnected
     // branch simply has no active downstream, which naturally ends that path.
+    // The boolean result is also written to the context (under this node's key)
+    // so the execution view can show "Result: true/false" and downstream nodes
+    // can reference it.
     //
     // Backward compat: workflows saved before branching wired the condition's
     // single output via the legacy handle ids ("main"/"source-1"). Emitting them
@@ -81,7 +85,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     // the old gate would have continued (passes) and inactive when it would have
     // stopped (fails) — preserving old behavior with no data migration.
     return routed(
-      context,
+      { ...context, [outputKey]: { result: passes } },
       passes
         ? [CONDITION_OUTPUTS.TRUE, "main", "source-1"]
         : [CONDITION_OUTPUTS.FALSE],

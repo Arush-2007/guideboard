@@ -43,17 +43,17 @@ describe("getUpstreamFields", () => {
   });
 
   it("falls back to a whole-output blob for undeclared node types", () => {
-    // CONDITION is routing-only and intentionally left undeclared in node-outputs.
+    // MANUAL_TRIGGER has no fixed output shape and is intentionally undeclared.
     const undeclaredNodes = [
-      { id: "x1", type: NodeType.CONDITION },
+      { id: "x1", type: NodeType.MANUAL_TRIGGER },
       { id: "c1", type: NodeType.DISCORD },
     ];
     const undeclaredEdges = [{ source: "x1", target: "c1" }];
     const rows = getUpstreamFields("c1", undeclaredNodes, undeclaredEdges);
-    const cond = rows.find((r) => r.nodeId === "x1");
-    expect(cond).toBeDefined();
-    expect(cond?.fieldLabel).toBe("Whole output");
-    expect(cond?.insertText).toBe("@<condition_x1>@");
+    const manual = rows.find((r) => r.nodeId === "x1");
+    expect(manual).toBeDefined();
+    expect(manual?.fieldLabel).toBe("Whole output");
+    expect(manual?.insertText).toBe("@<manual_trigger_x1>@");
   });
 
   it("expands a declared action (HTTP request) into nested field paths", () => {

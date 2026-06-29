@@ -37,6 +37,12 @@ export const executionsRouter = createTRPCRouter({
             select: {
               id: true,
               name: true,
+              // Node configs power the Friendly *input* view: we read each node's
+              // `@<…>@` references to show only the upstream fields it actually
+              // uses (not the whole accumulated context).
+              nodes: {
+                select: { id: true, data: true },
+              },
             },
           },
           nodeExecutions: {

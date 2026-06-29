@@ -13,7 +13,6 @@ export type FriendlyField = {
   label: string;
   /** Resolved value from the recorded run data. */
   value: unknown;
-  example?: string;
 };
 
 /** A group of fields from one source node, for the friendly INPUT view. */
@@ -50,10 +49,14 @@ function humanizeType(type: string): string {
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
+/** Matches `@<path>@` placeholders — the canonical reference syntax (see templating.ts). */
+const REFERENCE_RE = /@<\s*([^>]+?)\s*>@/g;
+
 /**
  * Resolves a descriptor's declared fields against an output ROOT object (the
  * unwrapped per-node data). Fields absent from this run are dropped, so the list
- * reflects what actually ran.
+ * reflects what actually ran. `developer`-flagged fields (opaque IDs) are skipped
+ * here — they stay in Raw and in the variable picker, just not the Friendly view.
  */
 function resolveFields(
   descriptor: NodeOutputDescriptor,
@@ -61,9 +64,10 @@ function resolveFields(
 ): FriendlyField[] {
   const fields: FriendlyField[] = [];
   for (const field of descriptor.fields) {
+    if (field.developer) continue;
     const value = getByPath(root, field.path);
     if (value === undefined) continue;
-    fields.push({ label: field.label, value, example: field.example });
+    fields.push({ label: field.label, value });
   }
   return fields;
 }
@@ -140,6 +144,41 @@ export function resolveFriendlyOutput(
 }
 
 /**
+ * The unwrapped output object for a node (the inner root its fields live under),
+ * or `undefined` when the type is undeclared / produced nothing. Used by the
+ * per-node output *summary* messages, which read raw output values.
+ */
+export function getNodeOutputRoot(
+  nodeType: string,
+  output: unknown,
+): Record<string, unknown> | undefined {
+  const descriptor = nodeOutputs[nodeType as NodeType];
+  if (!descriptor) return undefined;
+  const root = getOutputRoot(descriptor, output);
+  return root && typeof root === "object"
+    ? (root as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Renders a config template's `@<path>@` references against a run context — a
+ * lightweight, client-safe subset of `renderTemplate` (no Handlebars) used to
+ * show resolved config values (e.g. the URL an HTTP node hit) in summaries.
+ */
+export function renderReferences(template: unknown, context: unknown): string {
+  if (typeof template !== "string") return "";
+  const ctx = (context && typeof context === "object" ? context : {}) as Record<
+    string,
+    unknown
+  >;
+  return template.replace(REFERENCE_RE, (_match, path: string) => {
+    const value = getByPath(ctx, path.trim());
+    if (value == null) return "";
+    return typeof value === "object" ? JSON.stringify(value) : String(value);
+  });
+}
+
+/**
  * Projects a node's INPUT (the full context it received) into friendly field
  * groups — one per upstream source node, each showing that source's declared
  * fields with the values this run actually carried. Mirrors the variable picker,
@@ -193,4 +232,150 @@ export function resolveFriendlyInput(
   }
 
   return sources;
+}
+
+/**
+ * Deep-scans a node's config (`data`) for every `@<path>@` reference, returning
+ * the context paths it pulls in (in first-seen order, deduped). This is how we
+ * know which upstream fields a node *actually uses*, so its friendly input shows
+ * only those — not the whole accumulated context.
+ */
+export function extractReferencePaths(data: unknown): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  const visit = (value: unknown) => {
+    if (typeof value === "string") {
+      for (const match of value.matchAll(REFERENCE_RE)) {
+        const path = match[1].trim();
+        if (path && !seen.has(path)) {
+          seen.add(path);
+          paths.push(path);
+        }
+      }
+    } else if (Array.isArray(value)) {
+      for (const item of value) visit(item);
+    } else if (value && typeof value === "object") {
+      for (const item of Object.values(value)) visit(item);
+    }
+  };
+  visit(data);
+  return paths;
+}
+
+/** Resolves a referenced context path to its source node + friendly field label. */
+function describePath(
+  path: string,
+  producerByKey: Map<string, Producer>,
+  ranTypes: Set<string>,
+): { sourceKey: string; sourceLabel: string; fieldLabel: string } {
+  const dot = path.indexOf(".");
+  const rootKey = dot === -1 ? path : path.slice(0, dot);
+  const rest = dot === -1 ? "" : path.slice(dot + 1);
+
+  // perNode/fixed root: the first segment identifies the source node.
+  const producer = producerByKey.get(rootKey);
+  const fixed = fixedRootMap.get(rootKey);
+  const keyedType = producer?.nodeType ?? fixed?.type;
+  if (keyedType) {
+    const field = nodeOutputs[keyedType as NodeType]?.fields.find(
+      (f) => f.path === rest,
+    );
+    return {
+      sourceKey: rootKey,
+      sourceLabel: producer?.label ?? fixed?.label ?? humanizeType(keyedType),
+      fieldLabel: field?.label ?? rest ?? rootKey,
+    };
+  }
+
+  // topLevel trigger: the whole path is the field; attribute it to a trigger that ran.
+  for (const { type, descriptor } of topLevelTriggers) {
+    if (!ranTypes.has(type)) continue;
+    const field = descriptor.fields.find((f) => f.path === path);
+    if (field) {
+      return {
+        sourceKey: type,
+        sourceLabel: humanizeType(type),
+        fieldLabel: field.label,
+      };
+    }
+  }
+
+  return {
+    sourceKey: "_other",
+    sourceLabel: "Previous step",
+    fieldLabel: path,
+  };
+}
+
+/**
+ * Friendly INPUT view for a NON-trigger node: only the upstream fields the node
+ * *references in its config*, resolved to this run's values and grouped by source
+ * node. Referenced paths absent from the recorded context are dropped (e.g. an
+ * optional field that wasn't present). Returns `[]` when the node references
+ * nothing — the caller shows a "didn't use prior data" note.
+ */
+export function resolveReferencedInput(
+  config: unknown,
+  input: unknown,
+  producers: Producer[],
+  runNodeTypes: string[] = [],
+): FriendlySource[] {
+  const ctx = (input && typeof input === "object" ? input : {}) as Record<
+    string,
+    unknown
+  >;
+  const producerByKey = new Map(producers.map((p) => [p.contextKey, p]));
+  const ranTypes = new Set(runNodeTypes);
+
+  // Preserve first-seen source order.
+  const groups = new Map<string, FriendlySource>();
+  for (const path of extractReferencePaths(config)) {
+    const value = getByPath(ctx, path);
+    if (value === undefined) continue;
+    const { sourceKey, sourceLabel, fieldLabel } = describePath(
+      path,
+      producerByKey,
+      ranTypes,
+    );
+    const group = groups.get(sourceKey);
+    if (group) group.fields.push({ label: fieldLabel, value });
+    else
+      groups.set(sourceKey, {
+        key: sourceKey,
+        label: sourceLabel,
+        fields: [{ label: fieldLabel, value }],
+      });
+  }
+
+  return [...groups.values()];
+}
+
+/**
+ * Describes a single config field for the Friendly view: where its value came
+ * from + the resolved value. A field that is *exactly one reference* is labeled
+ * by the referenced field's name (e.g. "AI output", "Message text"); anything the
+ * user typed (a literal, or text mixed with references) is labeled "Entered by
+ * user". Either way the value is resolved against the run context. Used by the
+ * branching nodes (Condition/Switch) to render their field/value criteria.
+ */
+export function describeConfigValue(
+  template: unknown,
+  context: unknown,
+  producers: Producer[],
+  runNodeTypes: string[] = [],
+): { label: string; value: string } {
+  const value = renderReferences(template, context);
+  if (typeof template === "string") {
+    const refs = extractReferencePaths(template);
+    const withoutRefs = template.replace(REFERENCE_RE, "").trim();
+    if (refs.length === 1 && withoutRefs === "") {
+      const { fieldLabel } = describePath(
+        refs[0],
+        new Map(producers.map((p) => [p.contextKey, p])),
+        new Set(runNodeTypes),
+      );
+      return { label: fieldLabel, value };
+    }
+  }
+  return { label: "Entered by user", value };
 }

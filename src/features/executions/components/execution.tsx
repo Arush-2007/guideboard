@@ -27,12 +27,27 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
-import { ExecutionStatus, NodeExecutionStatus } from "@/generated/prisma";
 import {
+  COMPARE_OPERATOR_LABELS,
+  type CompareOperator,
+} from "@/features/executions/lib/compare";
+import {
+  ExecutionStatus,
+  NodeExecutionStatus,
+  NodeType,
+} from "@/generated/prisma";
+import {
+  describeConfigValue,
+  getNodeOutputRoot,
   type Producer,
+  renderReferences,
   resolveFriendlyInput,
   resolveFriendlyOutput,
+  resolveReferencedInput,
 } from "@/lib/friendly-output";
+import { nodeSummaries } from "@/lib/node-output-summary";
+import { NON_REF_NODE_TYPES } from "@/lib/node-ref";
+import { cn } from "@/lib/utils";
 import { useTRPC } from "@/trpc/client";
 
 // Both ExecutionStatus and NodeExecutionStatus share the same string members
@@ -176,6 +191,85 @@ const EmptyFriendly = () => (
   </p>
 );
 
+// A short status line shown in place of an output table when there's no table to
+// show (a failed/skipped node, or a success that produced no data fields).
+const StatusNote = ({
+  variant = "muted",
+  children,
+}: {
+  variant?: "muted" | "error";
+  children: ReactNode;
+}) => (
+  <p
+    className={cn(
+      "rounded p-2 text-xs",
+      variant === "error"
+        ? "bg-red-50 text-red-800"
+        : "bg-muted italic text-muted-foreground",
+    )}
+  >
+    {children}
+  </p>
+);
+
+// The one-line "what happened" summary shown above an output table.
+const SummaryMessage = ({ children }: { children: ReactNode }) => (
+  <p className="text-sm">{children}</p>
+);
+
+// Renders friendly input groups (one labeled table per source node).
+const SourceTables = ({
+  sources,
+}: {
+  sources: {
+    key: string;
+    label: string;
+    fields: { label: string; value: unknown }[];
+  }[];
+}) => (
+  <div className="space-y-2">
+    {sources.map((source) => (
+      <div key={source.key}>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+          {source.label}
+        </p>
+        <FieldTable rows={source.fields} />
+      </div>
+    ))}
+  </div>
+);
+
+// Builds the Field / Operator / Value rows for a branching comparison (a
+// Condition, or one Switch case). Each operand is labeled by where it came from —
+// the upstream field's name if referenced, or "Entered by user" for a literal.
+const criteriaRows = (
+  cfg: { field?: unknown; operator?: unknown; value?: unknown },
+  input: unknown,
+  producers: Producer[],
+  runNodeTypes: string[],
+): { label: string; value: unknown }[] => {
+  const operator = typeof cfg.operator === "string" ? cfg.operator : "";
+  const field = describeConfigValue(cfg.field, input, producers, runNodeTypes);
+  const rows = [
+    { label: field.label, value: field.value },
+    {
+      label: "Operator",
+      value: COMPARE_OPERATOR_LABELS[operator as CompareOperator] ?? operator,
+    },
+  ];
+  // is_empty / is_not_empty take no comparison value.
+  if (operator !== "is_empty" && operator !== "is_not_empty") {
+    const compared = describeConfigValue(
+      cfg.value,
+      input,
+      producers,
+      runNodeTypes,
+    );
+    rows.push({ label: compared.label, value: compared.value });
+  }
+  return rows;
+};
+
 // A labeled data section (Input / Output) that shows the friendly field tables by
 // default with a Raw toggle to the full JSON. `friendly` is null when the data
 // can't be projected (no declared contract / not an object), in which case only
@@ -246,42 +340,152 @@ const NodeRow = ({
   executionId,
   producers,
   runNodeTypes,
+  config,
 }: {
   node: NodeExecutionRow;
   executionId: string;
   producers: Producer[];
   runNodeTypes: string[];
+  /** This node's saved config (`data`), used to find the fields it references. */
+  config: Record<string, unknown> | undefined;
 }) => {
   const [open, setOpen] = useState(false);
   const isSkipped = node.status === NodeExecutionStatus.SKIPPED;
+  const isTrigger = NON_REF_NODE_TYPES.has(node.nodeType);
 
-  // Input: the context this node received, grouped by the upstream node that
-  // produced each part — the same curated fields the variable picker exposes.
+  // Input. A trigger has no upstream, so it shows its own payload (user-relevant
+  // fields only). A middle node shows ONLY the upstream fields it references in
+  // its config — resolved to this run's values — not the whole context.
   const inputFriendly = useMemo<ReactNode | null>(() => {
-    const sources = resolveFriendlyInput(node.input, producers, runNodeTypes);
-    if (sources === null) return null;
-    if (sources.length === 0) return <EmptyFriendly />;
+    if (isTrigger) {
+      const sources = resolveFriendlyInput(node.input, producers, runNodeTypes);
+      if (sources === null) return null;
+      if (sources.length === 0) return <EmptyFriendly />;
+      return <SourceTables sources={sources} />;
+    }
+    // A Condition's input is the comparison it evaluated: field, operator, value
+    // — each operand labeled by where it came from.
+    if (node.nodeType === NodeType.CONDITION) {
+      return (
+        <FieldTable
+          rows={criteriaRows(config ?? {}, node.input, producers, runNodeTypes)}
+        />
+      );
+    }
+    const sources = resolveReferencedInput(
+      config,
+      node.input,
+      producers,
+      runNodeTypes,
+    );
+    if (sources.length === 0) {
+      return (
+        <StatusNote>
+          This step didn't use any data from previous steps.
+        </StatusNote>
+      );
+    }
+    return <SourceTables sources={sources} />;
+  }, [isTrigger, node.nodeType, config, node.input, producers, runNodeTypes]);
+
+  // Output. Status first (failed/skipped get a note), then a per-node "what
+  // happened" summary line plus the details table. Triggers just announce the run.
+  const outputFriendly = useMemo<ReactNode | null>(() => {
+    if (node.status === NodeExecutionStatus.SKIPPED) {
+      return (
+        <StatusNote>
+          Skipped — an earlier branch didn't reach this node, so it never ran.
+        </StatusNote>
+      );
+    }
+    if (node.status === NodeExecutionStatus.FAILED) {
+      return (
+        <StatusNote variant="error">
+          This node failed, so it produced no output.
+        </StatusNote>
+      );
+    }
+    if (isTrigger) {
+      return <SummaryMessage>Workflow was triggered.</SummaryMessage>;
+    }
+    // A Condition's output is just its verdict — no table.
+    if (node.nodeType === NodeType.CONDITION) {
+      const result = getNodeOutputRoot(node.nodeType, node.output)?.result;
+      if (typeof result === "boolean") {
+        return <SummaryMessage>{result ? "True" : "False"}</SummaryMessage>;
+      }
+      return <StatusNote>No result was recorded for this run.</StatusNote>;
+    }
+    // A Switch announces the matched branch; for a real case it also shows the
+    // case's field/operator/value (reconstructed from config), default shows none.
+    if (node.nodeType === NodeType.SWITCH) {
+      const matched = getNodeOutputRoot(node.nodeType, node.output)?.matched;
+      if (typeof matched !== "string") {
+        return <StatusNote>No branch was recorded for this run.</StatusNote>;
+      }
+      if (matched === "Default") {
+        return (
+          <SummaryMessage>
+            No case matched — the default branch ran.
+          </SummaryMessage>
+        );
+      }
+      // "Case N" → the Nth configured case (1-based).
+      const index = Number(matched.replace(/^Case\s+/, "")) - 1;
+      const cases = Array.isArray(config?.cases) ? config.cases : [];
+      const matchedCase = cases[index] as
+        | { field?: unknown; operator?: unknown; value?: unknown }
+        | undefined;
+      return (
+        <div className="space-y-2">
+          <SummaryMessage>{matched} matched.</SummaryMessage>
+          {matchedCase ? (
+            <FieldTable
+              rows={criteriaRows(
+                matchedCase,
+                node.input,
+                producers,
+                runNodeTypes,
+              )}
+            />
+          ) : null}
+        </div>
+      );
+    }
+
+    const message = nodeSummaries[
+      node.nodeType as keyof typeof nodeSummaries
+    ]?.({
+      output: getNodeOutputRoot(node.nodeType, node.output),
+      config: config ?? {},
+      resolve: (template) => renderReferences(template, node.input),
+    });
+    const fields = resolveFriendlyOutput(node.nodeType, node.output);
+
+    if (fields === null && !message) return null; // undeclared → raw JSON
+    if ((fields === null || fields.length === 0) && !message) {
+      return (
+        <StatusNote>
+          Completed — this node produced no output fields.
+        </StatusNote>
+      );
+    }
     return (
       <div className="space-y-2">
-        {sources.map((source) => (
-          <div key={source.key}>
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              {source.label}
-            </p>
-            <FieldTable rows={source.fields} />
-          </div>
-        ))}
+        {message ? <SummaryMessage>{message}</SummaryMessage> : null}
+        {fields && fields.length > 0 ? <FieldTable rows={fields} /> : null}
       </div>
     );
-  }, [node.input, producers, runNodeTypes]);
-
-  // Output: this node's own produced fields.
-  const outputFriendly = useMemo<ReactNode | null>(() => {
-    const fields = resolveFriendlyOutput(node.nodeType, node.output);
-    if (fields === null) return null;
-    if (fields.length === 0) return <EmptyFriendly />;
-    return <FieldTable rows={fields} />;
-  }, [node.nodeType, node.output]);
+  }, [
+    isTrigger,
+    node.status,
+    node.nodeType,
+    node.output,
+    node.input,
+    config,
+    producers,
+    runNodeTypes,
+  ]);
 
   return (
     <div className="rounded-md border p-3">
@@ -363,6 +567,16 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
     () => execution.nodeExecutions.map((n) => n.nodeType),
     [execution.nodeExecutions],
   );
+
+  // Saved config per node id, so each row's input can show only the upstream
+  // fields its config references.
+  const configByNodeId = useMemo(() => {
+    const map = new Map<string, Record<string, unknown>>();
+    for (const n of execution.workflow.nodes) {
+      map.set(n.id, (n.data ?? {}) as Record<string, unknown>);
+    }
+    return map;
+  }, [execution.workflow.nodes]);
 
   return (
     <Card className="shadow-none">
@@ -447,6 +661,7 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
                 executionId={execution.id}
                 producers={producers}
                 runNodeTypes={runNodeTypes}
+                config={configByNodeId.get(node.nodeId)}
               />
             ))}
           </div>
