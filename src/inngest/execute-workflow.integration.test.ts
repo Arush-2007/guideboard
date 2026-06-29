@@ -555,10 +555,13 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
       "http_request_r_get",
     ]);
 
-    // REGRESSION GUARD: the condition routed (true) but added no context key, so
-    // its recorded output must be empty. `newKeysDiff` keys off property
-    // presence; a reference diff would wrongly capture the whole context here.
-    expect(captured.outputs.r_cond).toEqual({});
+    // REGRESSION GUARD: the condition routed (true) and contributes exactly its
+    // own namespaced result key — nothing else from the threaded context.
+    // `newKeysDiff` keys off property presence; a reference diff would wrongly
+    // capture the whole context here.
+    expect(captured.outputs.r_cond).toEqual({
+      condition_r_cond: { result: true },
+    });
   });
 
   it("records a FAILED node (with no output) when it throws", async () => {
