@@ -332,6 +332,134 @@ describe("executeWorkflow engine (5-node workflow)", () => {
   });
 });
 
+describe("runWorkflowNodes replay-from-node", () => {
+  it("seeds the chosen node's recorded input, skips upstream, and runs it + descendants", async () => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Replay workflow", userId },
+    });
+
+    // trigger -> GET -> condition -> POST. Replaying from the condition should
+    // skip the trigger + GET (already ran) and re-run condition + POST against
+    // the seeded snapshot — without re-fetching from the GET node.
+    await prisma.node.createMany({
+      data: [
+        {
+          id: "rp_trigger",
+          workflowId: workflow.id,
+          type: NodeType.MANUAL_TRIGGER,
+          name: "Manual trigger",
+          position: { x: 0, y: 0 },
+          data: {},
+        },
+        {
+          id: "rp_get",
+          workflowId: workflow.id,
+          type: NodeType.HTTP_REQUEST,
+          name: "Fetch user",
+          position: { x: 250, y: 0 },
+          data: { endpoint: `${baseUrl}/users/1`, method: "GET" },
+        },
+        {
+          id: "rp_cond",
+          workflowId: workflow.id,
+          type: NodeType.CONDITION,
+          name: "Only if HTTP 200",
+          position: { x: 500, y: 0 },
+          data: {
+            field: "@<http_request_rp_get.httpResponse.status>@",
+            operator: "equals",
+            value: "200",
+          },
+        },
+        {
+          id: "rp_post",
+          workflowId: workflow.id,
+          type: NodeType.HTTP_REQUEST,
+          name: "Forward lead",
+          position: { x: 750, y: 0 },
+          data: {
+            endpoint: `${baseUrl}/post`,
+            method: "POST",
+            body: '{"enrichedName":"@<http_request_rp_get.httpResponse.data.name>@"}',
+          },
+        },
+      ],
+    });
+    await prisma.connection.createMany({
+      data: [
+        {
+          workflowId: workflow.id,
+          fromNodeId: "rp_trigger",
+          toNodeId: "rp_get",
+        },
+        { workflowId: workflow.id, fromNodeId: "rp_get", toNodeId: "rp_cond" },
+        { workflowId: workflow.id, fromNodeId: "rp_cond", toNodeId: "rp_post" },
+      ],
+    });
+
+    const loaded = await prisma.workflow.findUniqueOrThrow({
+      where: { id: workflow.id },
+      include: { nodes: true, connections: true },
+    });
+    const sortedNodes = topologicalSort(loaded.nodes, loaded.connections);
+
+    // --- first run: capture the exact context that entered each node ---
+    const capturedInputs: Record<string, unknown> = {};
+    await runWorkflowNodes({
+      sortedNodes,
+      connections: loaded.connections,
+      userId,
+      initialData: { lead: { name: "Ada" } },
+      step,
+      publish,
+      recorder: {
+        async record({ nodeId, input }) {
+          capturedInputs[nodeId] = input;
+        },
+      },
+    });
+
+    // The condition's recorded input includes the GET output, so a replay seeded
+    // with it can evaluate the gate and template the POST without re-fetching.
+    const condSnapshot = capturedInputs.rp_cond as Record<string, unknown>;
+    expect(condSnapshot).toHaveProperty("http_request_rp_get");
+
+    // --- replay from the condition node ---
+    const replayStatuses: Record<string, string> = {};
+    const replayContext = await runWorkflowNodes({
+      sortedNodes,
+      connections: loaded.connections,
+      userId,
+      initialData: condSnapshot,
+      replayFromNodeId: "rp_cond",
+      step,
+      publish,
+      recorder: {
+        async record({ nodeId, status }) {
+          replayStatuses[nodeId] = status;
+        },
+      },
+    });
+
+    // Upstream nodes are treated as already-run (skipped); the chosen node and
+    // its descendant re-run fresh.
+    expect(replayStatuses.rp_trigger).toBe("SKIPPED");
+    expect(replayStatuses.rp_get).toBe("SKIPPED");
+    expect(replayStatuses.rp_cond).toBe("SUCCESS");
+    expect(replayStatuses.rp_post).toBe("SUCCESS");
+
+    // The POST templated its body from the SEEDED GET output (proving the snapshot
+    // carried forward), and the seeded key is still present in the final context.
+    const ctx = replayContext as Record<string, any>;
+    expect(ctx.http_request_rp_get.httpResponse.data.name).toBe(
+      "Leanne Graham",
+    );
+    expect(ctx.http_request_rp_post.httpResponse.data.json).toEqual({
+      enrichedName: "Leanne Graham",
+    });
+  });
+});
+
 describe("runWorkflowNodes recorder (per-node observability)", () => {
   // Faithful step shim: Inngest serializes every `step.run` output, so any node
   // whose output is threaded back through a step yields a deep copy with
@@ -427,10 +555,13 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
       "http_request_r_get",
     ]);
 
-    // REGRESSION GUARD: the condition routed (true) but added no context key, so
-    // its recorded output must be empty. `newKeysDiff` keys off property
-    // presence; a reference diff would wrongly capture the whole context here.
-    expect(captured.outputs.r_cond).toEqual({});
+    // REGRESSION GUARD: the condition routed (true) and contributes exactly its
+    // own namespaced result key — nothing else from the threaded context.
+    // `newKeysDiff` keys off property presence; a reference diff would wrongly
+    // capture the whole context here.
+    expect(captured.outputs.r_cond).toEqual({
+      condition_r_cond: { result: true },
+    });
   });
 
   it("records a FAILED node (with no output) when it throws", async () => {
@@ -463,7 +594,11 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
     });
     await prisma.connection.createMany({
       data: [
-        { workflowId: workflow.id, fromNodeId: "f_trigger", toNodeId: "f_cond" },
+        {
+          workflowId: workflow.id,
+          fromNodeId: "f_trigger",
+          toNodeId: "f_cond",
+        },
       ],
     });
     const loaded = await prisma.workflow.findUniqueOrThrow({

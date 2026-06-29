@@ -14,6 +14,7 @@ const run = async (
   const result = await conditionExecutor({
     data,
     nodeId: "c1",
+    outputKey: "CONDITION_1",
     userId: "u1",
     context,
     step,
@@ -34,6 +35,8 @@ describe("conditionExecutor routing", () => {
     expect(outcome.outputs).toContain("true");
     expect(outcome.outputs).not.toContain("false");
     expect(outcome.context).toMatchObject(aiYes);
+    // Records its boolean decision under its output key (drives the exec view).
+    expect(outcome.context).toMatchObject({ CONDITION_1: { result: true } });
   });
 
   it("emits legacy aliases on the pass path for pre-branching workflows", async () => {
@@ -54,6 +57,7 @@ describe("conditionExecutor routing", () => {
       aiYes,
     );
     expect(outcome.outputs).toEqual(["false"]);
+    expect(outcome.context).toMatchObject({ CONDITION_1: { result: false } });
   });
 
   it("compares two upstream node outputs against each other", async () => {

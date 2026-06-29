@@ -14,6 +14,22 @@ export type CompareOperator =
   | "is_empty"
   | "is_not_empty";
 
+/**
+ * Human-friendly operator labels for the execution view's branching tables. (The
+ * Condition/Switch dialogs still hardcode their own copies — they could be
+ * refactored to share this map, but that's outside this change.)
+ */
+export const COMPARE_OPERATOR_LABELS: Record<CompareOperator, string> = {
+  contains: "Contains",
+  not_contains: "Does not contain",
+  equals: "Equals",
+  not_equals: "Does not equal",
+  greater_than: "Greater than",
+  less_than: "Less than",
+  is_empty: "Is empty",
+  is_not_empty: "Is not empty",
+};
+
 export function isEmptyValue(value: unknown): boolean {
   if (value === undefined || value === null) {
     return true;

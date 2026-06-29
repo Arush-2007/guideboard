@@ -100,6 +100,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
         [outputKey]: {
           to,
           subject,
+          body,
         },
       };
     });
