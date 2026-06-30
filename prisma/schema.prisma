@@ -263,6 +263,9 @@ enum CredentialType {
   WHATSAPP
   XAI
   GROQ
+  AFFINDA
+  LEVER
+  TYPEFORM
 }
 
 model Workflow {
@@ -329,6 +332,9 @@ enum NodeType {
   WHATSAPP_ACTION
   GMAIL_ACTION
   GOOGLE_SHEETS_ACTION
+  RESUME_PARSER
+  CANDIDATE_SCORING
+  ATS_ACTION
 }
 
 model Node {

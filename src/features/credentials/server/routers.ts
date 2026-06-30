@@ -12,6 +12,26 @@ import {
   protectedProcedure,
 } from "@/trpc/init";
 
+/**
+ * Resolves + decrypts a user's Typeform Personal Access Token by credential id.
+ * The single seam the Typeform procedures depend on for auth — swapping PAT for
+ * OAuth later means changing only this helper, not the procedures that use it.
+ */
+async function getTypeformToken(
+  credentialId: string,
+  userId: string,
+): Promise<string> {
+  const credential = await prisma.credential.findUnique({
+    where: { id: credentialId, userId },
+  });
+  if (!credential || credential.type !== CredentialType.TYPEFORM) {
+    throw new Error("Typeform credential not found or wrong type");
+  }
+  const token = decrypt(credential.value).trim();
+  if (!token) throw new Error("Typeform credential is empty");
+  return token;
+}
+
 const credentialBodySchema = z
   .object({
     name: z.string().min(1, "Name is required"),
@@ -400,6 +420,144 @@ export const credentialsRouter = createTRPCRouter({
         .map((item) => (item.title ?? "").trim())
         .filter((title) => title.length > 0)
         .map((title) => ({ title }));
+    }),
+  // --- Typeform (PAT auth; OAuth swaps only the token source next session) ---
+  // Lists the user's Typeform forms for the trigger's form dropdown.
+  getTypeforms: protectedProcedure
+    .input(z.object({ credentialId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      type TypeformListResponse = {
+        items?: Array<{ id?: string; title?: string }>;
+      };
+      const token = await getTypeformToken(
+        input.credentialId,
+        ctx.auth.user.id,
+      );
+      const data = await ky
+        .get("https://api.typeform.com/forms", {
+          searchParams: { page_size: "200" },
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        .json<TypeformListResponse>();
+
+      return (data.items ?? [])
+        .map((f) => ({ id: f.id ?? "", name: f.title ?? "Untitled form" }))
+        .filter((f) => f.id.length > 0);
+    }),
+  // Reads a form's fields. Each field's `ref` (stable, author-set) is exactly the
+  // key the webhook payload uses, so a discovered field maps 1:1 to a reference
+  // like `@<typeform.fields.<ref>>@`.
+  getTypeformFields: protectedProcedure
+    .input(
+      z.object({ credentialId: z.string().min(1), formId: z.string().min(1) }),
+    )
+    .query(async ({ ctx, input }) => {
+      type TypeformField = {
+        ref?: string;
+        title?: string;
+        type?: string;
+        properties?: { fields?: TypeformField[] };
+      };
+      type TypeformGetResponse = { fields?: TypeformField[] };
+      const token = await getTypeformToken(
+        input.credentialId,
+        ctx.auth.user.id,
+      );
+      const data = await ky
+        .get(`https://api.typeform.com/forms/${input.formId}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
+        .json<TypeformGetResponse>();
+
+      // Flatten one level of `group` fields (their sub-questions live under
+      // properties.fields), then keep every field that has a `ref` — the stable
+      // key the webhook payload uses. The title is only a label, so an untitled
+      // question gets a usable fallback instead of being dropped.
+      const flatten = (fields: TypeformField[] = []): TypeformField[] =>
+        fields.flatMap((f) =>
+          f.properties?.fields?.length ? flatten(f.properties.fields) : [f],
+        );
+
+      return flatten(data.fields ?? [])
+        .filter((f) => f.ref)
+        .map((f) => ({
+          ref: f.ref as string,
+          title:
+            (f.title ?? "").trim() ||
+            `Untitled ${(f.type ?? "question").replace(/_/g, " ")}`,
+        }));
+    }),
+  // Auto-registers (or updates, idempotent per tag) the webhook on Typeform, so
+  // the user never touches Typeform's settings. We sign with TYPEFORM_WEBHOOK_SECRET
+  // so the existing webhook route verifies it unchanged. Outward-facing → wired to
+  // an explicit "Activate webhook" button.
+  registerTypeformWebhook: protectedProcedure
+    .input(
+      z.object({
+        credentialId: z.string().min(1),
+        formId: z.string().min(1),
+        workflowId: z.string().min(1),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const token = await getTypeformToken(
+        input.credentialId,
+        ctx.auth.user.id,
+      );
+      const secret = process.env.TYPEFORM_WEBHOOK_SECRET;
+      if (!secret) {
+        throw new Error(
+          "TYPEFORM_WEBHOOK_SECRET is not configured — set it to verify incoming webhooks.",
+        );
+      }
+      const baseUrl =
+        process.env.NEXT_PUBLIC_APP_URL ?? process.env.NGROK_URL ?? "";
+      if (!baseUrl) {
+        throw new Error(
+          "No public app URL configured (NEXT_PUBLIC_APP_URL / NGROK_URL) for the webhook destination.",
+        );
+      }
+      const url = `${baseUrl}/api/webhooks/typeform?workflowId=${input.workflowId}`;
+      const tag = `guideboard-${input.workflowId}`;
+
+      await ky.put(
+        `https://api.typeform.com/forms/${input.formId}/webhooks/${tag}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          json: { url, enabled: true, secret, verify_ssl: true },
+        },
+      );
+
+      return { enabled: true, url };
+    }),
+  // Live status of this workflow's Typeform webhook, so the dialog can show
+  // "Webhook active" on reopen instead of relying on in-memory mutation state.
+  // Reads the specific tag; any error (404 / not found) → not active.
+  getTypeformWebhookStatus: protectedProcedure
+    .input(
+      z.object({
+        credentialId: z.string().min(1),
+        formId: z.string().min(1),
+        workflowId: z.string().min(1),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      try {
+        const token = await getTypeformToken(
+          input.credentialId,
+          ctx.auth.user.id,
+        );
+        const tag = `guideboard-${input.workflowId}`;
+        const hook = await ky
+          .get(
+            `https://api.typeform.com/forms/${input.formId}/webhooks/${tag}`,
+            { headers: { Authorization: `Bearer ${token}` } },
+          )
+          .json<{ enabled?: boolean }>();
+        return { active: hook.enabled === true };
+      } catch {
+        return { active: false };
+      }
     }),
   getSheetColumns: protectedProcedure
     .input(

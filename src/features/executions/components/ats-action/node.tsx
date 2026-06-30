@@ -1,0 +1,76 @@
+"use client";
+
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
+import { Building2 } from "lucide-react";
+import dynamic from "next/dynamic";
+import { useParams } from "next/navigation";
+import { memo, useState } from "react";
+import { useNodeStatus } from "../../hooks/use-node-status";
+import { BaseExecutionNode } from "../base-execution-node";
+import type { AtsActionFormValues } from "./dialog";
+
+const AtsActionDialog = dynamic(() =>
+  import("./dialog").then((mod) => mod.AtsActionDialog),
+);
+
+type AtsActionNodeData = {
+  provider?: "lever";
+  environment?: "sandbox" | "production";
+  name?: string;
+};
+
+type AtsActionNodeType = Node<AtsActionNodeData>;
+
+export const AtsActionNode = memo((props: NodeProps<AtsActionNodeType>) => {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const { setNodes } = useReactFlow();
+  const params = useParams();
+  const workflowId =
+    typeof params?.workflowId === "string" ? params.workflowId : undefined;
+
+  const nodeStatus = useNodeStatus(props.id);
+
+  const handleOpenSettings = () => setDialogOpen(true);
+
+  const handleSubmit = (values: AtsActionFormValues) => {
+    setNodes((nodes) =>
+      nodes.map((node) =>
+        node.id === props.id
+          ? { ...node, data: { ...node.data, ...values } }
+          : node,
+      ),
+    );
+  };
+
+  const nodeData = props.data;
+  const description = nodeData?.name
+    ? `Lever (${nodeData.environment ?? "sandbox"}) — create candidate`
+    : "Not configured";
+
+  return (
+    <>
+      {dialogOpen && (
+        <AtsActionDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          onSubmit={handleSubmit}
+          defaultValues={nodeData}
+          currentNodeId={props.id}
+          workflowId={workflowId}
+        />
+      )}
+      <BaseExecutionNode
+        {...props}
+        id={props.id}
+        icon={Building2}
+        name="ATS — Create Candidate"
+        status={nodeStatus}
+        description={description}
+        onSettings={handleOpenSettings}
+        onDoubleClick={handleOpenSettings}
+      />
+    </>
+  );
+});
+
+AtsActionNode.displayName = "AtsActionNode";

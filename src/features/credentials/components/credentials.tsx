@@ -1,6 +1,12 @@
 "use client";
 
 import { formatDistanceToNow } from "date-fns";
+import { MoreVerticalIcon, TrashIcon } from "lucide-react";
+import Image from "next/image";
+import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useEffect } from "react";
+import { toast } from "sonner";
 import {
   EmptyView,
   EntityContainer,
@@ -12,6 +18,17 @@ import {
   ErrorView,
   LoadingView,
 } from "@/components/entity-components";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { Credential } from "@/generated/prisma";
+import { CredentialType } from "@/generated/prisma";
+import { useEntitySearch } from "@/hooks/use-entity-search";
 import {
   useDisconnectInstagram,
   useDisconnectYoutube,
@@ -20,24 +37,7 @@ import {
   useSuspenseCredentials,
   useYoutubeCredential,
 } from "../hooks/use-credentials";
-import { useRouter, useSearchParams } from "next/navigation";
 import { useCredentialsParams } from "../hooks/use-credentials-params";
-import { useEntitySearch } from "@/hooks/use-entity-search";
-import type { Credential } from "@/generated/prisma";
-import { CredentialType } from "@/generated/prisma";
-import Image from "next/image";
-import { useEffect } from "react";
-import { toast } from "sonner";
-import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { MoreVerticalIcon, TrashIcon } from "lucide-react";
-import Link from "next/link";
 
 export const CredentialsInstagramAuthErrorToast = () => {
   const searchParams = useSearchParams();
@@ -322,6 +322,9 @@ const credentialLogos: Record<CredentialType, string> = {
   [CredentialType.WHATSAPP]: "/logos/whatsapp.svg",
   [CredentialType.XAI]: "/logos/xai.svg",
   [CredentialType.GROQ]: "/logos/groq.svg",
+  [CredentialType.AFFINDA]: "/logos/affinda.svg",
+  [CredentialType.LEVER]: "/logos/lever.svg",
+  [CredentialType.TYPEFORM]: "/logos/typeform.svg",
 };
 
 export const CredentialItem = ({ data }: { data: Credential }) => {
