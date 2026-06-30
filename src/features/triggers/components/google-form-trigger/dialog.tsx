@@ -1,114 +1,278 @@
 "use client";
 
+import { useQuery } from "@tanstack/react-query";
+import { CopyIcon, ExternalLink } from "lucide-react";
+import { useParams } from "next/navigation";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CopyIcon } from "lucide-react";
-import { useParams } from "next/navigation";
-import { toast } from "sonner";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { useTRPC } from "@/trpc/client";
 import { generateGoogleFormScript } from "./utils";
+
+/** A discovered question, stored so the variable picker can expose it. */
+type DiscoveredField = { path: string; label: string };
+
+type GoogleFormTriggerValues = {
+  formId?: string;
+  formTitle?: string;
+  discoveredFields?: DiscoveredField[];
+};
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-};
+  onSubmit: (values: GoogleFormTriggerValues) => void;
+  defaultValues?: GoogleFormTriggerValues;
+  currentNodeId: string;
+}
 
 export const GoogleFormTriggerDialog = ({
   open,
-  onOpenChange
+  onOpenChange,
+  onSubmit,
+  defaultValues = {},
 }: Props) => {
+  const trpc = useTRPC();
   const params = useParams();
   const workflowId = params.workflowId as string;
 
-  // Construct the webhook URL
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"
-  const webhookUrl = 
-    `${baseUrl}/api/webhooks/google-form?workflowId=${workflowId}`;
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+  const webhookUrl = `${baseUrl}/api/webhooks/google-form?workflowId=${workflowId}`;
 
-  const copyToClipboard = async () => {
+  const [formId, setFormId] = useState(defaultValues.formId ?? "");
+  const [formTitle, setFormTitle] = useState(defaultValues.formTitle ?? "");
+  const [fields, setFields] = useState<DiscoveredField[]>(
+    defaultValues.discoveredFields ?? [],
+  );
+  const [verifyRequested, setVerifyRequested] = useState(false);
+  const [tableOpen, setTableOpen] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setFormId(defaultValues.formId ?? "");
+      setFormTitle(defaultValues.formTitle ?? "");
+      setFields(defaultValues.discoveredFields ?? []);
+      setVerifyRequested(false);
+      setTableOpen(false);
+    }
+  }, [open, defaultValues]);
+
+  const { data: forms = [], isLoading: formsLoading } = useQuery(
+    trpc.credentials.getGoogleForms.queryOptions(),
+  );
+
+  const questionsQuery = useQuery({
+    ...trpc.credentials.getGoogleFormQuestions.queryOptions({ formId }),
+    enabled: verifyRequested && Boolean(formId),
+  });
+
+  // When questions arrive, turn them into discoverable fields (keyed by title,
+  // matching the Apps Script's `responses` keys) and reveal the table.
+  useEffect(() => {
+    if (questionsQuery.data) {
+      setFields(
+        questionsQuery.data.map((q) => ({
+          path: `googleForm.responses.${q.title}`,
+          label: q.title,
+        })),
+      );
+      setTableOpen(true);
+    }
+  }, [questionsQuery.data]);
+
+  useEffect(() => {
+    if (questionsQuery.error) {
+      toast.error(
+        "Couldn't load questions. Make sure you've re-connected Google (the Forms permission is new).",
+      );
+    }
+  }, [questionsQuery.error]);
+
+  const copy = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(webhookUrl);
-      toast.success("Webhook URL copied to clipboard");
+      await navigator.clipboard.writeText(text);
+      toast.success(`${label} copied`);
     } catch {
-      toast.error("Failed to copy URL");
+      toast.error(`Failed to copy ${label.toLowerCase()}`);
     }
   };
 
+  const handleSave = () => {
+    onSubmit({ formId, formTitle, discoveredFields: fields });
+    onOpenChange(false);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Google Form Trigger Configuration</DialogTitle>
-          <DialogDescription>
-            Use this webhook URL in your Google Form's Apps Script to trigger
-            this workflow when a form is submitted.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="webhook-url">
-              Webhook URL
-            </Label>
-            <div className="flex gap-2">
-              <Input
-                id="webhook-url"
-                value={webhookUrl}
-                readOnly
-                className="font-mono text-sm"
-              />
-              <Button
-                type="button"
-                size="icon"
-                variant="outline"
-                onClick={copyToClipboard}
-              >
-                <CopyIcon className="size-4" />
-              </Button>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Google Form Trigger</DialogTitle>
+            <DialogDescription>
+              Connect a Google Form to start this workflow. The two steps below
+              are independent — do them in either order.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            <div className="space-y-2">
+              <Label>Choose form &amp; load its questions</Label>
+              <p className="text-xs text-muted-foreground">
+                Reads the form's questions directly (no script needed) so you
+                can reference each answer downstream.
+              </p>
+              <div className="flex gap-2">
+                <Select
+                  value={formId}
+                  disabled={formsLoading}
+                  onValueChange={(id) => {
+                    setFormId(id);
+                    setFormTitle(forms.find((f) => f.id === id)?.name ?? "");
+                    setFields([]);
+                    setVerifyRequested(false);
+                  }}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue
+                      placeholder={
+                        formsLoading ? "Loading forms..." : "Select a form"
+                      }
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {forms.map((f) => (
+                      <SelectItem key={f.id} value={f.id}>
+                        {f.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!formId || questionsQuery.isFetching}
+                  onClick={() => {
+                    setVerifyRequested(true);
+                    if (verifyRequested) questionsQuery.refetch();
+                  }}
+                >
+                  {questionsQuery.isFetching ? "Loading…" : "Load questions"}
+                </Button>
+              </div>
+              {fields.length > 0 ? (
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline"
+                  onClick={() => setTableOpen(true)}
+                >
+                  {fields.length} questions loaded — view
+                </button>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <Label>Make submissions trigger this workflow</Label>
+              <p className="text-xs text-muted-foreground">
+                Add a small Apps Script to the form so each submission starts
+                this workflow.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {formId ? (
+                  <Button type="button" variant="outline" asChild>
+                    <a
+                      href={`https://docs.google.com/forms/d/${formId}/edit`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <ExternalLink className="mr-2 size-4" />
+                      Open your form
+                    </a>
+                  </Button>
+                ) : null}
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    copy(generateGoogleFormScript(webhookUrl), "Apps Script")
+                  }
+                >
+                  <CopyIcon className="mr-2 size-4" />
+                  Copy Apps Script
+                </Button>
+              </div>
+              <ol className="list-inside list-decimal space-y-1 text-sm text-muted-foreground">
+                <li>Open your form → ⋮ menu → Apps Script</li>
+                <li>Paste the script and Save</li>
+                <li>
+                  Run <span className="font-mono">setup</span> once (Run ▸
+                  setup) — it self-installs the submit trigger
+                </li>
+              </ol>
             </div>
           </div>
 
-          <div className="rounded-lg bg-muted p-4 space-y-2">
-            <h4 className="font-medium text-sm">Setup instructions:</h4>
-            <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
-              <li>Open your Google Form</li>
-              <li>Click the three dots menu → Script editor</li>
-              <li>Copy the script below — your webhook URL is already included</li>
-              <li>Save and click "Triggers" → Add Trigger</li>
-              <li>Choose: From form → On form submit → Save</li>
-            </ol>
-          </div>
-
-          <div className="rounded-lg bg-muted p-4 space-y-3">
-            <h4 className="font-medium text-sm">Google Apps Script:</h4>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={async () => {
-                const script = generateGoogleFormScript(webhookUrl);
-                try {
-                  await navigator.clipboard.writeText(script);
-                  toast.success("Script copied to clipboard");
-                } catch {
-                  toast.error("Failed to copy Script to clipboard");
-                }
-              }}
-            >
-              <CopyIcon className="size-4 mr-2" />
-              Copy Google Apps Script
+          <DialogFooter className="mt-4">
+            <Button type="button" onClick={handleSave}>
+              Save
             </Button>
-            <p className="text-xs text-muted-foreground">
-              This script includes your webhook URL and handles form submissions
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Questions open in their own WIDER window layered on top of the config,
+          so long questions get a roomy full-width line (comfortable to read).
+          Closed via the built-in top-right X. */}
+      <Dialog open={tableOpen} onOpenChange={setTableOpen}>
+        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Questions in {formTitle || "this form"}</DialogTitle>
+            <DialogDescription>
+              These are now available in the variable picker for this node.
+            </DialogDescription>
+          </DialogHeader>
+          {fields.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No questions found on this form.
             </p>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
+          ) : (
+            <div className="space-y-2">
+              {fields.map((f) => (
+                <div key={f.path} className="rounded-md border p-3">
+                  <p className="text-sm font-medium leading-relaxed">
+                    {f.label}
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-1 inline-block"
+                    onClick={() => copy(`@<${f.path}>@`, "Reference")}
+                    title="Copy reference"
+                  >
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                      {`@<${f.path}>@`}
+                    </code>
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };

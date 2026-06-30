@@ -1,17 +1,31 @@
 export const generateGoogleFormScript = (
   webhookUrl: string,
-) => `function onFormSubmit(e) {
+) => `var WEBHOOK_URL = '${webhookUrl}';
+
+// Run this ONCE (Run ▸ setup) to connect the form — no manual trigger needed.
+function setup() {
+  var form = FormApp.getActiveForm();
+  // Avoid duplicate triggers if setup is run more than once.
+  var existing = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].getHandlerFunction() === 'onFormSubmit') {
+      ScriptApp.deleteTrigger(existing[i]);
+    }
+  }
+  ScriptApp.newTrigger('onFormSubmit').forForm(form).onFormSubmit().create();
+}
+
+function onFormSubmit(e) {
   var formResponse = e.response;
   var itemResponses = formResponse.getItemResponses();
 
-  // Build responses object
+  // Build responses object, keyed by question title.
   var responses = {};
   for (var i = 0; i < itemResponses.length; i++) {
     var itemResponse = itemResponses[i];
     responses[itemResponse.getItem().getTitle()] = itemResponse.getResponse();
   }
 
-  // Prepare webhook payload
   var payload = {
     formId: e.source.getId(),
     formTitle: e.source.getTitle(),
@@ -21,18 +35,15 @@ export const generateGoogleFormScript = (
     responses: responses
   };
 
-  // Send to webhook
   var options = {
     'method': 'post',
     'contentType': 'application/json',
     'payload': JSON.stringify(payload)
   };
 
-  var WEBHOOK_URL = '${webhookUrl}';
-
   try {
     UrlFetchApp.fetch(WEBHOOK_URL, options);
-  } catch(error) {
+  } catch (error) {
     console.error('Webhook failed:', error);
   }
 }`;

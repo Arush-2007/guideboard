@@ -348,6 +348,59 @@ export const credentialsRouter = createTRPCRouter({
       }))
       .filter((file) => file.id.length > 0);
   }),
+  // Lists the user's Google Forms (mirrors getGoogleSheets — Drive file list).
+  getGoogleForms: protectedProcedure.query(async ({ ctx }) => {
+    type DriveFilesResponse = {
+      files?: Array<{ id?: string; name?: string }>;
+    };
+
+    const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
+    const data = await ky
+      .get("https://www.googleapis.com/drive/v3/files", {
+        searchParams: {
+          q: "mimeType='application/vnd.google-apps.form'",
+          fields: "files(id,name)",
+          pageSize: "100",
+        },
+        headers: { Authorization: `Bearer ${accessToken}` },
+      })
+      .json<DriveFilesResponse>();
+
+    return (data.files ?? [])
+      .map((file) => ({
+        id: file.id ?? "",
+        name: file.name ?? "Untitled form",
+      }))
+      .filter((file) => file.id.length > 0);
+  }),
+  // Reads a form's questions via the Forms API (needs the forms.body.readonly
+  // scope). Each question's title is exactly the key the Apps Script webhook
+  // uses in `responses`, so a discovered field maps 1:1 to a reference like
+  // `@<googleForm.responses.<title>>@`.
+  getGoogleFormQuestions: protectedProcedure
+    .input(z.object({ formId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      type FormsGetResponse = {
+        items?: Array<{
+          title?: string;
+          questionItem?: unknown;
+          questionGroupItem?: unknown;
+        }>;
+      };
+
+      const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
+      const data = await ky
+        .get(`https://forms.googleapis.com/v1/forms/${input.formId}`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        })
+        .json<FormsGetResponse>();
+
+      return (data.items ?? [])
+        .filter((item) => item.questionItem || item.questionGroupItem)
+        .map((item) => (item.title ?? "").trim())
+        .filter((title) => title.length > 0)
+        .map((title) => ({ title }));
+    }),
   getSheetColumns: protectedProcedure
     .input(
       z.object({
