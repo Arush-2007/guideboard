@@ -324,6 +324,7 @@ const candidateScoringSchema = z
     credentialId: z.string().optional(),
     jobDescriptionId: z.string().optional(),
     resumeId: z.string().optional(),
+    indexName: z.string().optional(),
     weights: z.record(z.string(), z.number()).optional(),
   })
   .superRefine((data, ctx) => {

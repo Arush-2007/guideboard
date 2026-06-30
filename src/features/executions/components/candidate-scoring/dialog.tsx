@@ -66,6 +66,7 @@ const formSchema = z
     credentialId: z.string().optional(),
     jobDescriptionId: z.string().optional(),
     resumeId: z.string().optional(),
+    indexName: z.string().optional(),
   })
   .superRefine((data, ctx) => {
     if (data.provider === "rules") {
@@ -119,6 +120,7 @@ function defaults(
     credentialId: v.credentialId ?? "",
     jobDescriptionId: v.jobDescriptionId ?? "",
     resumeId: v.resumeId ?? "@<RESUME_PARSER_1.affindaResumeId>@",
+    indexName: v.indexName ?? "guideboard-resumes",
   };
 }
 
@@ -465,6 +467,23 @@ export const CandidateScoringDialog = ({
                           {...field}
                         />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="indexName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Search &amp; Match index</FormLabel>
+                      <FormControl>
+                        <Input placeholder="guideboard-resumes" {...field} />
+                      </FormControl>
+                      <FormDescription>
+                        Affinda index the resume is added to before matching.
+                        Created automatically if it doesn&apos;t exist.
+                      </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}

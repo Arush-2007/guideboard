@@ -35,8 +35,86 @@ type CandidateScoringData = {
   credentialId?: string;
   jobDescriptionId?: string;
   resumeId?: string;
+  /** Affinda Search & Match index the resume is added to before matching. */
+  indexName?: string;
   weights?: Record<string, number>;
 };
+
+const AFFINDA_BASE = "https://api.affinda.com";
+const DEFAULT_AFFINDA_INDEX = "guideboard-resumes";
+
+/** Best-effort read of a ky HTTPError body for branching on Affinda's message. */
+async function errorBody(
+  error: unknown,
+): Promise<{ status?: number; text: string }> {
+  const response = (error as { response?: Response })?.response;
+  if (!response) return { text: "" };
+  const text = await response.text().catch(() => "");
+  return { status: response.status, text };
+}
+
+/**
+ * Affinda's `resume_search/match` only scores resumes that live in a Search &
+ * Match *index*. So before matching we make sure the parsed resume is in one:
+ * try to add it; if the index doesn't exist yet, create it (docType `resumes`)
+ * and retry; treat "already indexed" / "already exists" as success so reruns
+ * and Inngest retries stay idempotent.
+ */
+async function ensureResumeIndexed(
+  apiKey: string,
+  indexName: string,
+  resumeId: string,
+): Promise<void> {
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  const addDocument = () =>
+    ky.post(
+      `${AFFINDA_BASE}/v2/index/${encodeURIComponent(indexName)}/documents`,
+      { headers, json: { document: resumeId }, timeout: 60_000 },
+    );
+
+  try {
+    await addDocument();
+    return;
+  } catch (error) {
+    const { status, text } = await errorBody(error);
+    // Document already in the index — nothing to do.
+    if (status === 400 && /already|exists|indexed/i.test(text)) return;
+    // Index doesn't exist yet — create it, then retry adding the resume. Affinda
+    // reports a missing index as a 400 `object_not_found` with attr "index"
+    // (NOT a 404). Scope the match to that attr so a bad *resume* id (which is
+    // also object_not_found, but attr "document") falls through and surfaces.
+    const indexMissing =
+      status === 404 ||
+      (/object_not_found/i.test(text) && /"attr":\s*"index"/i.test(text));
+    if (indexMissing) {
+      try {
+        await ky.post(`${AFFINDA_BASE}/v2/index`, {
+          headers,
+          json: { name: indexName, docType: "resumes" },
+          timeout: 60_000,
+        });
+      } catch (createError) {
+        // Tolerate a create race (another run made it first).
+        const created = await errorBody(createError);
+        if (!(created.status === 400 && /already|exists/i.test(created.text))) {
+          throw createError;
+        }
+      }
+      try {
+        await addDocument();
+      } catch (retryError) {
+        const retry = await errorBody(retryError);
+        if (
+          !(retry.status === 400 && /already|exists|indexed/i.test(retry.text))
+        ) {
+          throw retryError;
+        }
+      }
+      return;
+    }
+    throw error;
+  }
+}
 
 type AffindaMatchResponse = {
   score?: number;
@@ -103,9 +181,17 @@ export const candidateScoringExecutor: NodeExecutor<
         );
       }
 
+      const indexName = config.indexName?.trim() || DEFAULT_AFFINDA_INDEX;
+
+      // The match endpoint only scores resumes that live in a Search & Match
+      // index, so add the parsed resume to one first (auto-creating it).
+      await step.run("affinda-index-resume", () =>
+        ensureResumeIndexed(apiKey, indexName, resumeId).then(() => null),
+      );
+
       output = await step.run("affinda-match", async () => {
         const res = await ky
-          .get("https://api.affinda.com/v3/resume_search/match", {
+          .get(`${AFFINDA_BASE}/v3/resume_search/match`, {
             headers: { Authorization: `Bearer ${apiKey}` },
             searchParams: {
               resume: resumeId,
