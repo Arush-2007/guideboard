@@ -262,6 +262,16 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     rootKind: "perNode",
     fields: [{ path: "matched", label: "Matched branch", example: "Default" }],
   },
+  // Record Lookup: whether a value exists in a store (+ how many, + first match).
+  // Non-branching — feed `exists` into a Condition node to route.
+  [NodeType.RECORD_LOOKUP]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "exists", label: "Exists ?", example: "false" },
+      { path: "matchCount", label: "Matches found", example: "0" },
+      { path: "matched", label: "First matching record" },
+    ],
+  },
   // Resume Parser output (built-in or Affinda provider both map onto this).
   [NodeType.RESUME_PARSER]: {
     rootKind: "perNode",

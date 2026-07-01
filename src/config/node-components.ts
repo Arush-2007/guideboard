@@ -7,6 +7,7 @@ import { AtsActionNode } from "@/features/executions/components/ats-action/node"
 import { CandidateScoringNode } from "@/features/executions/components/candidate-scoring/node";
 import { ConditionNode } from "@/features/executions/components/condition/node";
 import { DiscordNode } from "@/features/executions/components/discord/node";
+import { RecordLookupNode } from "@/features/executions/components/record-lookup/node";
 import { GeminiNode } from "@/features/executions/components/gemini/node";
 import { GmailActionNode } from "@/features/executions/components/gmail-action/node";
 import { GoogleSheetsActionNode } from "@/features/executions/components/google-sheets-action/node";
@@ -53,6 +54,7 @@ export const nodeComponents = {
   [NodeType.ANTHROPIC]: AnthropicNode,
   [NodeType.CONDITION]: ConditionNode,
   [NodeType.SWITCH]: SwitchNode,
+  [NodeType.RECORD_LOOKUP]: RecordLookupNode,
   [NodeType.DISCORD]: DiscordNode,
   [NodeType.SLACK]: SlackNode,
   [NodeType.NOTION_ACTION]: NotionNode,

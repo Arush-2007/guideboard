@@ -78,6 +78,63 @@ const switchSchema = z
   })
   .passthrough();
 
+const recordLookupSchema = z
+  .object({
+    source: z.enum(["google_sheets", "notion"]).optional(),
+    value: z.string().min(1, "A value to search for is required"),
+    // google_sheets
+    spreadsheetId: z.string().optional(),
+    sheetName: z.string().optional(),
+    column: z.string().optional(),
+    // notion
+    credentialId: z.string().optional(),
+    databaseId: z.string().optional(),
+    property: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const source = data.source ?? "google_sheets";
+    if (source === "google_sheets") {
+      if (!data.spreadsheetId?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Spreadsheet is required",
+          path: ["spreadsheetId"],
+        });
+      if (!data.sheetName?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Sheet Name is required",
+          path: ["sheetName"],
+        });
+      if (!data.column?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Column is required",
+          path: ["column"],
+        });
+    } else {
+      if (!data.credentialId?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Notion credential is required",
+          path: ["credentialId"],
+        });
+      if (!data.databaseId?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Database ID is required",
+          path: ["databaseId"],
+        });
+      if (!data.property?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Property is required",
+          path: ["property"],
+        });
+    }
+  })
+  .passthrough();
+
 const openAiFamilySchema = apiPromptSchema.passthrough();
 
 const aiTextSchema = z
@@ -420,6 +477,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.ANTHROPIC]: openAiFamilySchema,
   [NodeType.CONDITION]: conditionSchema,
   [NodeType.SWITCH]: switchSchema,
+  [NodeType.RECORD_LOOKUP]: recordLookupSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,

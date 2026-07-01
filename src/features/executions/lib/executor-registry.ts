@@ -16,6 +16,7 @@ import { atsActionExecutor } from "../components/ats-action/executor";
 import { candidateScoringExecutor } from "../components/candidate-scoring/executor";
 import { conditionExecutor } from "../components/condition/executor";
 import { discordExecutor } from "../components/discord/executor";
+import { recordLookupExecutor } from "../components/record-lookup/executor";
 import { geminiExecutor } from "../components/gemini/executor";
 import { gmailActionExecutor } from "../components/gmail-action/executor";
 import { googleSheetsActionExecutor } from "../components/google-sheets-action/executor";
@@ -47,6 +48,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.ANTHROPIC]: anthropicExecutor,
   [NodeType.CONDITION]: conditionExecutor,
   [NodeType.SWITCH]: switchExecutor,
+  [NodeType.RECORD_LOOKUP]: recordLookupExecutor,
   [NodeType.OPENAI]: openAiExecutor,
   [NodeType.DISCORD]: discordExecutor,
   [NodeType.SLACK]: slackExecutor,

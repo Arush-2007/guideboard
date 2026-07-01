@@ -7,6 +7,7 @@ import { fetchAtsActionRealtimeToken } from "@/features/executions/components/at
 import { fetchCandidateScoringRealtimeToken } from "@/features/executions/components/candidate-scoring/actions";
 import { fetchConditionRealtimeToken } from "@/features/executions/components/condition/actions";
 import { fetchDiscordRealtimeToken } from "@/features/executions/components/discord/actions";
+import { fetchRecordLookupRealtimeToken } from "@/features/executions/components/record-lookup/actions";
 import { fetchGeminiRealtimeToken } from "@/features/executions/components/gemini/actions";
 import { fetchGmailActionRealtimeToken } from "@/features/executions/components/gmail-action/actions";
 import { fetchGoogleSheetsActionRealtimeToken } from "@/features/executions/components/google-sheets-action/actions";
@@ -39,6 +40,7 @@ import { ATS_ACTION_CHANNEL_NAME } from "@/inngest/channels/ats-action";
 import { CANDIDATE_SCORING_CHANNEL_NAME } from "@/inngest/channels/candidate-scoring";
 import { CONDITION_CHANNEL_NAME } from "@/inngest/channels/condition";
 import { DISCORD_CHANNEL_NAME } from "@/inngest/channels/discord";
+import { RECORD_LOOKUP_CHANNEL_NAME } from "@/inngest/channels/record-lookup";
 import { GEMINI_CHANNEL_NAME } from "@/inngest/channels/gemini";
 import { GMAIL_ACTION_CHANNEL_NAME } from "@/inngest/channels/gmail-action";
 import { GMAIL_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/gmail-trigger";
@@ -93,6 +95,10 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.SWITCH]: {
       channelName: SWITCH_CHANNEL_NAME,
       refreshToken: fetchSwitchRealtimeToken,
+    },
+    [NodeType.RECORD_LOOKUP]: {
+      channelName: RECORD_LOOKUP_CHANNEL_NAME,
+      refreshToken: fetchRecordLookupRealtimeToken,
     },
     [NodeType.MANUAL_TRIGGER]: {
       channelName: MANUAL_TRIGGER_CHANNEL_NAME,
