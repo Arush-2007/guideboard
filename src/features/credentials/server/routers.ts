@@ -651,4 +651,66 @@ export const credentialsRouter = createTRPCRouter({
       }))
       .filter((page) => page.id.length > 0);
   }),
+  // Mirrors getNotionPages, but lists DATABASES for the Notion node's
+  // "append to database" dropdown. A database's title lives at the top level
+  // (`result.title[]`), unlike a page's (`properties.title.title[]`).
+  getNotionDatabases: protectedProcedure.query(async ({ ctx }) => {
+    type NotionSearchResponse = {
+      results?: Array<{
+        id?: string;
+        title?: Array<{ plain_text?: string }>;
+      }>;
+    };
+
+    const credential = await prisma.credential.findFirst({
+      where: {
+        userId: ctx.auth.user.id,
+        type: CredentialType.NOTION,
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+      select: {
+        value: true,
+      },
+    });
+
+    if (!credential) {
+      return [] as Array<{ id: string; title: string }>;
+    }
+
+    let token = "";
+    try {
+      token = decrypt(credential.value).trim();
+    } catch {
+      return [] as Array<{ id: string; title: string }>;
+    }
+
+    if (!token) {
+      return [] as Array<{ id: string; title: string }>;
+    }
+
+    const data = await ky
+      .post("https://api.notion.com/v1/search", {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Notion-Version": "2022-06-28",
+          "Content-Type": "application/json",
+        },
+        json: {
+          filter: {
+            property: "object",
+            value: "database",
+          },
+        },
+      })
+      .json<NotionSearchResponse>();
+
+    return (data.results ?? [])
+      .map((db) => ({
+        id: db.id ?? "",
+        title: db.title?.[0]?.plain_text ?? "Untitled database",
+      }))
+      .filter((db) => db.id.length > 0);
+  }),
 });

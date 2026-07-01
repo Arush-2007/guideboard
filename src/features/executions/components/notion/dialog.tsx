@@ -3,7 +3,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useQuery } from "@tanstack/react-query";
 import Image from "next/image";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
 import { Button } from "@/components/ui/button";
@@ -24,7 +24,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -67,6 +66,13 @@ const formSchema = z
 
 export type NotionFormValues = z.infer<typeof formSchema>;
 
+// Sentinel dropdown option that switches the Database field to manual entry, so
+// a database ID can be typed or resolved dynamically from an upstream node.
+const DATABASE_MANUAL = "__manual__";
+// A value that carries a template placeholder can't come from the dropdown, so
+// it must be edited in the manual field.
+const looksTemplated = (value?: string) => !!value && /@<|{{/.test(value);
+
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -91,6 +97,8 @@ export const NotionDialog = ({
   const { data: notionPages = [], isLoading: isLoadingPages } = useQuery(
     trpc.credentials.getNotionPages.queryOptions(),
   );
+  const { data: notionDatabases = [], isLoading: isLoadingDatabases } =
+    useQuery(trpc.credentials.getNotionDatabases.queryOptions());
 
   const form = useForm<NotionFormValues>({
     resolver: zodResolver(formSchema),
@@ -104,6 +112,9 @@ export const NotionDialog = ({
     },
   });
 
+  // Whether the Database field is in manual/dynamic entry mode vs the dropdown.
+  const [databaseManual, setDatabaseManual] = useState(false);
+
   useEffect(() => {
     if (open) {
       form.reset({
@@ -114,8 +125,22 @@ export const NotionDialog = ({
         parentPageId: defaultValues.parentPageId || "",
         databaseId: defaultValues.databaseId || "",
       });
+      // A saved template can only be edited manually; a plain saved ID starts in
+      // the dropdown and is reconciled against the list once it loads (below).
+      setDatabaseManual(looksTemplated(defaultValues.databaseId));
     }
   }, [open, defaultValues, form]);
+
+  // Once databases load, if the saved ID isn't one of them (e.g. a hand-typed
+  // ID or a database not shared with the integration), reveal the manual field
+  // so the value stays visible and editable instead of silently hidden.
+  useEffect(() => {
+    if (!open || databaseManual || isLoadingDatabases) return;
+    const id = form.getValues("databaseId");
+    if (id && !notionDatabases.some((db) => db.id === id)) {
+      setDatabaseManual(true);
+    }
+  }, [open, databaseManual, isLoadingDatabases, notionDatabases, form]);
 
   useEffect(() => {
     if (autoSelected) {
@@ -282,17 +307,65 @@ export const NotionDialog = ({
                 name="databaseId"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Database ID</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder="UUID of the database"
-                        className="font-mono text-sm"
-                        {...field}
-                      />
-                    </FormControl>
+                    <FormLabel>Database</FormLabel>
+                    <Select
+                      value={databaseManual ? DATABASE_MANUAL : field.value}
+                      onValueChange={(value) => {
+                        if (value === DATABASE_MANUAL) {
+                          setDatabaseManual(true);
+                          field.onChange("");
+                        } else {
+                          setDatabaseManual(false);
+                          field.onChange(value);
+                        }
+                      }}
+                      disabled={isLoadingDatabases}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          {databaseManual ? (
+                            <span className="flex-1 text-center">
+                              Using Database ID
+                            </span>
+                          ) : (
+                            <SelectValue
+                              placeholder={
+                                isLoadingDatabases
+                                  ? "Loading databases..."
+                                  : "Select a database"
+                              }
+                            />
+                          )}
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {notionDatabases.map((db) => (
+                          <SelectItem key={db.id} value={db.id}>
+                            {db.title}
+                          </SelectItem>
+                        ))}
+                        <SelectItem value={DATABASE_MANUAL}>
+                          Use database ID…
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {databaseManual ? (
+                      <FormControl>
+                        <VariableInput
+                          placeholder="UUID of the database, or a {{variable}}"
+                          className="mt-2 font-mono text-sm"
+                          currentNodeId={currentNodeId}
+                          workflowId={workflowId}
+                          value={field.value}
+                          onChange={field.onChange}
+                        />
+                      </FormControl>
+                    ) : null}
                     <FormDescription>
-                      Title property must be named <strong>Name</strong> (Notion
-                      default). Supports {"{{templates}}"}.
+                      Choose one of your accessible Notion databases, or{" "}
+                      <strong>Use database ID</strong> to type an ID or pull one
+                      from an upstream node. Title property must be named{" "}
+                      <strong>Name</strong> (Notion default).
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
