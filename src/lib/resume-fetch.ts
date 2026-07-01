@@ -22,17 +22,63 @@ export type FetchedResume = {
 
 const PDF_MAGIC = "%PDF";
 
-/** Rewrites a Google Drive share/view URL to a direct-download URL. */
+// A Google Drive file ID: 25+ chars of URL-safe base64, no scheme/dots/slashes.
+// Google Forms file-upload answers are bare IDs of this shape.
+const DRIVE_ID_RE = /^[A-Za-z0-9_-]{25,}$/;
+
+/**
+ * Unwraps a Google Forms file-upload answer. Those arrive as an array of Drive
+ * file IDs which `renderTemplate` stringifies into the JSON literal `["<id>"]`,
+ * so we parse it and take the first entry. Anything else passes through.
+ */
+function unwrapFormUpload(url: string): string {
+  const s = url.trim();
+  if (s.startsWith("[")) {
+    try {
+      const arr = JSON.parse(s);
+      if (Array.isArray(arr) && typeof arr[0] === "string") {
+        return arr[0].trim();
+      }
+    } catch {
+      // not valid JSON — fall through and use the raw string
+    }
+  }
+  return s;
+}
+
+/**
+ * Rewrites a resume source into a direct-download URL. Handles Drive share/view
+ * links, Google Forms file-upload answers (a `["<fileId>"]` array or a bare file
+ * ID), and passes plain URLs through untouched.
+ */
 export function normalizeResumeUrl(url: string): string {
-  const driveFile = url.match(/drive\.google\.com\/file\/d\/([^/]+)/);
+  const raw = unwrapFormUpload(url);
+  const driveFile = raw.match(/drive\.google\.com\/file\/d\/([^/]+)/);
   if (driveFile?.[1]) {
     return `https://www.googleapis.com/drive/v3/files/${driveFile[1]}?alt=media`;
   }
-  const driveOpen = url.match(/drive\.google\.com\/open\?id=([^&]+)/);
+  const driveOpen = raw.match(/drive\.google\.com\/open\?id=([^&]+)/);
   if (driveOpen?.[1]) {
     return `https://www.googleapis.com/drive/v3/files/${driveOpen[1]}?alt=media`;
   }
-  return url;
+  // A bare Drive file ID (Google Forms upload) -> direct download URL.
+  if (DRIVE_ID_RE.test(raw)) {
+    return `https://www.googleapis.com/drive/v3/files/${raw}?alt=media`;
+  }
+  return raw;
+}
+
+/**
+ * Whether a source is (or resolves to) a Google Drive file, i.e. needs the
+ * user's Google access token to download. Covers Drive URLs, a bare file ID,
+ * and the Google Forms `["<fileId>"]` upload shape.
+ */
+export function isDriveSource(url: string): boolean {
+  const raw = unwrapFormUpload(url);
+  return (
+    /drive\.google\.com|googleapis\.com\/drive/.test(raw) ||
+    DRIVE_ID_RE.test(raw)
+  );
 }
 
 function looksLikePdf(bytes: Uint8Array, contentType: string | null): boolean {

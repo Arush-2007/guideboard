@@ -7,7 +7,7 @@ import { resumeParserChannel } from "@/inngest/channels/resume-parser";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
-import { fetchResumeText } from "@/lib/resume-fetch";
+import { fetchResumeText, isDriveSource } from "@/lib/resume-fetch";
 import { extractResumeFields } from "@/lib/resume-fields";
 import { renderTemplate } from "@/lib/templating";
 
@@ -44,10 +44,6 @@ type AffindaResumeResponse = {
   };
   meta?: { identifier?: string };
 };
-
-function isDriveUrl(url: string): boolean {
-  return /drive\.google\.com|googleapis\.com\/drive/.test(url);
-}
 
 export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
   data,
@@ -130,7 +126,7 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
     } else {
       // Built-in provider: download + extract text (free, runs today). Private
       // Google Drive files need the user's Google token; public URLs don't.
-      const accessToken = isDriveUrl(sourceUrl)
+      const accessToken = isDriveSource(sourceUrl)
         ? await refreshGoogleTokenIfNeeded(userId).catch(() => undefined)
         : undefined;
 
