@@ -7,6 +7,7 @@ import {
   Filter,
   GlobeIcon,
   MousePointerIcon,
+  Replace,
   Search,
   Split,
   Webhook,
@@ -121,6 +122,13 @@ export const executionNodeOptions: NodeOption[] = [
     label: "AI",
     description: "Generate text with OpenAI, Anthropic, or Gemini",
     icon: BrainCircuit,
+  },
+  {
+    type: NodeType.CONVERT,
+    label: "Convert",
+    description:
+      "Convert between formats: PDF→text, CSV↔JSON, HTML→text, Markdown→HTML",
+    icon: Replace,
   },
   {
     type: NodeType.DISCORD,

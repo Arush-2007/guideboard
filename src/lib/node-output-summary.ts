@@ -1,4 +1,5 @@
 import { NodeType } from "@/generated/prisma";
+import { type ConversionKind, conversionOption } from "@/lib/conversions";
 
 /**
  * Per-node "what happened" summary line for the execution page's Friendly output
@@ -77,6 +78,10 @@ export const nodeSummaries: Partial<Record<NodeType, NodeSummary>> = {
     output?.appendedRows != null
       ? `Appended ${str(output.appendedRows)} row(s) to the sheet.`
       : "Updated the sheet.",
+  [NodeType.CONVERT]: ({ output }) =>
+    typeof output?.conversion === "string"
+      ? `Converted: ${conversionOption(output.conversion as ConversionKind).label}.`
+      : "Converted the input.",
   [NodeType.INSTAGRAM_REPLY_COMMENT]: () => "Reply posted to the comment.",
   [NodeType.YOUTUBE_REPLY_COMMENT]: () => "Reply posted to the comment.",
 };

@@ -6,8 +6,8 @@ import { AnthropicNode } from "@/features/executions/components/anthropic/node";
 import { AtsActionNode } from "@/features/executions/components/ats-action/node";
 import { CandidateScoringNode } from "@/features/executions/components/candidate-scoring/node";
 import { ConditionNode } from "@/features/executions/components/condition/node";
+import { ConvertNode } from "@/features/executions/components/convert/node";
 import { DiscordNode } from "@/features/executions/components/discord/node";
-import { RecordLookupNode } from "@/features/executions/components/record-lookup/node";
 import { GeminiNode } from "@/features/executions/components/gemini/node";
 import { GmailActionNode } from "@/features/executions/components/gmail-action/node";
 import { GoogleSheetsActionNode } from "@/features/executions/components/google-sheets-action/node";
@@ -15,6 +15,7 @@ import { HttpRequestNode } from "@/features/executions/components/http-request/n
 import { InstagramReplyNode } from "@/features/executions/components/instagram-reply-comment/node";
 import { NotionNode } from "@/features/executions/components/notion/node";
 import { OpenAiNode } from "@/features/executions/components/openai/node";
+import { RecordLookupNode } from "@/features/executions/components/record-lookup/node";
 import { ResumeParserNode } from "@/features/executions/components/resume-parser/node";
 import { SlackNode } from "@/features/executions/components/slack/node";
 import { SwitchNode } from "@/features/executions/components/switch/node";
@@ -55,6 +56,7 @@ export const nodeComponents = {
   [NodeType.CONDITION]: ConditionNode,
   [NodeType.SWITCH]: SwitchNode,
   [NodeType.RECORD_LOOKUP]: RecordLookupNode,
+  [NodeType.CONVERT]: ConvertNode,
   [NodeType.DISCORD]: DiscordNode,
   [NodeType.SLACK]: SlackNode,
   [NodeType.NOTION_ACTION]: NotionNode,

@@ -1,5 +1,6 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
+import { CONVERSION_KINDS } from "@/lib/conversions";
 
 type AnyZodSchema = z.ZodTypeAny;
 
@@ -132,6 +133,13 @@ const recordLookupSchema = z
           path: ["property"],
         });
     }
+  })
+  .passthrough();
+
+const convertSchema = z
+  .object({
+    conversion: z.enum(CONVERSION_KINDS as [string, ...string[]]),
+    input: z.string().min(1, "An input value is required"),
   })
   .passthrough();
 
@@ -478,6 +486,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.CONDITION]: conditionSchema,
   [NodeType.SWITCH]: switchSchema,
   [NodeType.RECORD_LOOKUP]: recordLookupSchema,
+  [NodeType.CONVERT]: convertSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,
