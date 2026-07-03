@@ -32,13 +32,22 @@ import {
 import { VariableInput } from "@/components/variable-input";
 import { VariableTextarea } from "@/components/variable-textarea";
 import {
-  CONVERSION_KINDS,
-  CONVERSION_OPTIONS,
-  conversionOption,
+  asFormat,
+  describeSelection,
+  FORMAT_META,
+  type Format,
+  inputKindForSelection,
+  inputPlaceholderFor,
+  sourcesForTarget,
+  TARGET_FORMATS,
 } from "@/lib/conversions";
 
+const AUTO = "auto";
+
 const formSchema = z.object({
-  conversion: z.enum(CONVERSION_KINDS as [string, ...string[]]),
+  to: z.enum(TARGET_FORMATS as [string, ...string[]]),
+  // "auto" (or omitted) means auto-detect the source at runtime.
+  from: z.string().optional(),
   input: z.string().min(1, "An input value is required"),
 });
 
@@ -53,6 +62,8 @@ interface Props {
   workflowId?: string;
 }
 
+const DEFAULT_TARGET = TARGET_FORMATS[0];
+
 export const ConvertDialog = ({
   open,
   onOpenChange,
@@ -64,7 +75,8 @@ export const ConvertDialog = ({
   const form = useForm<ConvertFormValues>({
     resolver: zodResolver(formSchema),
     defaultValues: {
-      conversion: defaultValues.conversion ?? "pdf_to_text",
+      to: defaultValues.to ?? DEFAULT_TARGET,
+      from: defaultValues.from ?? AUTO,
       input: defaultValues.input ?? "",
     },
   });
@@ -72,19 +84,36 @@ export const ConvertDialog = ({
   useEffect(() => {
     if (open) {
       form.reset({
-        conversion: defaultValues.conversion ?? "pdf_to_text",
+        to: defaultValues.to ?? DEFAULT_TARGET,
+        from: defaultValues.from ?? AUTO,
         input: defaultValues.input ?? "",
       });
     }
   }, [open, defaultValues, form]);
 
-  const conversion = form.watch(
-    "conversion",
-  ) as ConvertFormValues["conversion"];
-  const option = conversionOption(conversion);
+  const to = form.watch("to") as Format;
+  const fromValue = form.watch("from") ?? AUTO;
+  const from = fromValue === AUTO ? undefined : asFormat(fromValue);
+
+  const sourceOptions = sourcesForTarget(to);
+
+  // If the pinned source can't produce the newly-selected target, fall back to
+  // auto-detect so the form never holds an impossible (from, to) pair.
+  useEffect(() => {
+    if (from && !sourceOptions.includes(from)) {
+      form.setValue("from", AUTO);
+    }
+  }, [from, sourceOptions, form]);
+
+  const inputKind = inputKindForSelection(to, from);
+  const placeholder = inputPlaceholderFor(to, from);
 
   const handleSubmit = (values: ConvertFormValues) => {
-    onSubmit(values);
+    onSubmit({
+      ...values,
+      // Don't persist the "auto" sentinel — an absent `from` means auto-detect.
+      from: values.from === AUTO ? undefined : values.from,
+    });
     onOpenChange(false);
   };
 
@@ -94,8 +123,9 @@ export const ConvertDialog = ({
         <DialogHeader>
           <DialogTitle>Convert</DialogTitle>
           <DialogDescription>
-            Convert data from one format to another. The result is available
-            downstream as <span className="font-mono">result</span>.
+            Convert data to a fixed target format. The input format is
+            auto-detected unless you pin it. The result is available downstream
+            as <span className="font-mono">result</span>.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -103,31 +133,65 @@ export const ConvertDialog = ({
             onSubmit={form.handleSubmit(handleSubmit)}
             className="mt-4 space-y-6"
           >
-            <FormField
-              control={form.control}
-              name="conversion"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Conversion</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {CONVERSION_OPTIONS.map((o) => (
-                        <SelectItem key={o.value} value={o.value}>
-                          {o.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <FormDescription>{option.description}</FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
+            <div className="flex items-start gap-4">
+              <FormField
+                control={form.control}
+                name="from"
+                render={({ field }) => (
+                  <FormItem className="flex-1">
+                    <FormLabel>Source format</FormLabel>
+                    <Select
+                      onValueChange={field.onChange}
+                      value={field.value ?? AUTO}
+                    >
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value={AUTO}>Auto-detect</SelectItem>
+                        {sourceOptions.map((f) => (
+                          <SelectItem key={f} value={f}>
+                            {FORMAT_META[f].label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="to"
+                render={({ field }) => (
+                  <FormItem className="flex-1">
+                    <FormLabel>Convert to</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {TARGET_FORMATS.map((f) => (
+                          <SelectItem key={f} value={f}>
+                            {FORMAT_META[f].label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <p className="text-muted-foreground text-sm">
+              {describeSelection(to, from)}
+            </p>
 
             <FormField
               control={form.control}
@@ -135,12 +199,12 @@ export const ConvertDialog = ({
               render={({ field }) => (
                 <FormItem>
                   <FormLabel>
-                    {option.inputKind === "url" ? "Source URL" : "Input"}
+                    {inputKind === "url" ? "Source URL" : "Input"}
                   </FormLabel>
                   <FormControl>
-                    {option.inputKind === "url" ? (
+                    {inputKind === "url" ? (
                       <VariableInput
-                        placeholder={option.placeholder}
+                        placeholder={placeholder}
                         currentNodeId={currentNodeId}
                         workflowId={workflowId}
                         {...field}
@@ -148,7 +212,7 @@ export const ConvertDialog = ({
                     ) : (
                       <VariableTextarea
                         rows={6}
-                        placeholder={option.placeholder}
+                        placeholder={placeholder}
                         currentNodeId={currentNodeId}
                         workflowId={workflowId}
                         {...field}

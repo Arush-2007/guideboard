@@ -1,10 +1,11 @@
 /**
  * Implementations for the generic Convert node. Each pure converter is a
- * `(input: string) => unknown` keyed by `ConversionKind` in `syncConverters`, so
- * adding a new synchronous conversion is a one-line change here (+ one entry in
- * `conversions.ts`). The `pdf_to_text` conversion is intentionally NOT here — it
- * needs an async network fetch (and per-user Drive auth), so the executor handles
- * it via `resume-fetch.ts` directly.
+ * `(input: string) => unknown` keyed by its `(from, to)` pair in
+ * `textConverters`, so adding a new synchronous conversion is a one-line change
+ * here (+ one entry in `conversions.ts`). The `pdf → text` conversion is
+ * intentionally NOT here — it needs an async network fetch (and per-user Drive
+ * auth), so the executor handles it via `resume-fetch.ts` directly (engine
+ * `"text-fetch"` in the matrix).
  *
  * All converters are dependency-light and serverless-safe (no native modules),
  * and throw plain `Error`s on bad input; the executor maps those to
@@ -13,10 +14,7 @@
 
 import { decode } from "html-entities";
 import { marked } from "marked";
-import type { ConversionKind } from "@/lib/conversions";
-
-/** Converters that run synchronously on an in-memory string (no I/O). */
-export type SyncConversionKind = Exclude<ConversionKind, "pdf_to_text">;
+import { type Format, pairKey } from "@/lib/conversions";
 
 /**
  * RFC 4180-ish CSV parser: handles quoted fields, escaped quotes (`""`), and
@@ -152,12 +150,22 @@ export function markdownToHtml(input: string): string {
   return marked.parse(input, { async: false }) as string;
 }
 
-export const syncConverters: Record<
-  SyncConversionKind,
-  (input: string) => unknown
-> = {
-  csv_to_json: csvToJson,
-  json_to_csv: jsonToCsv,
-  html_to_text: htmlToText,
-  markdown_to_html: markdownToHtml,
+/**
+ * The in-process (engine `"text-sync"`) converters, keyed by `(from, to)` pair
+ * so the executor can dispatch straight from the capability matrix. Keep in sync
+ * with the `"text-sync"` entries in `CONVERSIONS` (`conversions.ts`); the drift
+ * guard in `conversions.test.ts` fails if a pair is declared without a handler.
+ */
+export const textConverters: Record<string, (input: string) => unknown> = {
+  [pairKey("csv", "json")]: csvToJson,
+  [pairKey("json", "csv")]: jsonToCsv,
+  [pairKey("html", "text")]: htmlToText,
+  [pairKey("markdown", "html")]: markdownToHtml,
 };
+
+/** Resolves the sync converter for a `(from, to)` pair, if one exists. */
+export const getTextConverter = (
+  from: Format,
+  to: Format,
+): ((input: string) => unknown) | undefined =>
+  textConverters[pairKey(from, to)];

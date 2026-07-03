@@ -20,6 +20,8 @@
     "@ai-sdk/google": "^3.0.80",
     "@ai-sdk/groq": "^3.0.41",
     "@ai-sdk/openai": "^3.0.67",
+    "@aws-sdk/client-s3": "^3.1078.0",
+    "@aws-sdk/s3-request-presigner": "^3.1078.0",
     "@hookform/resolvers": "^5.2.2",
     "@inngest/realtime": "^0.4.4",
     "@paralleldrive/cuid2": "^2.2.2",

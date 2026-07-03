@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   csvToJson,
+  getTextConverter,
   htmlToText,
   jsonToCsv,
   markdownToHtml,
@@ -94,5 +95,20 @@ describe("markdownToHtml", () => {
     const html = markdownToHtml("# Title\n\nSome **bold** text.");
     expect(html).toContain("<h1");
     expect(html).toContain("<strong>bold</strong>");
+  });
+});
+
+describe("getTextConverter", () => {
+  it("dispatches by (from,to) pair", () => {
+    expect(getTextConverter("csv", "json")).toBe(csvToJson);
+    expect(getTextConverter("json", "csv")).toBe(jsonToCsv);
+    expect(getTextConverter("html", "text")).toBe(htmlToText);
+    expect(getTextConverter("markdown", "html")).toBe(markdownToHtml);
+  });
+
+  it("returns undefined for pairs without an in-process converter", () => {
+    // pdf -> text is the async fetch path, not a sync converter.
+    expect(getTextConverter("pdf", "text")).toBeUndefined();
+    expect(getTextConverter("json", "text")).toBeUndefined();
   });
 });

@@ -272,13 +272,22 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       { path: "matched", label: "First matching record" },
     ],
   },
-  // Convert node: the converted value (text, or an array for CSV→JSON) plus the
-  // conversion that produced it.
+  // Convert node: the converted value (text/array for text conversions, or the
+  // stored file's URL for binary ones) plus the detected source + fixed target,
+  // and — for binary outputs — the blob handle (URL + metadata).
   [NodeType.CONVERT]: {
     rootKind: "perNode",
     fields: [
       { path: "result", label: "Converted result" },
-      { path: "conversion", label: "Conversion", example: "csv_to_json" },
+      { path: "from", label: "Source format", example: "pdf" },
+      { path: "to", label: "Target format", example: "text" },
+      { path: "file.url", label: "File URL (binary output)" },
+      {
+        path: "file.contentType",
+        label: "File type",
+        example: "image/png",
+        developer: true,
+      },
     ],
   },
   // Resume Parser output (built-in or Affinda provider both map onto this).

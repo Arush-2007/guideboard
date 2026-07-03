@@ -93,15 +93,24 @@ async function pdfToText(bytes: Uint8Array): Promise<string> {
   return Array.isArray(text) ? text.join("\n") : text;
 }
 
+export type FetchedBytes = {
+  bytes: Uint8Array;
+  /** The response `content-type`, if the server sent one. */
+  contentType: string | null;
+};
+
 /**
- * Downloads `url` and returns its text. `accessToken` (a Google OAuth token) is
- * sent as a Bearer header — required for private Drive files, harmless for
- * public URLs. Uses the global `fetch` so it runs in any (edge/node) runtime.
+ * Downloads `url` and returns its raw bytes (+ content-type). Rewrites Google
+ * Drive share links / Forms uploads to a direct-download URL and, when an
+ * `accessToken` (Google OAuth) is given, sends it as a Bearer header — required
+ * for private Drive files, harmless for public URLs. Uses the global `fetch` so
+ * it runs in any (edge/node) runtime. This is the shared download primitive:
+ * `fetchResumeText` and the Convert node's binary path both build on it.
  */
-export async function fetchResumeText(
+export async function fetchBytes(
   url: string,
   opts: { accessToken?: string } = {},
-): Promise<FetchedResume> {
+): Promise<FetchedBytes> {
   const target = normalizeResumeUrl(url);
   const headers: Record<string, string> = {};
   if (opts.accessToken) headers.Authorization = `Bearer ${opts.accessToken}`;
@@ -109,23 +118,37 @@ export async function fetchResumeText(
   const res = await fetch(target, { headers });
   if (!res.ok) {
     throw new Error(
-      `Resume fetch failed: ${res.status} ${res.statusText} for ${target}`,
+      `Fetch failed: ${res.status} ${res.statusText} for ${target}`,
     );
   }
 
-  const buffer = new Uint8Array(await res.arrayBuffer());
-  const contentType = res.headers.get("content-type");
+  return {
+    bytes: new Uint8Array(await res.arrayBuffer()),
+    contentType: res.headers.get("content-type"),
+  };
+}
 
-  if (looksLikePdf(buffer, contentType)) {
+/**
+ * Downloads `url` and returns its text. PDFs (by content-type or `%PDF` magic
+ * bytes) are extracted with `unpdf`; anything else is decoded as UTF-8. Builds
+ * on `fetchBytes` for the download + Drive-auth handling.
+ */
+export async function fetchResumeText(
+  url: string,
+  opts: { accessToken?: string } = {},
+): Promise<FetchedResume> {
+  const { bytes, contentType } = await fetchBytes(url, opts);
+
+  if (looksLikePdf(bytes, contentType)) {
     return {
-      text: await pdfToText(buffer),
+      text: await pdfToText(bytes),
       kind: "pdf",
-      byteLength: buffer.byteLength,
+      byteLength: bytes.byteLength,
     };
   }
   return {
-    text: new TextDecoder().decode(buffer),
+    text: new TextDecoder().decode(bytes),
     kind: "text",
-    byteLength: buffer.byteLength,
+    byteLength: bytes.byteLength,
   };
 }

@@ -1,6 +1,6 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
-import { CONVERSION_KINDS } from "@/lib/conversions";
+import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
 
 type AnyZodSchema = z.ZodTypeAny;
 
@@ -136,10 +136,26 @@ const recordLookupSchema = z
   })
   .passthrough();
 
+// Dynamic source + fixed target. `to` is the definite output format; `from` is
+// optional (auto-detected at runtime when omitted). `conversion` is the legacy
+// single-enum field — accepted so pre-restructure nodes still validate; the
+// executor normalizes it to a `(from, to)` pair. A node must carry either the
+// new `to` or the legacy `conversion`.
 const convertSchema = z
   .object({
-    conversion: z.enum(CONVERSION_KINDS as [string, ...string[]]),
+    to: z.enum(TARGET_FORMATS as [string, ...string[]]).optional(),
+    from: z.enum(SOURCE_FORMATS as [string, ...string[]]).optional(),
+    conversion: z.string().optional(),
     input: z.string().min(1, "An input value is required"),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.to && !data.conversion) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A target format is required",
+        path: ["to"],
+      });
+    }
   })
   .passthrough();
 

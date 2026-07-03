@@ -127,7 +127,7 @@ export const executionNodeOptions: NodeOption[] = [
     type: NodeType.CONVERT,
     label: "Convert",
     description:
-      "Convert between formats: PDF→text, CSV↔JSON, HTML→text, Markdown→HTML",
+      "Convert to a fixed target format (input auto-detected): text (PDF/HTML→text, CSV↔JSON, Markdown→HTML), images (JPG/PNG/WebP), PDF, and audio/video (MP4/MOV/MP3)",
     icon: Replace,
   },
   {
