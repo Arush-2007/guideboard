@@ -136,6 +136,9 @@ export const auth = betterAuth({
               "https://www.googleapis.com/auth/spreadsheets",
               "https://www.googleapis.com/auth/gmail.modify",
               "https://www.googleapis.com/auth/drive.readonly",
+              // Read a Google Form's structure (questions) for the trigger's
+              // "Load questions" discovery — see credentials.getGoogleFormQuestions.
+              "https://www.googleapis.com/auth/forms.body.readonly",
             ],
             accessType: "offline",
             prompt: "consent",

@@ -1,5 +1,6 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
+import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
 
 type AnyZodSchema = z.ZodTypeAny;
 
@@ -75,6 +76,86 @@ const switchSchema = z
         }),
       )
       .optional(),
+  })
+  .passthrough();
+
+const recordLookupSchema = z
+  .object({
+    source: z.enum(["google_sheets", "notion"]).optional(),
+    value: z.string().min(1, "A value to search for is required"),
+    // google_sheets
+    spreadsheetId: z.string().optional(),
+    sheetName: z.string().optional(),
+    column: z.string().optional(),
+    // notion
+    credentialId: z.string().optional(),
+    databaseId: z.string().optional(),
+    property: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    const source = data.source ?? "google_sheets";
+    if (source === "google_sheets") {
+      if (!data.spreadsheetId?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Spreadsheet is required",
+          path: ["spreadsheetId"],
+        });
+      if (!data.sheetName?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Sheet Name is required",
+          path: ["sheetName"],
+        });
+      if (!data.column?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Column is required",
+          path: ["column"],
+        });
+    } else {
+      if (!data.credentialId?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Notion credential is required",
+          path: ["credentialId"],
+        });
+      if (!data.databaseId?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Database ID is required",
+          path: ["databaseId"],
+        });
+      if (!data.property?.trim())
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Property is required",
+          path: ["property"],
+        });
+    }
+  })
+  .passthrough();
+
+// Dynamic source + fixed target. `to` is the definite output format; `from` is
+// optional (auto-detected at runtime when omitted). `conversion` is the legacy
+// single-enum field — accepted so pre-restructure nodes still validate; the
+// executor normalizes it to a `(from, to)` pair. A node must carry either the
+// new `to` or the legacy `conversion`.
+const convertSchema = z
+  .object({
+    to: z.enum(TARGET_FORMATS as [string, ...string[]]).optional(),
+    from: z.enum(SOURCE_FORMATS as [string, ...string[]]).optional(),
+    conversion: z.string().optional(),
+    input: z.string().min(1, "An input value is required"),
+  })
+  .superRefine((data, ctx) => {
+    if (!data.to && !data.conversion) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "A target format is required",
+        path: ["to"],
+      });
+    }
   })
   .passthrough();
 
@@ -273,13 +354,138 @@ const googleSheetsActionSchema = z
   })
   .passthrough();
 
+const compareOperatorEnum = z.enum([
+  "contains",
+  "not_contains",
+  "equals",
+  "not_equals",
+  "greater_than",
+  "less_than",
+  "is_empty",
+  "is_not_empty",
+]);
+
+const resumeParserSchema = z
+  .object({
+    provider: z.enum(["builtin", "affinda"]).optional(),
+    sourceUrl: z.string().min(1, "Resume URL is required"),
+    skillKeywords: z.string().optional(),
+    credentialId: z.string().optional(),
+    workspaceId: z.string().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.provider === "affinda" && !data.credentialId?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "An Affinda credential is required",
+        path: ["credentialId"],
+      });
+    }
+  })
+  .passthrough();
+
+const candidateScoringSchema = z
+  .object({
+    provider: z.enum(["rules", "affinda"]).optional(),
+    shortlistThreshold: z.coerce.number().optional(),
+    reviewThreshold: z.coerce.number().optional(),
+    rules: z
+      .array(
+        z.object({
+          id: z.string().optional(),
+          label: z.string().optional(),
+          field: z.string().min(1, "Field is required"),
+          operator: compareOperatorEnum,
+          value: z.string().optional(),
+          points: z.coerce.number(),
+          required: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+    credentialId: z.string().optional(),
+    jobDescriptionId: z.string().optional(),
+    resumeId: z.string().optional(),
+    indexName: z.string().optional(),
+    weights: z.record(z.string(), z.number()).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const provider = data.provider ?? "rules";
+    if (provider === "rules") {
+      if (!data.rules || data.rules.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Add at least one scoring rule",
+          path: ["rules"],
+        });
+      }
+    } else {
+      if (!data.credentialId?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "An Affinda credential is required",
+          path: ["credentialId"],
+        });
+      }
+      if (!data.jobDescriptionId?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A job description id is required",
+          path: ["jobDescriptionId"],
+        });
+      }
+    }
+  })
+  .passthrough();
+
+const atsActionSchema = z
+  .object({
+    provider: z.enum(["lever"]).optional(),
+    environment: z.enum(["sandbox", "production"]).optional(),
+    credentialId: z.string().min(1, "A credential is required"),
+    performAsUserId: z.string().min(1, "A 'perform as' user id is required"),
+    name: z.string().min(1, "Candidate name is required"),
+    email: z.string().optional(),
+    resumeUrl: z.string().optional(),
+    note: z.string().optional(),
+    stageId: z.string().optional(),
+    postingId: z.string().optional(),
+  })
+  .passthrough();
+
+// Generic Typeform trigger config: the connected credential, selected form, and
+// its discovered fields (each `{ path, label }` so the variable picker can expose
+// them). No domain-specific (HR) fields — any workflow can consume the responses.
+const typeformTriggerSchema = z
+  .object({
+    credentialId: z.string().optional(),
+    formId: z.string().optional(),
+    formTitle: z.string().optional(),
+    discoveredFields: z
+      .array(z.object({ path: z.string(), label: z.string() }))
+      .optional(),
+  })
+  .passthrough();
+
+// Generic Google Form trigger config: the selected form + its discovered
+// questions (each `{ path, label }` so the variable picker can expose them).
+// No domain-specific (HR) fields — any workflow can consume the raw responses.
+const googleFormTriggerSchema = z
+  .object({
+    formId: z.string().optional(),
+    formTitle: z.string().optional(),
+    discoveredFields: z
+      .array(z.object({ path: z.string(), label: z.string() }))
+      .optional(),
+  })
+  .passthrough();
+
 // One schema per NodeType (must not guess field names)
 const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.INITIAL]: emptyPassthroughSchema,
   [NodeType.HTTP_REQUEST]: httpRequestSchema,
   [NodeType.MANUAL_TRIGGER]: emptyPassthroughSchema,
-  [NodeType.GOOGLE_FORM_TRIGGER]: emptyPassthroughSchema,
-  [NodeType.TYPEFORM_TRIGGER]: emptyPassthroughSchema,
+  [NodeType.GOOGLE_FORM_TRIGGER]: googleFormTriggerSchema,
+  [NodeType.TYPEFORM_TRIGGER]: typeformTriggerSchema,
   [NodeType.GMAIL_TRIGGER]: emptyPassthroughSchema,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerSchema,
   [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerSchema,
@@ -295,6 +501,8 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.ANTHROPIC]: openAiFamilySchema,
   [NodeType.CONDITION]: conditionSchema,
   [NodeType.SWITCH]: switchSchema,
+  [NodeType.RECORD_LOOKUP]: recordLookupSchema,
+  [NodeType.CONVERT]: convertSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,
@@ -305,6 +513,9 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.WHATSAPP_ACTION]: whatsappActionSchema,
   [NodeType.GMAIL_ACTION]: gmailActionSchema,
   [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionSchema,
+  [NodeType.RESUME_PARSER]: resumeParserSchema,
+  [NodeType.CANDIDATE_SCORING]: candidateScoringSchema,
+  [NodeType.ATS_ACTION]: atsActionSchema,
 };
 
 export function parseNodeConfig(type: NodeType, data: unknown) {

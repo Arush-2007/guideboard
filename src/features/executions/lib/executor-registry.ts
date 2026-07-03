@@ -12,7 +12,10 @@ import { NodeType } from "@/generated/prisma";
 import { aiReplyGeneratorExecutor } from "../components/ai-reply-generator/executor";
 import { aiTextExecutor } from "../components/ai-text/executor";
 import { anthropicExecutor } from "../components/anthropic/executor";
+import { atsActionExecutor } from "../components/ats-action/executor";
+import { candidateScoringExecutor } from "../components/candidate-scoring/executor";
 import { conditionExecutor } from "../components/condition/executor";
+import { convertExecutor } from "../components/convert/executor";
 import { discordExecutor } from "../components/discord/executor";
 import { geminiExecutor } from "../components/gemini/executor";
 import { gmailActionExecutor } from "../components/gmail-action/executor";
@@ -21,6 +24,8 @@ import { httpRequestExecutor } from "../components/http-request/executor";
 import { instagramReplyExecutor } from "../components/instagram-reply-comment/executor";
 import { notionExecutor } from "../components/notion/executor";
 import { openAiExecutor } from "../components/openai/executor";
+import { recordLookupExecutor } from "../components/record-lookup/executor";
+import { resumeParserExecutor } from "../components/resume-parser/executor";
 import { slackExecutor } from "../components/slack/executor";
 import { switchExecutor } from "../components/switch/executor";
 import { telegramActionExecutor } from "../components/telegram-action/executor";
@@ -44,6 +49,8 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.ANTHROPIC]: anthropicExecutor,
   [NodeType.CONDITION]: conditionExecutor,
   [NodeType.SWITCH]: switchExecutor,
+  [NodeType.RECORD_LOOKUP]: recordLookupExecutor,
+  [NodeType.CONVERT]: convertExecutor,
   [NodeType.OPENAI]: openAiExecutor,
   [NodeType.DISCORD]: discordExecutor,
   [NodeType.SLACK]: slackExecutor,
@@ -57,6 +64,9 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerExecutor,
   [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerExecutor,
   [NodeType.WEBHOOK_TRIGGER]: webhookTriggerExecutor,
+  [NodeType.RESUME_PARSER]: resumeParserExecutor,
+  [NodeType.CANDIDATE_SCORING]: candidateScoringExecutor,
+  [NodeType.ATS_ACTION]: atsActionExecutor,
 };
 
 export const getExecutor = (type: NodeType): NodeExecutor => {

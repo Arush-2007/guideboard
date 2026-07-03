@@ -46,7 +46,33 @@ export type UpstreamFieldRow = {
   example?: string;
 };
 
-type GraphNode = { id: string; type?: string | null; ref?: string | null };
+type GraphNode = {
+  id: string;
+  type?: string | null;
+  ref?: string | null;
+  /**
+   * A node's saved config (kept loose so React Flow's `Node[]` is assignable).
+   * Read here only for `discoveredFields` — fields a node learned at config time
+   * (e.g. a Google Form's questions via "Load questions"), each carrying the
+   * exact `@<path>@` to reference it. This lets a node expose a dynamic,
+   * user-defined output schema on top of its static `node-outputs` descriptor,
+   * without baking domain-specific fields into the registry.
+   */
+  data?: Record<string, unknown> | null;
+};
+
+type DiscoveredField = { path: string; label: string; example?: string };
+
+/** Safely reads a node's saved `discoveredFields` (untyped `data` blob). */
+function readDiscoveredFields(data: GraphNode["data"]): DiscoveredField[] {
+  const raw = (data as { discoveredFields?: unknown } | null | undefined)
+    ?.discoveredFields;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (f): f is DiscoveredField =>
+      !!f && typeof (f as DiscoveredField).path === "string",
+  );
+}
 
 /**
  * Flattened, ordered list of pickable fields from every node upstream of
@@ -95,6 +121,20 @@ export function getUpstreamFields(
         nodeLabel,
         fieldLabel: "Whole output",
         insertText: `@<${getOutputKeyForNode(String(node.type), id, node.ref)}>@`,
+      });
+    }
+
+    // Append any dynamically discovered fields the node saved (e.g. a Google
+    // Form's questions). These carry their own ready-to-insert path, so they
+    // layer on top of the static descriptor for the same node.
+    for (const field of readDiscoveredFields(node.data)) {
+      rows.push({
+        nodeId: id,
+        nodeType: String(node.type),
+        nodeLabel,
+        fieldLabel: field.label || field.path,
+        insertText: `@<${field.path}>@`,
+        example: field.example,
       });
     }
   }

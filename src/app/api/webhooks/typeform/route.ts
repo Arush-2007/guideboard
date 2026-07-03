@@ -11,6 +11,44 @@ import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { verifyTypeformWebhookSignature } from "@/lib/webhook-verify";
 
+type TypeformAnswer = {
+  type?: string;
+  field?: { id?: string; ref?: string };
+  [key: string]: unknown;
+};
+
+/** Pulls the scalar value out of a Typeform answer based on its `type`. */
+function answerValue(answer: TypeformAnswer): string {
+  switch (answer.type) {
+    case "choice":
+      return String((answer.choice as { label?: string })?.label ?? "");
+    case "choices":
+      return ((answer.choices as { labels?: string[] })?.labels ?? []).join(
+        ", ",
+      );
+    default: {
+      // text / email / phone_number / number / boolean / url / date / file_url —
+      // each stored under a key matching the answer `type`.
+      const value = answer[answer.type ?? ""];
+      return value == null ? "" : String(value);
+    }
+  }
+}
+
+/** Builds a `{ ref|id: value }` map from a Typeform answers array. */
+function extractTypeformFields(answers: unknown[]): Record<string, string> {
+  const fields: Record<string, string> = {};
+  for (const raw of answers) {
+    const answer = raw as TypeformAnswer;
+    const value = answerValue(answer);
+    const ref = answer.field?.ref;
+    const id = answer.field?.id;
+    if (ref) fields[ref] = value;
+    if (id) fields[id] = value;
+  }
+  return fields;
+}
+
 export async function POST(request: NextRequest) {
   try {
     if (!isAllowed("webhook:typeform", 100, 60_000)) {
@@ -95,10 +133,16 @@ export async function POST(request: NextRequest) {
         : "";
     const answers = JSON.stringify(formResponse?.answers ?? []);
 
+    // Project answers into an addressable `fields` map keyed by the question's
+    // author-set `ref` (and `id` as a fallback), so a trigger's applicant
+    // mapping can reference a specific question (e.g. the resume `file_url`).
+    const fields = extractTypeformFields(formResponse?.answers ?? []);
+
     const typeformData = {
       formId,
       submittedAt,
       answers,
+      fields,
       raw: body,
     };
 

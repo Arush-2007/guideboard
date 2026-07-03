@@ -1,9 +1,14 @@
 import {
   BrainCircuit,
+  Building2,
+  ClipboardCheck,
   Clock,
+  FileText,
   Filter,
   GlobeIcon,
   MousePointerIcon,
+  Replace,
+  Search,
   Split,
   Webhook,
 } from "lucide-react";
@@ -106,10 +111,24 @@ export const executionNodeOptions: NodeOption[] = [
     icon: Split,
   },
   {
+    type: NodeType.RECORD_LOOKUP,
+    label: "Record Lookup",
+    description:
+      "Check if a value exists in a Google Sheet or Notion database — returns true/false",
+    icon: Search,
+  },
+  {
     type: NodeType.AI_TEXT,
     label: "AI",
     description: "Generate text with OpenAI, Anthropic, or Gemini",
     icon: BrainCircuit,
+  },
+  {
+    type: NodeType.CONVERT,
+    label: "Convert",
+    description:
+      "Convert to a fixed target format (input auto-detected): text (PDF/HTML→text, CSV↔JSON, Markdown→HTML), images (JPG/PNG/WebP), PDF, and audio/video (MP4/MOV/MP3)",
+    icon: Replace,
   },
   {
     type: NodeType.DISCORD,
@@ -153,6 +172,26 @@ export const executionNodeOptions: NodeOption[] = [
     label: "Google Sheets",
     description: "Append or read rows in a spreadsheet",
     icon: "/logos/google-sheets.svg",
+  },
+  {
+    type: NodeType.RESUME_PARSER,
+    label: "Resume Parser",
+    description:
+      "Extract text and key fields from an applicant's resume (built-in or Affinda)",
+    icon: FileText,
+  },
+  {
+    type: NodeType.CANDIDATE_SCORING,
+    label: "Candidate Scoring",
+    description:
+      "Score applicants with a rules scorecard or Affinda fit match, then route shortlist/review/reject",
+    icon: ClipboardCheck,
+  },
+  {
+    type: NodeType.ATS_ACTION,
+    label: "ATS — Create Candidate",
+    description: "Push a shortlisted candidate into your ATS (Lever)",
+    icon: Building2,
   },
   {
     type: NodeType.INSTAGRAM_REPLY_COMMENT,

@@ -1,17 +1,19 @@
 "use client";
 
-import { CredentialType } from "@/generated/prisma";
-import Image from "next/image";
-import { useRouter } from "next/navigation";
-import {
-  useCreateCredential,
-  useUpdateCredential,
-  useSuspenseCredential,
-} from "../hooks/use-credentials";
-import { useUpgradeModal } from "@/hooks/use-upgrade-modal";
-import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
+import Image from "next/image";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
 import z from "zod";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Form,
   FormControl,
@@ -28,16 +30,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import Link from "next/link";
+import { CredentialType } from "@/generated/prisma";
+import { useUpgradeModal } from "@/hooks/use-upgrade-modal";
 import { cn } from "@/lib/utils";
+import {
+  useCreateCredential,
+  useSuspenseCredential,
+  useUpdateCredential,
+} from "../hooks/use-credentials";
 
 const formSchema = z
   .object({
@@ -119,6 +119,21 @@ const credentialTypeOptions = [
     value: CredentialType.GROQ,
     label: "Groq",
     logo: "/logos/groq.svg",
+  },
+  {
+    value: CredentialType.AFFINDA,
+    label: "Affinda",
+    logo: "/logos/affinda.svg",
+  },
+  {
+    value: CredentialType.LEVER,
+    label: "Lever",
+    logo: "/logos/lever.svg",
+  },
+  {
+    value: CredentialType.TYPEFORM,
+    label: "Typeform",
+    logo: "/logos/typeform.svg",
   },
 ];
 
@@ -237,10 +252,7 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
         </CardHeader>
         <CardContent>
           <Form {...form}>
-            <form
-              onSubmit={form.handleSubmit(onSubmit)}
-              className="space-y-6"
-            >
+            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
               <FormField
                 control={form.control}
                 name="name"
@@ -264,10 +276,7 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Type</FormLabel>
-                    <Select
-                      onValueChange={field.onChange}
-                      value={field.value}
-                    >
+                    <Select onValueChange={field.onChange} value={field.value}>
                       <FormControl>
                         <SelectTrigger
                           className={cn(
@@ -281,10 +290,7 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                       </FormControl>
                       <SelectContent>
                         {credentialTypeOptions.map((option) => (
-                          <SelectItem
-                            key={option.value}
-                            value={option.value}
-                          >
+                          <SelectItem key={option.value} value={option.value}>
                             <div className="flex items-center gap-2">
                               <Image
                                 src={option.logo}
@@ -355,7 +361,7 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                             ? "Internal integration token"
                             : watchedType === CredentialType.WHATSAPP
                               ? "Credential JSON"
-                            : "API Key"}
+                              : "API Key"}
                       </FormLabel>
                       <FormControl>
                         <Input
@@ -366,12 +372,19 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                               : watchedType === CredentialType.NOTION
                                 ? "secret_..."
                                 : watchedType === CredentialType.WHATSAPP
-                                  ? "{\"accessToken\":\"EA...\",\"phoneNumberId\":\"123456789012345\"}"
-                                : watchedType === CredentialType.XAI
-                                  ? "xai-..."
-                                  : watchedType === CredentialType.GROQ
-                                    ? "gsk_..."
-                                    : "sk-..."
+                                  ? '{"accessToken":"EA...","phoneNumberId":"123456789012345"}'
+                                  : watchedType === CredentialType.XAI
+                                    ? "xai-..."
+                                    : watchedType === CredentialType.GROQ
+                                      ? "gsk_..."
+                                      : watchedType === CredentialType.AFFINDA
+                                        ? "aff_..."
+                                        : watchedType === CredentialType.LEVER
+                                          ? "Lever API key"
+                                          : watchedType ===
+                                              CredentialType.TYPEFORM
+                                            ? "tfp_... (Forms: Read + Webhooks: Read, Write)"
+                                            : "sk-..."
                           }
                           {...field}
                         />
@@ -405,11 +418,7 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
   );
 };
 
-export const CredentialView = ({
-  credentialId,
-}: {
-  credentialId: string;
-}) => {
+export const CredentialView = ({ credentialId }: { credentialId: string }) => {
   const { data: credential } = useSuspenseCredential(credentialId);
 
   return <CredentialForm initialData={credential} />;

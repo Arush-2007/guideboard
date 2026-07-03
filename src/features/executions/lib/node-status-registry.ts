@@ -3,7 +3,10 @@ import type { Realtime } from "@inngest/realtime";
 import { fetchAiReplyGeneratorRealtimeToken } from "@/features/executions/components/ai-reply-generator/actions";
 import { fetchAiTextRealtimeToken } from "@/features/executions/components/ai-text/actions";
 import { fetchAnthropicRealtimeToken } from "@/features/executions/components/anthropic/actions";
+import { fetchAtsActionRealtimeToken } from "@/features/executions/components/ats-action/actions";
+import { fetchCandidateScoringRealtimeToken } from "@/features/executions/components/candidate-scoring/actions";
 import { fetchConditionRealtimeToken } from "@/features/executions/components/condition/actions";
+import { fetchConvertRealtimeToken } from "@/features/executions/components/convert/actions";
 import { fetchDiscordRealtimeToken } from "@/features/executions/components/discord/actions";
 import { fetchGeminiRealtimeToken } from "@/features/executions/components/gemini/actions";
 import { fetchGmailActionRealtimeToken } from "@/features/executions/components/gmail-action/actions";
@@ -12,6 +15,8 @@ import { fetchHttpRequestRealtimeToken } from "@/features/executions/components/
 import { fetchInstagramReplyRealtimeToken } from "@/features/executions/components/instagram-reply-comment/actions";
 import { fetchNotionRealtimeToken } from "@/features/executions/components/notion/actions";
 import { fetchOpenAiRealtimeToken } from "@/features/executions/components/openai/actions";
+import { fetchRecordLookupRealtimeToken } from "@/features/executions/components/record-lookup/actions";
+import { fetchResumeParserRealtimeToken } from "@/features/executions/components/resume-parser/actions";
 import { fetchSlackRealtimeToken } from "@/features/executions/components/slack/actions";
 import { fetchSwitchRealtimeToken } from "@/features/executions/components/switch/actions";
 import { fetchTelegramActionRealtimeToken } from "@/features/executions/components/telegram-action/actions";
@@ -32,7 +37,10 @@ import { NodeType } from "@/generated/prisma";
 import { AI_REPLY_GENERATOR_CHANNEL_NAME } from "@/inngest/channels/ai-reply-generator";
 import { AI_TEXT_CHANNEL_NAME } from "@/inngest/channels/ai-text";
 import { ANTHROPIC_CHANNEL_NAME } from "@/inngest/channels/anthropic";
+import { ATS_ACTION_CHANNEL_NAME } from "@/inngest/channels/ats-action";
+import { CANDIDATE_SCORING_CHANNEL_NAME } from "@/inngest/channels/candidate-scoring";
 import { CONDITION_CHANNEL_NAME } from "@/inngest/channels/condition";
+import { CONVERT_CHANNEL_NAME } from "@/inngest/channels/convert";
 import { DISCORD_CHANNEL_NAME } from "@/inngest/channels/discord";
 import { GEMINI_CHANNEL_NAME } from "@/inngest/channels/gemini";
 import { GMAIL_ACTION_CHANNEL_NAME } from "@/inngest/channels/gmail-action";
@@ -46,6 +54,8 @@ import { INSTAGRAM_REPLY_COMMENT_CHANNEL_NAME } from "@/inngest/channels/instagr
 import { MANUAL_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/manual-trigger";
 import { NOTION_CHANNEL_NAME } from "@/inngest/channels/notion";
 import { OPENAI_CHANNEL_NAME } from "@/inngest/channels/openai";
+import { RECORD_LOOKUP_CHANNEL_NAME } from "@/inngest/channels/record-lookup";
+import { RESUME_PARSER_CHANNEL_NAME } from "@/inngest/channels/resume-parser";
 import { SCHEDULE_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/schedule-trigger";
 import { SLACK_CHANNEL_NAME } from "@/inngest/channels/slack";
 import { SWITCH_CHANNEL_NAME } from "@/inngest/channels/switch";
@@ -87,6 +97,14 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.SWITCH]: {
       channelName: SWITCH_CHANNEL_NAME,
       refreshToken: fetchSwitchRealtimeToken,
+    },
+    [NodeType.RECORD_LOOKUP]: {
+      channelName: RECORD_LOOKUP_CHANNEL_NAME,
+      refreshToken: fetchRecordLookupRealtimeToken,
+    },
+    [NodeType.CONVERT]: {
+      channelName: CONVERT_CHANNEL_NAME,
+      refreshToken: fetchConvertRealtimeToken,
     },
     [NodeType.MANUAL_TRIGGER]: {
       channelName: MANUAL_TRIGGER_CHANNEL_NAME,
@@ -183,6 +201,18 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.GOOGLE_SHEETS_ACTION]: {
       channelName: GOOGLE_SHEETS_ACTION_CHANNEL_NAME,
       refreshToken: fetchGoogleSheetsActionRealtimeToken,
+    },
+    [NodeType.RESUME_PARSER]: {
+      channelName: RESUME_PARSER_CHANNEL_NAME,
+      refreshToken: fetchResumeParserRealtimeToken,
+    },
+    [NodeType.CANDIDATE_SCORING]: {
+      channelName: CANDIDATE_SCORING_CHANNEL_NAME,
+      refreshToken: fetchCandidateScoringRealtimeToken,
+    },
+    [NodeType.ATS_ACTION]: {
+      channelName: ATS_ACTION_CHANNEL_NAME,
+      refreshToken: fetchAtsActionRealtimeToken,
     },
   };
 

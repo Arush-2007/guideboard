@@ -262,10 +262,98 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     rootKind: "perNode",
     fields: [{ path: "matched", label: "Matched branch", example: "Default" }],
   },
+  // Record Lookup: whether a value exists in a store (+ how many, + first match).
+  // Non-branching — feed `exists` into a Condition node to route.
+  [NodeType.RECORD_LOOKUP]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "exists", label: "Exists ?", example: "false" },
+      { path: "matchCount", label: "Matches found", example: "0" },
+      { path: "matched", label: "First matching record" },
+    ],
+  },
+  // Convert node: the converted value (text/array for text conversions, or the
+  // stored file's URL for binary ones) plus the detected source + fixed target,
+  // and — for binary outputs — the blob handle (URL + metadata).
+  [NodeType.CONVERT]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "result", label: "Converted result" },
+      { path: "from", label: "Source format", example: "pdf" },
+      { path: "to", label: "Target format", example: "text" },
+      { path: "file.url", label: "File URL (binary output)" },
+      {
+        path: "file.contentType",
+        label: "File type",
+        example: "image/png",
+        developer: true,
+      },
+    ],
+  },
+  // Resume Parser output (built-in or Affinda provider both map onto this).
+  [NodeType.RESUME_PARSER]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "resumeText", label: "Resume text" },
+      {
+        path: "skills",
+        label: "Detected skills",
+        example: "React, TypeScript",
+      },
+      {
+        path: "totalYearsExperience",
+        label: "Total years experience",
+        example: "3",
+      },
+      { path: "emails", label: "Emails found", example: "ada@example.com" },
+      { path: "affindaResumeId", label: "Affinda resume ID", developer: true },
+    ],
+  },
+  // Candidate Scoring decision (the basis for the downstream Switch).
+  [NodeType.CANDIDATE_SCORING]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "decision", label: "Decision", example: "SHORTLIST" },
+      { path: "score", label: "Score", example: "75" },
+      { path: "reasons", label: "Reasons" },
+    ],
+  },
+  // ATS candidate record.
+  [NodeType.ATS_ACTION]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "url", label: "Candidate URL" },
+      { path: "opportunityId", label: "Opportunity ID", developer: true },
+    ],
+  },
+  // The Typeform trigger is GENERIC: it exposes the raw submission under
+  // `typeform`. The base fields below are always present; the specific per-form
+  // questions are added dynamically from the node's saved `discoveredFields`
+  // ("Load questions" in the dialog) by the variable picker (see upstream-fields).
+  [NodeType.TYPEFORM_TRIGGER]: {
+    rootKind: "fixed",
+    rootKey: "typeform",
+    fields: [
+      { path: "formId", label: "Form ID", developer: true },
+      { path: "submittedAt", label: "Submitted at" },
+      { path: "fields", label: "All answers (raw)" },
+    ],
+  },
+  // The Google Form trigger is GENERIC: it exposes the raw submission. The base
+  // fields below are always present; the specific per-form questions are added
+  // dynamically from the node's saved `discoveredFields` ("Load questions" in the
+  // dialog) by the variable picker (see upstream-fields.ts).
+  [NodeType.GOOGLE_FORM_TRIGGER]: {
+    rootKind: "fixed",
+    rootKey: "googleForm",
+    fields: [
+      { path: "respondentEmail", label: "Respondent email" },
+      { path: "formTitle", label: "Form title" },
+      { path: "responses", label: "All responses (raw)" },
+    ],
+  },
   // Intentionally NOT declared (the raw view still shows their data):
   //   - MANUAL_TRIGGER / INITIAL: no fixed output shape (manual payload varies).
-  //   - GOOGLE_FORM_TRIGGER / TYPEFORM_TRIGGER: the submission is arbitrary,
-  //     form-defined fields with no stable schema to enumerate.
 };
 
 /**
