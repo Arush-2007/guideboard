@@ -1,5 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import Image from "next/image";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -17,15 +23,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { VariableInput } from "@/components/variable-input";
-import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
-import { CredentialType } from "@/generated/prisma";
 import {
   Select,
   SelectContent,
@@ -33,7 +30,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import Image from "next/image";
+import { VariableInput } from "@/components/variable-input";
+import { VariableTextarea } from "@/components/variable-textarea";
+import { INTEGRATIONS } from "@/config/integrations";
+import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
+import { CredentialType } from "@/generated/prisma";
 
 const formSchema = z.object({
   credentialId: z.string().min(1, "Credential is required"),
@@ -103,7 +104,7 @@ export const TelegramActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Telegram</DialogTitle>
+          <DialogTitle>Send Telegram</DialogTitle>
           <DialogDescription>
             Send a message with your bot via the Telegram Bot API.
           </DialogDescription>
@@ -158,7 +159,7 @@ export const TelegramActionDialog = ({
                           <SelectItem key={c.id} value={c.id}>
                             <div className="flex items-center gap-2">
                               <Image
-                                src="/logos/telegram.svg"
+                                src={INTEGRATIONS.telegram.icon}
                                 alt=""
                                 width={16}
                                 height={16}

@@ -10,6 +10,7 @@ import type { AnthropicFormValues } from "./dialog";
 const AnthropicDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.AnthropicDialog),
 );
+import { INTEGRATIONS } from "@/config/integrations";
 import { useNodeStatus } from "../../hooks/use-node-status";
 
 type AnthropicNodeData = {
@@ -69,8 +70,8 @@ export const AnthropicNode = memo((props: NodeProps<AnthropicNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/anthropic.svg"
-        name="Anthropic"
+        icon={INTEGRATIONS.anthropic.icon}
+        name={INTEGRATIONS.anthropic.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

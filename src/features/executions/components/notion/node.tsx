@@ -10,7 +10,11 @@ import type { NotionFormValues } from "./dialog";
 const NotionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.NotionDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.NOTION_ACTION);
 
 type NotionNodeData = {
   credentialId?: string;
@@ -71,8 +75,8 @@ export const NotionNode = memo((props: NodeProps<NotionFlowNode>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/notion.svg"
-        name="Notion"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

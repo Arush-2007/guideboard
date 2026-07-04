@@ -31,6 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { INTEGRATIONS } from "@/config/integrations";
 import { useTRPC } from "@/trpc/client";
 
 const aiReplySettingsSchema = z.object({
@@ -94,7 +95,7 @@ export const InstagramSettings = () => {
         <CardTitle className="flex items-center gap-2 text-lg">
           <span className="flex size-9 items-center justify-center rounded-xl bg-primary/10">
             <Image
-              src="/logos/xai.svg"
+              src={INTEGRATIONS.xai.icon}
               alt="AI Reply Settings"
               width={22}
               height={22}

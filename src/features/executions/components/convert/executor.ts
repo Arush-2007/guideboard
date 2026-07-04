@@ -13,6 +13,7 @@ import {
   resolveConversion,
 } from "@/lib/conversions";
 import { getTextConverter } from "@/lib/converters";
+import { FileTooLargeError } from "@/lib/file-limits";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { logger } from "@/lib/logger";
 import {
@@ -48,6 +49,7 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
   data,
   nodeId,
   outputKey,
+  executionId,
   userId,
   context,
   step,
@@ -188,11 +190,13 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
 
         file = await step.run(`convert-store-${from}-${to}`, async () => {
           const { bytes, contentType } = await fetchMediaResult(jobId, to);
+          // Deterministic per (execution, node): a retried store overwrites its
+          // own object instead of orphaning the previous attempt's upload, and
+          // pruneOldExecutions can GC by `conversions/<userId>/<executionId>/`.
           return putBlob({
             bytes,
             contentType,
-            userId,
-            ext: FORMAT_META[to].ext ?? to,
+            key: `conversions/${userId}/${executionId}/${nodeId}.${FORMAT_META[to].ext ?? to}`,
           });
         });
         result = file.url;
@@ -209,6 +213,15 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
   } catch (error) {
     await publish(convertChannel(userId).status({ nodeId, status: "error" }));
     if (error instanceof NonRetriableError) throw error;
+    // An oversized file is a user-fixable input problem on any engine —
+    // retrying won't shrink it. Matched by name as well because an error
+    // re-surfaced from a step.run keeps the name but not the class.
+    if (
+      error instanceof FileTooLargeError ||
+      (error instanceof Error && error.name === "FileTooLargeError")
+    ) {
+      throw new NonRetriableError(error.message);
+    }
     // Binary conversions hit the network/provider — those failures are
     // transient, so let Inngest retry. Text conversions are deterministic given
     // their input, so a failure won't improve on retry → mark non-retriable.

@@ -10,7 +10,11 @@ import type { InstagramReplyFormValues } from "./dialog";
 const InstagramReplyDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.InstagramReplyDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.INSTAGRAM_REPLY_COMMENT);
 
 type InstagramReplyNodeData = {
   variableName?: string;
@@ -62,8 +66,8 @@ export const InstagramReplyNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon="/logos/instagram.svg"
-          name="Instagram Reply"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

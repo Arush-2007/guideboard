@@ -1,5 +1,11 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import Image from "next/image";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -17,14 +23,6 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
-import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
-import { CredentialType } from "@/generated/prisma";
 import {
   Select,
   SelectContent,
@@ -32,7 +30,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import Image from "next/image";
+import { VariableTextarea } from "@/components/variable-textarea";
+import { INTEGRATIONS } from "@/config/integrations";
+import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
+import { CredentialType } from "@/generated/prisma";
 
 const formSchema = z.object({
   credentialId: z.string().min(1, "Credential is required"),
@@ -100,7 +101,7 @@ export const GeminiDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Gemini Configuration</DialogTitle>
+          <DialogTitle>Gemini</DialogTitle>
           <DialogDescription>
             Configure the AI model and prompts for this node.
           </DialogDescription>
@@ -155,8 +156,8 @@ export const GeminiDialog = ({
                           <SelectItem key={credential.id} value={credential.id}>
                             <div className="flex items-center gap-2">
                               <Image
-                                src="/logos/gemini.svg"
-                                alt="Gemini"
+                                src={INTEGRATIONS.gemini.icon}
+                                alt={INTEGRATIONS.gemini.label}
                                 width={16}
                                 height={16}
                                 unoptimized

@@ -12,6 +12,7 @@
  */
 
 import { extractText, getDocumentProxy } from "unpdf";
+import { assertWithinTransferLimit } from "./file-limits";
 
 export type FetchedResume = {
   text: string;
@@ -122,8 +123,17 @@ export async function fetchBytes(
     );
   }
 
+  // Size guard before AND after buffering: the header check avoids pulling an
+  // oversized body into memory at all; the byte check catches absent/lying
+  // Content-Length.
+  const declared = res.headers.get("content-length");
+  assertWithinTransferLimit(declared ? Number(declared) : null, "The file");
+
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  assertWithinTransferLimit(bytes.byteLength, "The file");
+
   return {
-    bytes: new Uint8Array(await res.arrayBuffer()),
+    bytes,
     contentType: res.headers.get("content-type"),
   };
 }

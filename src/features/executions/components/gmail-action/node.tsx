@@ -11,6 +11,10 @@ import type { GmailActionFormValues } from "./dialog";
 const GmailActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GmailActionDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.GMAIL_ACTION);
 
 type GmailActionNodeData = {
   to?: string | string[];
@@ -73,8 +77,8 @@ export const GmailActionNode = memo((props: NodeProps<GmailActionNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/gmail.svg"
-        name="Send Email"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

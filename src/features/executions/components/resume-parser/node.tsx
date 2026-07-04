@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { FileText } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { ResumeParserFormValues } from "./dialog";
@@ -12,6 +13,8 @@ import type { ResumeParserFormValues } from "./dialog";
 const ResumeParserDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.ResumeParserDialog),
 );
+
+const option = getNodeOption(NodeType.RESUME_PARSER);
 
 type ResumeParserNodeData = {
   provider?: "builtin" | "affinda";
@@ -63,8 +66,8 @@ export const ResumeParserNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon={FileText}
-          name="Resume Parser"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

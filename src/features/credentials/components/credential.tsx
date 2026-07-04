@@ -23,6 +23,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { getCredentialIntegration } from "@/config/integrations";
 import {
   Select,
   SelectContent,
@@ -74,68 +75,22 @@ const formSchema = z
 
 type FormValues = z.infer<typeof formSchema>;
 
+// Labels/logos come from the integrations registry; only the dropdown order
+// is decided here.
 const credentialTypeOptions = [
-  {
-    value: CredentialType.OPENAI,
-    label: "OpenAI",
-    logo: "/logos/openai.svg",
-  },
-  {
-    value: CredentialType.ANTHROPIC,
-    label: "Anthropic",
-    logo: "/logos/anthropic.svg",
-  },
-  {
-    value: CredentialType.GEMINI,
-    label: "Gemini",
-    logo: "/logos/gemini.svg",
-  },
-  {
-    value: CredentialType.INSTAGRAM,
-    label: "Instagram",
-    logo: "/logos/instagram.svg",
-  },
-  {
-    value: CredentialType.NOTION,
-    label: "Notion",
-    logo: "/logos/notion.svg",
-  },
-  {
-    value: CredentialType.TELEGRAM,
-    label: "Telegram",
-    logo: "/logos/telegram.svg",
-  },
-  {
-    value: CredentialType.WHATSAPP,
-    label: "WhatsApp",
-    logo: "/logos/whatsapp.svg",
-  },
-  {
-    value: CredentialType.XAI,
-    label: "xAI (Grok)",
-    logo: "/logos/xai.svg",
-  },
-  {
-    value: CredentialType.GROQ,
-    label: "Groq",
-    logo: "/logos/groq.svg",
-  },
-  {
-    value: CredentialType.AFFINDA,
-    label: "Affinda",
-    logo: "/logos/affinda.svg",
-  },
-  {
-    value: CredentialType.LEVER,
-    label: "Lever",
-    logo: "/logos/lever.svg",
-  },
-  {
-    value: CredentialType.TYPEFORM,
-    label: "Typeform",
-    logo: "/logos/typeform.svg",
-  },
-];
+  CredentialType.OPENAI,
+  CredentialType.ANTHROPIC,
+  CredentialType.GEMINI,
+  CredentialType.INSTAGRAM,
+  CredentialType.NOTION,
+  CredentialType.TELEGRAM,
+  CredentialType.WHATSAPP,
+  CredentialType.XAI,
+  CredentialType.GROQ,
+  CredentialType.AFFINDA,
+  CredentialType.LEVER,
+  CredentialType.TYPEFORM,
+].map((value) => ({ value, ...getCredentialIntegration(value) }));
 
 interface CredentialFormProps {
   initialData?: {
@@ -293,7 +248,7 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
                           <SelectItem key={option.value} value={option.value}>
                             <div className="flex items-center gap-2">
                               <Image
-                                src={option.logo}
+                                src={option.icon}
                                 alt={option.label}
                                 width={16}
                                 height={16}

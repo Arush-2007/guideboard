@@ -30,13 +30,33 @@ vi.mock("@aws-sdk/client-s3", () => ({
       this.input = input;
     }
   },
+  ListObjectsV2Command: class {
+    kind = "list";
+    input: unknown;
+    constructor(input: unknown) {
+      this.input = input;
+    }
+  },
+  DeleteObjectsCommand: class {
+    kind = "deleteMany";
+    input: unknown;
+    constructor(input: unknown) {
+      this.input = input;
+    }
+  },
 }));
 
 vi.mock("@aws-sdk/s3-request-presigner", () => ({
   getSignedUrl: getSignedUrlMock,
 }));
 
-import { getSignedBlobUrl, isBlobConfigured, putBlob } from "./blob";
+import {
+  deleteBlobsByPrefix,
+  getBlobJson,
+  getSignedBlobUrl,
+  isBlobConfigured,
+  putBlob,
+} from "./blob";
 
 const CONFIGURED_ENV: Record<string, string> = {
   R2_ACCOUNT_ID: "acct-123",
@@ -94,6 +114,23 @@ describe("putBlob", () => {
       Key: handle.key,
       Body: bytes,
       ContentType: "image/jpeg",
+    });
+  });
+
+  it("uses an explicit key verbatim when provided", async () => {
+    const handle = await putBlob({
+      bytes: new Uint8Array([1, 2]),
+      contentType: "application/json",
+      key: "replay-contexts/exec1/node1.json",
+    });
+
+    expect(handle.key).toBe("replay-contexts/exec1/node1.json");
+    const sent = sendMock.mock.calls[0][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(sent.input).toMatchObject({
+      Key: "replay-contexts/exec1/node1.json",
+      ContentType: "application/json",
     });
   });
 
@@ -168,5 +205,79 @@ describe("getSignedBlobUrl", () => {
     await getSignedBlobUrl("conversions/u1/abc.jpg");
     const [, , opts] = getSignedUrlMock.mock.calls[0];
     expect(opts).toEqual({ expiresIn: 3600 });
+  });
+});
+
+describe("getBlobJson", () => {
+  it("downloads and parses the object body", async () => {
+    sendMock.mockResolvedValueOnce({
+      Body: { transformToString: async () => '{"a":1}' },
+    });
+    await expect(getBlobJson("replay-contexts/e1/n1.json")).resolves.toEqual({
+      a: 1,
+    });
+
+    const sent = sendMock.mock.calls[0][0] as {
+      kind: string;
+      input: Record<string, unknown>;
+    };
+    expect(sent.kind).toBe("get");
+    expect(sent.input).toMatchObject({ Key: "replay-contexts/e1/n1.json" });
+  });
+
+  it("throws when the object has no body", async () => {
+    sendMock.mockResolvedValueOnce({});
+    await expect(getBlobJson("missing.json")).rejects.toThrow(/no body/);
+  });
+});
+
+describe("deleteBlobsByPrefix", () => {
+  it("lists pages and batch-deletes every key under the prefix", async () => {
+    sendMock
+      // Page 1: two keys, truncated.
+      .mockResolvedValueOnce({
+        Contents: [
+          { Key: "conversions/u1/e1/a.jpg" },
+          { Key: "conversions/u1/e1/b.pdf" },
+        ],
+        IsTruncated: true,
+        NextContinuationToken: "tok2",
+      })
+      // Its delete.
+      .mockResolvedValueOnce({})
+      // Page 2: one key, final.
+      .mockResolvedValueOnce({
+        Contents: [{ Key: "conversions/u1/e1/c.mp3" }],
+        IsTruncated: false,
+      })
+      // Its delete.
+      .mockResolvedValueOnce({});
+
+    const deleted = await deleteBlobsByPrefix("conversions/u1/e1/");
+    expect(deleted).toBe(3);
+
+    const kinds = sendMock.mock.calls.map(
+      (c) => (c[0] as { kind: string }).kind,
+    );
+    expect(kinds).toEqual(["list", "deleteMany", "list", "deleteMany"]);
+
+    const secondList = sendMock.mock.calls[2][0] as {
+      input: Record<string, unknown>;
+    };
+    expect(secondList.input).toMatchObject({ ContinuationToken: "tok2" });
+
+    const firstDelete = sendMock.mock.calls[1][0] as {
+      input: { Delete: { Objects: Array<{ Key: string }> } };
+    };
+    expect(firstDelete.input.Delete.Objects).toEqual([
+      { Key: "conversions/u1/e1/a.jpg" },
+      { Key: "conversions/u1/e1/b.pdf" },
+    ]);
+  });
+
+  it("skips the delete call when the prefix matches nothing", async () => {
+    sendMock.mockResolvedValueOnce({ Contents: [], IsTruncated: false });
+    await expect(deleteBlobsByPrefix("conversions/none/")).resolves.toBe(0);
+    expect(sendMock).toHaveBeenCalledTimes(1);
   });
 });

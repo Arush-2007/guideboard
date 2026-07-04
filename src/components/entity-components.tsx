@@ -217,11 +217,15 @@ export const ErrorView = ({
 
 interface EmptyViewProps extends StateViewProps {
   onNew?: () => void;
+  title?: string;
+  newLabel?: string;
 };
 
 export const EmptyView = ({
   message,
-  onNew
+  onNew,
+  title = "No items",
+  newLabel = "Add item",
 }: EmptyViewProps) => {
   return (
     <Empty className="rounded-3xl border border-dashed border-border/80 bg-card/90">
@@ -231,7 +235,7 @@ export const EmptyView = ({
         </EmptyMedia>
       </EmptyHeader>
       <EmptyTitle>
-        No items
+        {title}
       </EmptyTitle>
       {!!message && (
         <EmptyDescription>
@@ -241,7 +245,7 @@ export const EmptyView = ({
       {!!onNew && (
         <EmptyContent>
           <Button onClick={onNew}>
-            Add item
+            {newLabel}
           </Button>
         </EmptyContent>
       )}

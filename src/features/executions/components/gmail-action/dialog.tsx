@@ -95,11 +95,11 @@ export const GmailActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Compose email</DialogTitle>
+          <DialogTitle>Send Email</DialogTitle>
           <DialogDescription>
             Sent from your connected Google account. Insert data from earlier
             steps with the <span className="font-mono">{"{ }"}</span> button —
-            it drops in a <span className="font-mono">{"@<field>@"}</span>{" "}
+            it drops in a <span className="font-mono">{"!#field#!"}</span>{" "}
             placeholder.
           </DialogDescription>
         </DialogHeader>
@@ -120,7 +120,7 @@ export const GmailActionDialog = ({
                       onChange={field.onChange}
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}
-                      placeholder="name@example.com or @<field>@"
+                      placeholder="name@example.com or !#field#!"
                     />
                   </FormControl>
                   <FormDescription>
@@ -159,7 +159,7 @@ export const GmailActionDialog = ({
                   <FormLabel>Body</FormLabel>
                   <FormControl>
                     <VariableTextarea
-                      placeholder="Hi @<telegram.from.firstName>@, …"
+                      placeholder="Hi !#telegram.from.firstName#!, …"
                       className="min-h-[140px] text-sm"
                       currentNodeId={currentNodeId}
                       workflowId={workflowId}

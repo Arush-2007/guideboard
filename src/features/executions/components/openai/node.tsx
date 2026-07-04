@@ -10,6 +10,7 @@ import type { OpenAiFormValues } from "./dialog";
 const OpenAiDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.OpenAiDialog),
 );
+import { INTEGRATIONS } from "@/config/integrations";
 import { useNodeStatus } from "../../hooks/use-node-status";
 
 type OpenAiNodeData = {
@@ -69,8 +70,8 @@ export const OpenAiNode = memo((props: NodeProps<OpenAiNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/openai.svg"
-        name="OpenAi"
+        icon={INTEGRATIONS.openai.icon}
+        name={INTEGRATIONS.openai.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

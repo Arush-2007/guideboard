@@ -17,10 +17,11 @@ import {
   Panel,
   ReactFlow,
   ReactFlowProvider,
+  useNodesInitialized,
   useReactFlow,
 } from "@xyflow/react";
 import { LocateFixedIcon, MinusIcon, PlusIcon } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ErrorView, LoadingView } from "@/components/entity-components";
 import { useSuspenseWorkflow } from "@/features/workflows/hooks/use-workflows";
 
@@ -31,7 +32,6 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
-import { nextNodeRef, nodeTypeHasRef } from "@/lib/node-ref";
 import {
   editorAtom,
   STAGED_NODE_MIME,
@@ -93,6 +93,25 @@ const MiniMapWithControls = () => {
       </div>
     </div>
   );
+};
+
+// The `fitView` prop only runs at mount, before custom nodes have measured
+// dimensions, so it can land zoomed in off-center. Re-fit once after all nodes
+// report as initialized so opening a workflow matches the minimap's center
+// button. Must be a child of <ReactFlow> so the hooks see the flow store.
+const FitViewOnLoad = () => {
+  const { fitView } = useReactFlow();
+  const nodesInitialized = useNodesInitialized();
+  const hasFit = useRef(false);
+
+  useEffect(() => {
+    if (nodesInitialized && !hasFit.current) {
+      hasFit.current = true;
+      fitView({ maxZoom: 1.4 });
+    }
+  }, [nodesInitialized, fitView]);
+
+  return null;
 };
 
 export const EditorLoading = () => {
@@ -162,23 +181,12 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
           (node) => node.type === NodeType.INITIAL,
         );
 
-        // Assign the frozen ref at drop time (before any field can reference
-        // this node), so the variable picker shows `AI_TEXT_1` immediately and
-        // references are ref-based from the start — no rewrite ever needed.
-        const existingRefs = current
-          .map((node) => (node as { ref?: string | null }).ref)
-          .filter((ref): ref is string => Boolean(ref));
-        const ref = nodeTypeHasRef(staged.type)
-          ? nextNodeRef(staged.type, existingRefs)
-          : null;
-
-        const newNode = {
+        const newNode: Node = {
           id: createId(),
           type: staged.type,
           position,
           data: {},
-          ref,
-        } as Node;
+        };
 
         return hasInitialTrigger ? [newNode] : [...current, newNode];
       });
@@ -268,6 +276,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             panOnDrag={false}
             selectionOnDrag
           >
+            <FitViewOnLoad />
             <Background
               variant={backgroundConfig.variant}
               gap={backgroundConfig.gap}

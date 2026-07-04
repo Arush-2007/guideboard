@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { Filter } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { ConditionFormValues } from "./dialog";
 import { CONDITION_OUTPUT_HANDLES } from "./handles";
@@ -14,6 +15,8 @@ const ConditionDialog = dynamic(() =>
 );
 
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.CONDITION);
 
 type ConditionNodeData = {
   field?: string;
@@ -71,8 +74,8 @@ export const ConditionNode = memo((props: NodeProps<ConditionNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon={Filter}
-        name="Condition"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         outputs={[...CONDITION_OUTPUT_HANDLES]}

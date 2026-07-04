@@ -9,7 +9,11 @@ import type { GoogleSheetsTriggerFormValues } from "./dialog";
 const GoogleSheetsTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsTriggerDialog),
 );
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.GOOGLE_SHEETS_TRIGGER);
 
 type GoogleSheetsTriggerNodeData = {
   spreadsheetId?: string;
@@ -60,8 +64,8 @@ export const GoogleSheetsTriggerNode = memo(
         )}
         <BaseTriggerNode
           {...props}
-          icon="/logos/google-sheets.svg"
-          name="Google Sheets Trigger"
+          icon={option.icon}
+          name={option.label}
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

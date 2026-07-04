@@ -12,14 +12,19 @@ const jsonResponse = (data: unknown, ok = true, status = 200) => ({
   ok,
   status,
   statusText: ok ? "OK" : "Error",
+  headers: new Headers(),
   json: async () => data,
   arrayBuffer: async () => new ArrayBuffer(0),
 });
 
-const bytesResponse = (bytes: Uint8Array) => ({
+const bytesResponse = (
+  bytes: Uint8Array,
+  headers: Record<string, string> = {},
+) => ({
   ok: true,
   status: 200,
   statusText: "OK",
+  headers: new Headers(headers),
   json: async () => ({}),
   arrayBuffer: async () =>
     bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
@@ -145,6 +150,76 @@ describe("convertMedia (URL source)", () => {
     const result = await fetchMediaResult(jobId, "png");
     expect(Array.from(result.bytes)).toEqual([9, 8, 7]);
     expect(result.contentType).toBe("image/png");
+  });
+
+  it("rejects an oversized output via Content-Length before buffering", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/jobs/job1")) {
+        return jsonResponse({
+          data: {
+            id: "job1",
+            status: "finished",
+            tasks: [
+              {
+                id: "t3",
+                name: "export-file",
+                operation: "export/url",
+                status: "finished",
+                result: {
+                  files: [
+                    { filename: "out.mp4", url: "https://files.cc/out.mp4" },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (url === "https://files.cc/out.mp4") {
+        return bytesResponse(new Uint8Array(0), {
+          "content-length": String(200 * 1024 * 1024),
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    await expect(fetchMediaResult("job1", "mp4")).rejects.toThrow(
+      /too large to process/,
+    );
+  });
+
+  it("rejects an oversized output body when the header was absent", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("/jobs/job1")) {
+        return jsonResponse({
+          data: {
+            id: "job1",
+            status: "finished",
+            tasks: [
+              {
+                id: "t3",
+                name: "export-file",
+                operation: "export/url",
+                status: "finished",
+                result: {
+                  files: [
+                    { filename: "out.mp4", url: "https://files.cc/out.mp4" },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+      }
+      if (url === "https://files.cc/out.mp4") {
+        return bytesResponse(new Uint8Array(51 * 1024 * 1024));
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    await expect(fetchMediaResult("job1", "mp4")).rejects.toThrow(
+      /too large to process/,
+    );
   });
 });
 

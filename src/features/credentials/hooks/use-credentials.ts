@@ -159,3 +159,11 @@ export const useDisconnectYoutube = () => {
     }),
   );
 };
+
+/**
+ * Linked Google account (OAuth via sign-in), without sensitive fields
+ */
+export const useGoogleCredential = () => {
+  const trpc = useTRPC();
+  return useQuery(trpc.credentials.getGoogle.queryOptions());
+};

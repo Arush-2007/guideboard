@@ -8,7 +8,13 @@ import {
   NodeType,
   type Prisma,
 } from "@/generated/prisma";
-import { clampJson } from "@/lib/clamp-json";
+import {
+  deleteBlobsByPrefix,
+  getBlobJson,
+  isBlobConfigured,
+  putBlob,
+} from "@/lib/blob";
+import { clampJson, isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
@@ -58,8 +64,44 @@ function createPrismaNodeRecorder({
       const completedAt = new Date();
       const startedAt = new Date(completedAt.getTime() - durationMs);
 
-      await step.run(`node-record:${nodeId}`, () =>
-        prisma.nodeExecution.create({
+      await step.run(`node-record:${nodeId}`, async () => {
+        const clampedInput = clampJson(input);
+
+        // When the inline snapshot had to be truncated, park the full context
+        // in R2 so replay-from-node can still seed real data (a marker context
+        // would silently corrupt the replay). The key is deterministic per
+        // (execution, node) so a retried step overwrites its own object. It
+        // assumes one run per node per execution (true today, like
+        // replayFromNode's snapshot pick) — a future loops feature must add
+        // `sequence` to the key or later iterations overwrite earlier ones.
+        // Best-effort: recording must never break a run — on failure (or with
+        // R2 unconfigured) the key stays null and replay refuses instead.
+        // SKIPPED nodes never seed a replay (replayFromNode rejects them), so
+        // their snapshots aren't stored — otherwise a replay would re-upload
+        // the same oversized context once per skipped upstream node.
+        let inputBlobKey: string | null = null;
+        if (
+          status !== "SKIPPED" &&
+          isClampedMarker(clampedInput) &&
+          isBlobConfigured()
+        ) {
+          const key = `replay-contexts/${executionId}/${nodeId}.json`;
+          try {
+            await putBlob({
+              key,
+              bytes: Buffer.from(JSON.stringify(input)),
+              contentType: "application/json",
+            });
+            inputBlobKey = key;
+          } catch (err) {
+            logger.error("Failed to store full input snapshot", err, {
+              executionId,
+              nodeId,
+            });
+          }
+        }
+
+        return prisma.nodeExecution.create({
           data: {
             executionId,
             nodeId,
@@ -72,7 +114,8 @@ function createPrismaNodeRecorder({
                 : status === "SKIPPED"
                   ? NodeExecutionStatus.SKIPPED
                   : NodeExecutionStatus.SUCCESS,
-            input: clampJson(input) as Prisma.InputJsonValue,
+            input: clampedInput as Prisma.InputJsonValue,
+            inputBlobKey,
             output:
               output !== undefined
                 ? (clampJson(output) as Prisma.InputJsonValue)
@@ -84,8 +127,8 @@ function createPrismaNodeRecorder({
             durationMs,
           },
           select: { id: true },
-        }),
-      );
+        });
+      });
     },
   };
 }
@@ -198,7 +241,8 @@ export const executeWorkflow = inngest.createFunction(
     const inngestEventId = event.id;
     const {
       workflowId,
-      initialData,
+      initialData: inlineInitialData,
+      initialDataBlobKey,
       idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,
@@ -206,6 +250,9 @@ export const executeWorkflow = inngest.createFunction(
       workflowId?: string;
       // Keep this loose because this JSON is stored directly in Prisma.
       initialData?: any;
+      // Oversized seed contexts travel as a blob key, not inline (event size
+      // limits) — hydrated below inside a step. See sendWorkflowExecution.
+      initialDataBlobKey?: string;
       idempotencyKey?: string;
       // Replay-from-node: see runWorkflowNodes / sendWorkflowExecution.
       replayFromNodeId?: string;
@@ -240,14 +287,41 @@ export const executeWorkflow = inngest.createFunction(
           inngestEventId,
           idempotencyKey: idempotencyKey ?? null,
           // Persist the trigger payload (or, for a replay, the seeded snapshot)
-          // so the run can be re-dispatched verbatim.
-          input: (initialData ?? {}) as Prisma.InputJsonValue,
+          // so the run can be re-dispatched verbatim. Blob-seeded runs store a
+          // small reference instead of the oversized payload; `rerun` resolves
+          // it back to `initialDataBlobKey`.
+          input: (initialDataBlobKey
+            ? { __blobRef: initialDataBlobKey }
+            : (inlineInitialData ?? {})) as Prisma.InputJsonValue,
           // Link a replay back to its origin run; null for ordinary runs.
           replayOfId: replayOfExecutionId ?? null,
         },
         select: { id: true },
       });
     });
+
+    // Hydrate a blob-stored seed context. Runs AFTER create-execution so a
+    // missing/unreadable blob fails a *visible* run (onFailure marks the row
+    // FAILED); before the row exists, onFailure's update-by-eventId would
+    // itself throw and the failure would be invisible. Step outputs already
+    // carry full contexts between nodes, so pulling the snapshot inside a step
+    // adds no new size bound. A bad blob is a data problem a retry won't fix.
+    const initialData: Record<string, unknown> | undefined = initialDataBlobKey
+      ? await step.run("hydrate-initial-data", async () => {
+          try {
+            return (await getBlobJson(initialDataBlobKey)) as Record<
+              string,
+              unknown
+            >;
+          } catch (err) {
+            throw new NonRetriableError(
+              `Failed to load the stored context snapshot (${initialDataBlobKey}): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        })
+      : inlineInitialData;
 
     const { sortedNodes, connections, userId } = await step.run(
       "prepare-workflow",
@@ -280,6 +354,7 @@ export const executeWorkflow = inngest.createFunction(
       sortedNodes,
       connections,
       userId,
+      executionId,
       initialData,
       step,
       publish,
@@ -694,11 +769,51 @@ export const pruneOldExecutions = inngest.createFunction(
   async ({ step }) => {
     const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
 
+    // Bounded batch so one giant backlog can't blow the step; the daily cron
+    // drains any remainder on subsequent runs. userId is needed to address the
+    // per-user conversions prefix.
+    const prunable = await step.run("find-prunable-executions", async () => {
+      return prisma.execution.findMany({
+        where: { startedAt: { lt: cutoff } },
+        select: { id: true, workflow: { select: { userId: true } } },
+        take: 1000,
+      });
+    });
+
+    if (prunable.length === 0) {
+      return { deletedCount: 0, cutoff: cutoff.toISOString() };
+    }
+
+    // Row deletion (below) is what enforces retention; blob GC is best-effort
+    // so an R2 hiccup never blocks pruning. Blobs are deleted first — their
+    // lifetime must not exceed the rows that reference them, and a failed
+    // prefix is retried implicitly if row deletion also fails this run.
+    if (isBlobConfigured()) {
+      await step.run("delete-execution-blobs", async () => {
+        let deleted = 0;
+        for (const execution of prunable) {
+          const prefixes = [
+            `replay-contexts/${execution.id}/`,
+            `conversions/${execution.workflow.userId}/${execution.id}/`,
+          ];
+          for (const prefix of prefixes) {
+            try {
+              deleted += await deleteBlobsByPrefix(prefix);
+            } catch (err) {
+              logger.error("Failed to prune execution blobs", err, {
+                executionId: execution.id,
+                prefix,
+              });
+            }
+          }
+        }
+        return { deleted };
+      });
+    }
+
     const result = await step.run("delete-old-executions", async () => {
       return prisma.execution.deleteMany({
-        where: {
-          startedAt: { lt: cutoff },
-        },
+        where: { id: { in: prunable.map((e) => e.id) } },
       });
     });
 

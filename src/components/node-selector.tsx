@@ -49,10 +49,10 @@ function NodeOptionRow({
           <img
             src={Icon}
             alt={nodeType.label}
-            className="size-5 object-contain rounded-sm"
+            className="size-5 shrink-0 object-contain rounded-sm"
           />
         ) : (
-          <Icon className="size-5" />
+          <Icon className="size-5 shrink-0" />
         )}
         <div className="flex flex-col items-start text-left">
           <span className="font-medium text-sm">{nodeType.label}</span>

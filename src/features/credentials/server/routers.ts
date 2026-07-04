@@ -309,6 +309,21 @@ export const credentialsRouter = createTRPCRouter({
     });
     return { ok: true as const };
   }),
+  // Read-only status of the user's linked Google account. Google is connected
+  // implicitly via "Sign in with Google" (a database hook mirrors the OAuth
+  // tokens into GoogleCredential — see src/lib/auth.ts), so surfacing it here
+  // lets users see the dependency that Gmail/Sheets/Drive/Forms nodes rely on.
+  // No disconnect is exposed: Google may be the user's sign-in method.
+  getGoogle: protectedProcedure.query(async ({ ctx }) => {
+    const credential = await prisma.googleCredential.findUnique({
+      where: { userId: ctx.auth.user.id },
+      select: { id: true },
+    });
+    if (!credential) {
+      return null;
+    }
+    return { id: credential.id, email: ctx.auth.user.email };
+  }),
   getYoutubeVideos: protectedProcedure.query(async ({ ctx }) => {
     type YoutubeVideosResponse = {
       items?: Array<{

@@ -14,6 +14,18 @@ export interface ClampedMarker {
 }
 
 /**
+ * Whether a stored value is a truncation marker rather than the real payload.
+ * Consumers (e.g. replay-from-node) must never treat a marker as usable data.
+ */
+export function isClampedMarker(value: unknown): value is ClampedMarker {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<string, unknown>).__truncated === true
+  );
+}
+
+/**
  * Returns `value` unchanged when its JSON serialization fits within `maxBytes`,
  * otherwise a `{ __truncated, bytes, preview }` marker. Values that can't be
  * serialized at all (cycles, BigInt, …) also collapse to a marker rather than

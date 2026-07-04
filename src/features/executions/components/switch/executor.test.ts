@@ -67,6 +67,20 @@ describe("switchExecutor routing", () => {
     expect(outcome.outputs).toEqual([SWITCH_DEFAULT_OUTPUT]);
   });
 
+  it("falls through to default when a numeric case's field is missing", async () => {
+    // `@<score>@` resolves to "" here; Number("") is 0, but the case must not
+    // match — empty operands have no numeric order.
+    const outcome = await run(
+      {
+        cases: [
+          { id: "a", field: "@<score>@", operator: "less_than", value: "2" },
+        ],
+      },
+      { status: "yes" },
+    );
+    expect(outcome.outputs).toEqual([SWITCH_DEFAULT_OUTPUT]);
+  });
+
   it("routes to default when there are no cases", async () => {
     const outcome = await run({ cases: [] }, { status: "yes" });
     expect(outcome.outputs).toEqual([SWITCH_DEFAULT_OUTPUT]);

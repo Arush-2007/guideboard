@@ -6,10 +6,11 @@ import {
   useReactFlow,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import { Split } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useEffect, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { SwitchFormValues } from "./dialog";
@@ -18,6 +19,8 @@ import { switchOutputHandles } from "./handles";
 const SwitchDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.SwitchDialog),
 );
+
+const option = getNodeOption(NodeType.SWITCH);
 
 type SwitchNodeData = {
   cases?: SwitchFormValues["cases"];
@@ -85,8 +88,8 @@ export const SwitchNode = memo((props: NodeProps<SwitchNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon={Split}
-        name="Switch"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         outputs={handles}

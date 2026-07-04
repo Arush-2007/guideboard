@@ -2,11 +2,14 @@ import dynamic from "next/dynamic";
 import { NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { BaseTriggerNode } from "../base-trigger-node";
-import { MousePointerIcon } from "lucide-react";
 const ManualTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.ManualTriggerDialog),
 );
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.MANUAL_TRIGGER);
 
 export const ManualTriggerNode = memo((props: NodeProps) => {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -22,7 +25,8 @@ export const ManualTriggerNode = memo((props: NodeProps) => {
       )}
       <BaseTriggerNode
         {...props}
-        icon={MousePointerIcon}
+        icon={option.icon}
+        // Canvas name intentionally differs from the picker label ("Trigger manually")
         name="When clicking 'Execute workflow'"
         status={nodeStatus}
         onSettings={handleOpenSettings}

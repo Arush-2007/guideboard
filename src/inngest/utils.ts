@@ -50,6 +50,11 @@ export const topologicalSort = (
 type SendWorkflowExecutionInput = {
   workflowId: string;
   initialData?: Record<string, unknown>;
+  // R2 key of a stored context snapshot to seed the run with, instead of an
+  // inline `initialData`. Used when the snapshot exceeded the inline clamp —
+  // an oversized payload must not ride the Inngest event (event size limits),
+  // so `executeWorkflow` hydrates it from blob storage inside a step.
+  initialDataBlobKey?: string;
   idempotencyKey?: string;
   // Replay-from-node: run only this node + its descendants, seeding the context
   // from `initialData` (the node's recorded input snapshot). `replayOfExecutionId`
@@ -61,6 +66,7 @@ type SendWorkflowExecutionInput = {
 export const sendWorkflowExecution = async ({
   workflowId,
   initialData,
+  initialDataBlobKey,
   idempotencyKey,
   replayFromNodeId,
   replayOfExecutionId,
@@ -70,6 +76,7 @@ export const sendWorkflowExecution = async ({
     data: {
       workflowId,
       initialData: initialData ?? {},
+      initialDataBlobKey,
       idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,

@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/select";
 import { VariableInput } from "@/components/variable-input";
 import { VariableTextarea } from "@/components/variable-textarea";
+import { INTEGRATIONS } from "@/config/integrations";
 import { useSmartCredential } from "@/features/credentials/hooks/use-smart-credential";
 import { CredentialType } from "@/generated/prisma";
 import { useTRPC } from "@/trpc/client";
@@ -216,7 +217,7 @@ export const NotionDialog = ({
                           <SelectItem key={c.id} value={c.id}>
                             <div className="flex items-center gap-2">
                               <Image
-                                src="/logos/notion.svg"
+                                src={INTEGRATIONS.notion.icon}
                                 alt=""
                                 width={16}
                                 height={16}

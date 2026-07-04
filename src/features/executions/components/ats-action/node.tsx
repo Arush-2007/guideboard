@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { Building2 } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { AtsActionFormValues } from "./dialog";
@@ -12,6 +13,8 @@ import type { AtsActionFormValues } from "./dialog";
 const AtsActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.AtsActionDialog),
 );
+
+const option = getNodeOption(NodeType.ATS_ACTION);
 
 type AtsActionNodeData = {
   provider?: "lever";
@@ -62,8 +65,8 @@ export const AtsActionNode = memo((props: NodeProps<AtsActionNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon={Building2}
-        name="ATS — Create Candidate"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

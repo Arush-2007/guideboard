@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { Clock } from "lucide-react";
 import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
 import { cronToPreset, describeSchedule } from "@/lib/schedule-presets";
 import { BaseTriggerNode } from "../base-trigger-node";
 import type { ScheduleTriggerFormValues } from "./dialog";
@@ -12,6 +13,8 @@ import type { ScheduleTriggerFormValues } from "./dialog";
 const ScheduleTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.ScheduleTriggerDialog),
 );
+
+const option = getNodeOption(NodeType.SCHEDULE_TRIGGER);
 
 type ScheduleTriggerNodeData = {
   cron?: string;
@@ -56,8 +59,8 @@ export const ScheduleTriggerNode = memo(
         )}
         <BaseTriggerNode
           {...props}
-          icon={Clock}
-          name="Schedule Trigger"
+          icon={option.icon}
+          name={option.label}
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

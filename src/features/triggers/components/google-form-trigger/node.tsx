@@ -7,7 +7,11 @@ const GoogleFormTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GoogleFormTriggerDialog),
 );
 
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.GOOGLE_FORM_TRIGGER);
 
 type GoogleFormTriggerNodeData = {
   formId?: string;
@@ -53,8 +57,8 @@ export const GoogleFormTrigger = memo(
         )}
         <BaseTriggerNode
           {...props}
-          icon="/logos/googleform.svg"
-          name="Google Form"
+          icon={option.icon}
+          name={option.label}
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

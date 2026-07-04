@@ -7,7 +7,11 @@ const TypeformTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.TypeformTriggerDialog),
 );
 
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.TYPEFORM_TRIGGER);
 
 type TypeformTriggerNodeData = {
   credentialId?: string;
@@ -54,8 +58,8 @@ export const TypeformTrigger = memo(
         )}
         <BaseTriggerNode
           {...props}
-          icon="/logos/typeform.svg"
-          name="Typeform"
+          icon={option.icon}
+          name={option.label}
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

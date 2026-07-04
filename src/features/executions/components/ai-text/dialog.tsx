@@ -31,6 +31,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { VariableTextarea } from "@/components/variable-textarea";
+import { INTEGRATIONS } from "@/config/integrations";
 import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import { CredentialType } from "@/generated/prisma";
 
@@ -138,12 +139,12 @@ export const AiTextDialog = ({
 
   const logoSrc =
     provider === "openai"
-      ? "/logos/openai.svg"
+      ? INTEGRATIONS.openai.icon
       : provider === "anthropic"
-        ? "/logos/anthropic.svg"
+        ? INTEGRATIONS.anthropic.icon
         : provider === "gemini"
-          ? "/logos/gemini.svg"
-          : "/logos/groq.svg";
+          ? INTEGRATIONS.gemini.icon
+          : INTEGRATIONS.groq.icon;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

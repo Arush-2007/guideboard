@@ -11,6 +11,10 @@ import type { WhatsappActionFormValues } from "./dialog";
 const WhatsappActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.WhatsappActionDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.WHATSAPP_ACTION);
 
 type WhatsappActionNodeData = {
   recipientPhones?: string[];
@@ -73,8 +77,8 @@ export const WhatsappActionNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon="/logos/whatsapp.svg"
-          name="Send WhatsApp"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

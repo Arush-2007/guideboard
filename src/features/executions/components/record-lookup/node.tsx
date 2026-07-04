@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { Search } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { RecordLookupFormValues } from "./dialog";
@@ -12,6 +13,8 @@ import type { RecordLookupFormValues } from "./dialog";
 const RecordLookupDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.RecordLookupDialog),
 );
+
+const option = getNodeOption(NodeType.RECORD_LOOKUP);
 
 type RecordLookupNodeData = {
   source?: "google_sheets" | "notion";
@@ -68,8 +71,8 @@ export const RecordLookupNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon={Search}
-          name="Record Lookup"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

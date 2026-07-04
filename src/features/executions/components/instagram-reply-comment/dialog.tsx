@@ -73,7 +73,7 @@ export const InstagramReplyDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Instagram Reply Configuration</DialogTitle>
+          <DialogTitle>Instagram Reply</DialogTitle>
           <DialogDescription>
             Configure the reply to post on an Instagram comment. Uses the
             Instagram account connected in Credentials. Use{" "}
@@ -120,13 +120,7 @@ export const InstagramReplyDialog = ({
             />
 
             <DialogFooter className="mt-4">
-              <Button
-                type="submit"
-                style={{ backgroundColor: "#E1306C", color: "#fff" }}
-                className="hover:opacity-90"
-              >
-                Save
-              </Button>
+              <Button type="submit">Save</Button>
             </DialogFooter>
           </form>
         </Form>

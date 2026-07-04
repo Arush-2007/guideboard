@@ -10,7 +10,11 @@ import type { YoutubeReplyFormValues } from "./dialog";
 const YoutubeReplyDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.YoutubeReplyDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.YOUTUBE_REPLY_COMMENT);
 
 type YoutubeReplyNodeData = {
   variableName?: string;
@@ -62,8 +66,8 @@ export const YoutubeReplyNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon="/logos/youtube.svg"
-          name="YouTube Reply"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

@@ -5,7 +5,11 @@ import { BaseTriggerNode } from "../base-trigger-node";
 const TelegramTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.TelegramTriggerDialog),
 );
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.TELEGRAM_TRIGGER);
 
 export const TelegramTrigger = memo((props: NodeProps) => {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -21,8 +25,8 @@ export const TelegramTrigger = memo((props: NodeProps) => {
       )}
       <BaseTriggerNode
         {...props}
-        icon="/logos/telegram.svg"
-        name="Telegram"
+        icon={option.icon}
+        name={option.label}
         description="When your bot receives a message"
         status={nodeStatus}
         onSettings={handleOpenSettings}

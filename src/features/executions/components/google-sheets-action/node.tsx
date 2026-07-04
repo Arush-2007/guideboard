@@ -11,6 +11,10 @@ import type { GoogleSheetsActionFormValues } from "./dialog";
 const GoogleSheetsActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsActionDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
   action?: "append_row" | "read_rows";
@@ -74,8 +78,8 @@ export const GoogleSheetsActionNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon="/logos/google-sheets.svg"
-          name="Google Sheets"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

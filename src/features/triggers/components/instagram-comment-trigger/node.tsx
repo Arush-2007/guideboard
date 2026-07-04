@@ -6,12 +6,16 @@ import { type NodeProps, type Node, useReactFlow } from "@xyflow/react";
 import { memo, useState } from "react";
 import { toast } from "sonner";
 import { BaseTriggerNode } from "../base-trigger-node";
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
 import { saveInstagramCommentTriggerConfig } from "./actions";
 import type { InstagramCommentTriggerFormValues } from "./dialog";
 const InstagramCommentTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.InstagramCommentTriggerDialog),
 );
+
+const option = getNodeOption(NodeType.INSTAGRAM_COMMENT_TRIGGER);
 
 type InstagramCommentTriggerData = {
   postId?: string;
@@ -69,8 +73,8 @@ export const InstagramCommentTriggerNode = memo(
         )}
         <BaseTriggerNode
           {...props}
-          icon="/logos/instagram.svg"
-          name="Instagram Comment Trigger"
+          icon={option.icon}
+          name={option.label}
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

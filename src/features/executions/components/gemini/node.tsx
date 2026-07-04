@@ -10,6 +10,7 @@ import type { GeminiFormValues } from "./dialog";
 const GeminiDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GeminiDialog),
 );
+import { INTEGRATIONS } from "@/config/integrations";
 import { useNodeStatus } from "../../hooks/use-node-status";
 
 type GeminiNodeData = {
@@ -69,8 +70,8 @@ export const GeminiNode = memo((props: NodeProps<GeminiNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/gemini.svg"
-        name="Gemini"
+        icon={INTEGRATIONS.gemini.icon}
+        name={INTEGRATIONS.gemini.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

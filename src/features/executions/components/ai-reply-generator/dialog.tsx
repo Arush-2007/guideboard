@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Sparkles } from "lucide-react";
 import Image from "next/image";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
@@ -33,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { INTEGRATIONS } from "@/config/integrations";
 import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import { CredentialType } from "@/generated/prisma";
 
@@ -133,14 +135,7 @@ export const AiReplyGeneratorDialog = ({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span className="flex size-7 items-center justify-center rounded-lg bg-foreground/10">
-              <Image
-                src="/logos/xai.svg"
-                alt="AI"
-                width={16}
-                height={16}
-                className="dark:invert"
-                unoptimized
-              />
+              <Sparkles className="size-4" />
             </span>
             AI Reply Generator
           </DialogTitle>
@@ -324,8 +319,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/xai.svg"
-                              alt="xAI"
+                              src={INTEGRATIONS.xai.icon}
+                              alt={INTEGRATIONS.xai.label}
                               width={14}
                               height={14}
                               className="dark:invert"
@@ -365,8 +360,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/gemini.svg"
-                              alt="Gemini"
+                              src={INTEGRATIONS.gemini.icon}
+                              alt={INTEGRATIONS.gemini.label}
                               width={14}
                               height={14}
                               unoptimized
@@ -405,8 +400,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/openai.svg"
-                              alt="OpenAI"
+                              src={INTEGRATIONS.openai.icon}
+                              alt={INTEGRATIONS.openai.label}
                               width={14}
                               height={14}
                               unoptimized
@@ -445,8 +440,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/groq.svg"
-                              alt="Groq"
+                              src={INTEGRATIONS.groq.icon}
+                              alt={INTEGRATIONS.groq.label}
                               width={14}
                               height={14}
                               unoptimized
