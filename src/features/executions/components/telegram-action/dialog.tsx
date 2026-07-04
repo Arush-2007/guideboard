@@ -103,7 +103,7 @@ export const TelegramActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Telegram</DialogTitle>
+          <DialogTitle>Send Telegram</DialogTitle>
           <DialogDescription>
             Send a message with your bot via the Telegram Bot API.
           </DialogDescription>

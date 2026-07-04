@@ -85,7 +85,7 @@ export const DiscordDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Discord Configuration</DialogTitle>
+          <DialogTitle>Discord</DialogTitle>
           <DialogDescription>
             Configure the Discord webhook settings for this node.
           </DialogDescription>

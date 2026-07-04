@@ -9,6 +9,7 @@ import {
   MousePointerIcon,
   Replace,
   Search,
+  Sparkles,
   Split,
   Webhook,
 } from "lucide-react";
@@ -36,56 +37,56 @@ export const triggerNodeOptions: NodeOption[] = [
   },
   {
     type: NodeType.GOOGLE_FORM_TRIGGER,
-    label: "Google Form",
+    label: "Google Form Trigger",
     description: "Runs the flow when a Google Form is submitted",
     icon: "/logos/googleform.svg",
   },
   {
     type: NodeType.TYPEFORM_TRIGGER,
-    label: "Typeform",
+    label: "Typeform Trigger",
     description: "Runs the flow when a Typeform response is submitted",
     icon: "/logos/typeform.svg",
   },
   {
     type: NodeType.GMAIL_TRIGGER,
-    label: "Gmail",
+    label: "Gmail Trigger",
     description: "Runs the flow when a new unread email is detected",
     icon: "/logos/gmail.svg",
   },
   {
     type: NodeType.GOOGLE_SHEETS_TRIGGER,
-    label: "Google Sheets",
+    label: "Google Sheets Trigger",
     description: "Runs the flow when a new row is detected",
     icon: "/logos/google-sheets.svg",
   },
   {
     type: NodeType.SCHEDULE_TRIGGER,
-    label: "Schedule",
+    label: "Schedule Trigger",
     description: "Runs the flow on a recurring schedule (hourly, daily, cron)",
     icon: Clock,
   },
   {
     type: NodeType.WEBHOOK_TRIGGER,
-    label: "Webhook",
+    label: "Webhook Trigger",
     description: "Runs the flow when its unique URL receives a POST request",
     icon: Webhook,
   },
   {
     type: NodeType.INSTAGRAM_COMMENT_TRIGGER,
-    label: "Instagram Comment",
+    label: "Instagram Comment Trigger",
     description:
       "Runs the flow when a comment is posted on your Instagram post",
     icon: "/logos/instagram.svg",
   },
   {
     type: NodeType.YOUTUBE_COMMENT_TRIGGER,
-    label: "YouTube Comment",
+    label: "YouTube Comment Trigger",
     description: "Runs the flow when a comment is posted on your YouTube video",
     icon: "/logos/youtube.svg",
   },
   {
     type: NodeType.TELEGRAM_TRIGGER,
-    label: "Telegram",
+    label: "Telegram Trigger",
     description: "Runs the flow when your bot receives a message",
     icon: "/logos/telegram.svg",
   },
@@ -210,7 +211,7 @@ export const executionNodeOptions: NodeOption[] = [
     label: "AI Reply Generator",
     description:
       "Generate an AI reply to a comment using xAI, Gemini, OpenAI, or Groq",
-    icon: "/logos/xai.svg",
+    icon: Sparkles,
   },
 ];
 

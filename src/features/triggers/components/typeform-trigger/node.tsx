@@ -55,7 +55,7 @@ export const TypeformTrigger = memo(
         <BaseTriggerNode
           {...props}
           icon="/logos/typeform.svg"
-          name="Typeform"
+          name="Typeform Trigger"
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

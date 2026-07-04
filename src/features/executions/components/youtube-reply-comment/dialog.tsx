@@ -71,7 +71,7 @@ export const YoutubeReplyDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>YouTube Reply Configuration</DialogTitle>
+          <DialogTitle>YouTube Reply</DialogTitle>
           <DialogDescription>
             Configure the reply to post on a YouTube comment. Uses the YouTube
             account connected in Credentials. Use{" "}
@@ -118,13 +118,7 @@ export const YoutubeReplyDialog = ({
             />
 
             <DialogFooter className="mt-4">
-              <Button
-                type="submit"
-                style={{ backgroundColor: "#FF0000", color: "#fff" }}
-                className="hover:opacity-90"
-              >
-                Save
-              </Button>
+              <Button type="submit">Save</Button>
             </DialogFooter>
           </form>
         </Form>

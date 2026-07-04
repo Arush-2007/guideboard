@@ -101,7 +101,7 @@ export const AtsActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>ATS — create candidate</DialogTitle>
+          <DialogTitle>ATS — Create Candidate</DialogTitle>
           <DialogDescription>
             Pushes a shortlisted candidate into your ATS (Lever), attaching
             their resume link and the screening note.

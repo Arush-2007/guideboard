@@ -22,7 +22,7 @@ export const TelegramTrigger = memo((props: NodeProps) => {
       <BaseTriggerNode
         {...props}
         icon="/logos/telegram.svg"
-        name="Telegram"
+        name="Telegram Trigger"
         description="When your bot receives a message"
         status={nodeStatus}
         onSettings={handleOpenSettings}

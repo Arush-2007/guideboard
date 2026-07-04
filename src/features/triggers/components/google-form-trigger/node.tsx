@@ -54,7 +54,7 @@ export const GoogleFormTrigger = memo(
         <BaseTriggerNode
           {...props}
           icon="/logos/googleform.svg"
-          name="Google Form"
+          name="Google Form Trigger"
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

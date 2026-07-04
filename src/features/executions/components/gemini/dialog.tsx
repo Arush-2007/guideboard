@@ -100,7 +100,7 @@ export const GeminiDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Gemini Configuration</DialogTitle>
+          <DialogTitle>Gemini</DialogTitle>
           <DialogDescription>
             Configure the AI model and prompts for this node.
           </DialogDescription>

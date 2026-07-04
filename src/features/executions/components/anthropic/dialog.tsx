@@ -100,7 +100,7 @@ export const AnthropicDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Anthropic Configuration</DialogTitle>
+          <DialogTitle>Anthropic</DialogTitle>
           <DialogDescription>
             Configure the AI model and prompts for this node.
           </DialogDescription>

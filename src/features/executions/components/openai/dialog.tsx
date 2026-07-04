@@ -100,7 +100,7 @@ export const OpenAiDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>OpenAI Configuration</DialogTitle>
+          <DialogTitle>OpenAI</DialogTitle>
           <DialogDescription>
             Configure the AI model and prompts for this node.
           </DialogDescription>

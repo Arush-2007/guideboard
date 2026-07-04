@@ -67,12 +67,7 @@ export const InstagramCommentTriggerDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle
-            className="flex items-center gap-2"
-            style={{ color: "#E1306C" }}
-          >
-            Instagram Comment Trigger
-          </DialogTitle>
+          <DialogTitle>Instagram Comment Trigger</DialogTitle>
           <DialogDescription>
             Trigger this workflow when a comment is posted on your Instagram
             post. Optionally limit to one post, and configure an auto reply.
@@ -111,16 +106,7 @@ export const InstagramCommentTriggerDialog = ({
             />
 
             <DialogFooter>
-              <Button
-                type="submit"
-                style={{
-                  backgroundColor: "#E1306C",
-                  color: "#fff",
-                }}
-                className="hover:opacity-90"
-              >
-                Save
-              </Button>
+              <Button type="submit">Save</Button>
             </DialogFooter>
           </form>
         </Form>

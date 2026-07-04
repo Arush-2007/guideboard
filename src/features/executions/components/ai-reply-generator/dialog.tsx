@@ -1,6 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Sparkles } from "lucide-react";
 import Image from "next/image";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
@@ -133,14 +134,7 @@ export const AiReplyGeneratorDialog = ({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <span className="flex size-7 items-center justify-center rounded-lg bg-foreground/10">
-              <Image
-                src="/logos/xai.svg"
-                alt="AI"
-                width={16}
-                height={16}
-                className="dark:invert"
-                unoptimized
-              />
+              <Sparkles className="size-4" />
             </span>
             AI Reply Generator
           </DialogTitle>
