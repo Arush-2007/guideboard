@@ -1,12 +1,12 @@
 import {
+  CredentialsApiKeysSection,
+  CredentialsConnectedAppsSection,
   CredentialsContainer,
   CredentialsError,
   CredentialsInstagramAuthErrorToast,
-  CredentialsInstagramSection,
   CredentialsList,
   CredentialsLoading,
   CredentialsYoutubeAuthErrorToast,
-  CredentialsYoutubeSection,
 } from "@/features/credentials/components/credentials";
 import { credentialsParamsLoader } from "@/features/credentials/server/params-loader";
 import { prefetchCredentials } from "@/features/credentials/server/prefetch";
@@ -34,11 +34,12 @@ const Page = async ({ searchParams }: Props) => {
             <CredentialsInstagramAuthErrorToast />
             <CredentialsYoutubeAuthErrorToast />
           </Suspense>
-          <CredentialsInstagramSection />
-          <CredentialsYoutubeSection />
-          <Suspense fallback={<CredentialsLoading />}>
-            <CredentialsList />
-          </Suspense>
+          <CredentialsConnectedAppsSection />
+          <CredentialsApiKeysSection>
+            <Suspense fallback={<CredentialsLoading />}>
+              <CredentialsList />
+            </Suspense>
+          </CredentialsApiKeysSection>
         </ErrorBoundary>
       </HydrateClient>
     </CredentialsContainer>

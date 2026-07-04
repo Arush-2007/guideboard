@@ -28,10 +28,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { Credential } from "@/generated/prisma";
 import { CredentialType } from "@/generated/prisma";
+import { authClient } from "@/lib/auth-client";
 import { useEntitySearch } from "@/hooks/use-entity-search";
 import {
   useDisconnectInstagram,
   useDisconnectYoutube,
+  useGoogleCredential,
   useInstagramCredential,
   useRemoveCredential,
   useSuspenseCredentials,
@@ -61,74 +63,81 @@ export const CredentialsInstagramAuthErrorToast = () => {
 
 const INSTAGRAM_TOKEN_WARNING_MS = 10 * 24 * 60 * 60 * 1000;
 
-export const CredentialsInstagramSection = () => {
-  const { data, isPending } = useInstagramCredential();
-  const disconnect = useDisconnectInstagram();
+const SectionHeading = ({ children }: { children: React.ReactNode }) => (
+  <h2 className="px-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+    {children}
+  </h2>
+);
 
-  const isExpiringSoon =
-    data?.tokenExpiresAt != null &&
-    new Date(data.tokenExpiresAt).getTime() <
-      Date.now() + INSTAGRAM_TOKEN_WARNING_MS;
-
+// Shared row for the "Connected apps" section: logo tile + name + status on the
+// left, a caller-supplied action (Connect button or overflow menu) on the right.
+const ConnectedAppRow = ({
+  logo,
+  name,
+  status,
+  action,
+}: {
+  logo: string;
+  name: string;
+  status: React.ReactNode;
+  action: React.ReactNode;
+}) => {
   return (
     <Card className="rounded-2xl border-border/70 p-4 shadow-sm">
       <CardContent className="flex flex-row items-center justify-between p-0">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-            <Image
-              src="/logos/instagram.svg"
-              alt="Instagram"
-              width={20}
-              height={20}
-              unoptimized
-            />
+            <Image src={logo} alt={name} width={20} height={20} unoptimized />
           </div>
           <div className="min-w-0">
-            <p className="truncate text-base font-medium">Instagram</p>
-            <p className="truncate text-xs text-muted-foreground">
-              {isPending
-                ? "Loading…"
-                : data
-                  ? `Connected as @${data.instagramUsername}${isExpiringSoon ? " · Token expiring soon — reconnect to refresh" : ""}`
-                  : "Connect your Instagram account via OAuth"}
-            </p>
+            <p className="truncate text-base font-medium">{name}</p>
+            <p className="truncate text-xs text-muted-foreground">{status}</p>
           </div>
         </div>
-        <div className="ml-4 shrink-0">
-          {!isPending && !data && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-full px-4"
-              asChild
-            >
-              <Link href="/api/auth/instagram">Connect</Link>
-            </Button>
-          )}
-          {!isPending && data && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="icon" variant="ghost" className="rounded-full">
-                  <MoreVerticalIcon className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem asChild>
-                  <Link href="/api/auth/instagram">Reconnect</Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={disconnect.isPending}
-                  onClick={() => disconnect.mutate()}
-                >
-                  <TrashIcon className="size-4" />
-                  Disconnect
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </div>
+        <div className="ml-4 shrink-0">{action}</div>
       </CardContent>
     </Card>
+  );
+};
+
+// Connect / Reconnect+Disconnect controls for the OAuth apps whose connect flow
+// is a plain link to an /api/auth/* route (Instagram, YouTube).
+const OAuthAppActions = ({
+  connected,
+  authHref,
+  onDisconnect,
+  isDisconnecting,
+}: {
+  connected: boolean;
+  authHref: string;
+  onDisconnect: () => void;
+  isDisconnecting: boolean;
+}) => {
+  if (!connected) {
+    return (
+      <Button variant="outline" size="sm" className="rounded-full px-4" asChild>
+        <Link href={authHref}>Connect</Link>
+      </Button>
+    );
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon" variant="ghost" className="rounded-full">
+          <MoreVerticalIcon className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem asChild>
+          <Link href={authHref}>Reconnect</Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={isDisconnecting} onClick={onDisconnect}>
+          <TrashIcon className="size-4" />
+          Disconnect
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 };
 
@@ -152,69 +161,121 @@ export const CredentialsYoutubeAuthErrorToast = () => {
   return null;
 };
 
-export const CredentialsYoutubeSection = () => {
-  const { data, isPending } = useYoutubeCredential();
-  const disconnect = useDisconnectYoutube();
+// Google connect/reconnect goes through Better Auth account-linking (not a
+// dedicated /api/auth route). Linking re-runs Google OAuth with the offline
+// Sheets/Gmail/Drive/Forms scopes, and the account DB hook mirrors the tokens
+// into GoogleCredential (see src/lib/auth.ts).
+const connectGoogle = () => {
+  authClient.linkSocial({ provider: "google", callbackURL: "/credentials" });
+};
+
+const GoogleAppActions = ({ connected }: { connected: boolean }) => {
+  if (!connected) {
+    return (
+      <Button
+        variant="outline"
+        size="sm"
+        className="rounded-full px-4"
+        onClick={connectGoogle}
+      >
+        Connect
+      </Button>
+    );
+  }
+
+  // No Disconnect: Google may be the user's sign-in method, so removing the
+  // credential from here would silently break Google nodes and is surprising.
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon" variant="ghost" className="rounded-full">
+          <MoreVerticalIcon className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onClick={connectGoogle}>Reconnect</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+};
+
+export const CredentialsConnectedAppsSection = () => {
+  const instagram = useInstagramCredential();
+  const youtube = useYoutubeCredential();
+  const google = useGoogleCredential();
+  const disconnectInstagram = useDisconnectInstagram();
+  const disconnectYoutube = useDisconnectYoutube();
+
+  const instagramExpiringSoon =
+    instagram.data?.tokenExpiresAt != null &&
+    new Date(instagram.data.tokenExpiresAt).getTime() <
+      Date.now() + INSTAGRAM_TOKEN_WARNING_MS;
 
   return (
-    <Card className="rounded-2xl border-border/70 p-4 shadow-sm">
-      <CardContent className="flex flex-row items-center justify-between p-0">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
-            <Image
-              src="/logos/youtube.svg"
-              alt="YouTube"
-              width={20}
-              height={20}
-              unoptimized
+    <div className="flex flex-col gap-3">
+      <SectionHeading>Connected apps</SectionHeading>
+
+      <ConnectedAppRow
+        logo="/logos/instagram.svg"
+        name="Instagram"
+        status={
+          instagram.isPending
+            ? "Loading…"
+            : instagram.data
+              ? `Connected as @${instagram.data.instagramUsername}${instagramExpiringSoon ? " · Token expiring soon — reconnect to refresh" : ""}`
+              : "Connect your Instagram account via OAuth"
+        }
+        action={
+          instagram.isPending ? null : (
+            <OAuthAppActions
+              connected={!!instagram.data}
+              authHref="/api/auth/instagram"
+              onDisconnect={() => disconnectInstagram.mutate()}
+              isDisconnecting={disconnectInstagram.isPending}
             />
-          </div>
-          <div className="min-w-0">
-            <p className="truncate text-base font-medium">YouTube</p>
-            <p className="truncate text-xs text-muted-foreground">
-              {isPending
-                ? "Loading…"
-                : data
-                  ? `Connected as ${data.channelTitle}`
-                  : "Connect your YouTube channel via OAuth"}
-            </p>
-          </div>
-        </div>
-        <div className="ml-4 shrink-0">
-          {!isPending && !data && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="rounded-full px-4"
-              asChild
-            >
-              <Link href="/api/auth/youtube">Connect</Link>
-            </Button>
-          )}
-          {!isPending && data && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button size="icon" variant="ghost" className="rounded-full">
-                  <MoreVerticalIcon className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem asChild>
-                  <Link href="/api/auth/youtube">Reconnect</Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  disabled={disconnect.isPending}
-                  onClick={() => disconnect.mutate()}
-                >
-                  <TrashIcon className="size-4" />
-                  Disconnect
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+          )
+        }
+      />
+
+      <ConnectedAppRow
+        logo="/logos/youtube.svg"
+        name="YouTube"
+        status={
+          youtube.isPending
+            ? "Loading…"
+            : youtube.data
+              ? `Connected as ${youtube.data.channelTitle}`
+              : "Connect your YouTube channel via OAuth"
+        }
+        action={
+          youtube.isPending ? null : (
+            <OAuthAppActions
+              connected={!!youtube.data}
+              authHref="/api/auth/youtube"
+              onDisconnect={() => disconnectYoutube.mutate()}
+              isDisconnecting={disconnectYoutube.isPending}
+            />
+          )
+        }
+      />
+
+      <ConnectedAppRow
+        logo="/logos/google.svg"
+        name="Google"
+        status={
+          google.isPending
+            ? "Loading…"
+            : google.data
+              ? `Connected as ${google.data.email}`
+              : "Powers the Gmail, Sheets, Drive & Forms nodes — connect via Google"
+        }
+        action={
+          google.isPending ? null : (
+            <GoogleAppActions connected={!!google.data} />
+          )
+        }
+      />
+    </div>
   );
 };
 
@@ -244,6 +305,21 @@ export const CredentialsList = () => {
       renderItem={(credential) => <CredentialItem data={credential} />}
       emptyView={<CredentialsEmpty />}
     />
+  );
+};
+
+// Wraps the DB-backed credential list under an "API keys" heading so it reads as
+// a distinct group from the OAuth "Connected apps" section above it.
+export const CredentialsApiKeysSection = ({
+  children,
+}: {
+  children: React.ReactNode;
+}) => {
+  return (
+    <div className="flex flex-col gap-3">
+      <SectionHeading>API keys</SectionHeading>
+      {children}
+    </div>
   );
 };
 
@@ -307,7 +383,9 @@ export const CredentialsEmpty = () => {
   return (
     <EmptyView
       onNew={handleCreate}
-      message="You haven't created any credentials yet. Get started by creating your first credential"
+      title="No API keys yet"
+      newLabel="New credential"
+      message="Add an API key to use the AI, messaging, and integration nodes (OpenAI, Anthropic, Telegram, Notion, and more)."
     />
   );
 };
