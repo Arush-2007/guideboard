@@ -90,6 +90,23 @@ describe("conditionExecutor routing", () => {
     expect(outcome.outputs).toEqual(["false"]);
   });
 
+  it("routes false when an ordering compare's field reference is missing", async () => {
+    // A missing reference renders to "" — it must not coerce to 0 and pass.
+    const outcome = await run(
+      { field: "@<ai_text_a1.score>@", operator: "less_than", value: "2" },
+      aiYes,
+    );
+    expect(outcome.outputs).toEqual(["false"]);
+  });
+
+  it("routes false for contains with an empty compare value", async () => {
+    const outcome = await run(
+      { field: "@<ai_text_a1.output>@", operator: "contains", value: "" },
+      aiYes,
+    );
+    expect(outcome.outputs).toEqual(["false"]);
+  });
+
   it("throws a config error when the field is missing", async () => {
     // The schema (parseNodeConfig) rejects a missing field before the executor's
     // own guard; either way it's a NonRetriableError mentioning the field.
