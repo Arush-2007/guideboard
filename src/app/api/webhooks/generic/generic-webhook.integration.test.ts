@@ -13,7 +13,13 @@ vi.mock("@/lib/auth", () => ({
 
 // Dispatch is asserted, not performed — stub it (the rest of utils stays real).
 const { sendWorkflowExecutionMock } = vi.hoisted(() => ({
-  sendWorkflowExecutionMock: vi.fn(async () => ({ ids: ["evt"] })),
+  sendWorkflowExecutionMock: vi.fn(
+    async (_input: {
+      workflowId: string;
+      initialData?: Record<string, unknown>;
+      idempotencyKey?: string;
+    }) => ({ ids: ["evt"] }),
+  ),
 }));
 vi.mock("@/inngest/utils", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/inngest/utils")>()),
@@ -80,12 +86,12 @@ describe("generic webhook route", () => {
 
     expect(res.status).toBe(202);
     expect(sendWorkflowExecutionMock).toHaveBeenCalledTimes(1);
-    const arg = sendWorkflowExecutionMock.mock.calls[0][0];
-    expect(arg.workflowId).toBe(workflowId);
-    expect(arg.initialData).toMatchObject({
+    const arg = sendWorkflowExecutionMock.mock.calls[0]?.[0];
+    expect(arg?.workflowId).toBe(workflowId);
+    expect(arg?.initialData).toMatchObject({
       webhook: { body: { email: "ada@example.com" } },
     });
-    expect(arg.idempotencyKey).toBeUndefined();
+    expect(arg?.idempotencyKey).toBeUndefined();
   });
 
   it("returns 404 and does not dispatch for an unknown token", async () => {
@@ -136,7 +142,7 @@ describe("generic webhook route", () => {
       body: "{}",
       headers: { "idempotency-key": "abc-123" },
     });
-    expect(sendWorkflowExecutionMock.mock.calls[0][0].idempotencyKey).toBe(
+    expect(sendWorkflowExecutionMock.mock.calls[0]?.[0]?.idempotencyKey).toBe(
       "abc-123",
     );
   });
