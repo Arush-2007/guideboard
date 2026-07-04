@@ -2,8 +2,30 @@ import z from "zod";
 import { PAGINATION } from "@/config/constants";
 import { ExecutionStatus, NodeExecutionStatus } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
+import { isBlobConfigured } from "@/lib/blob";
+import { isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
+import { refreshBlobUrls } from "./refresh-blob-urls";
+
+/**
+ * Execution rows seeded from a blob-stored snapshot persist `{ __blobRef }`
+ * instead of the oversized payload (see executeWorkflow's create-execution).
+ * Only `replay-contexts/` keys are honored — that's the only prefix the engine
+ * ever writes here, so a `__blobRef` smuggled into a trigger payload can't
+ * make rerun hydrate an arbitrary bucket object.
+ */
+function asBlobRef(value: unknown): string | null {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).__blobRef === "string"
+  ) {
+    const key = (value as { __blobRef: string }).__blobRef;
+    return key.startsWith("replay-contexts/") ? key : null;
+  }
+  return null;
+}
 
 export const executionsRouter = createTRPCRouter({
   getRecentFailures: protectedProcedure.query(async ({ ctx }) => {
@@ -24,8 +46,8 @@ export const executionsRouter = createTRPCRouter({
   }),
   getOne: protectedProcedure
     .input(z.object({ id: z.string() }))
-    .query(({ ctx, input }) => {
-      return prisma.execution.findUniqueOrThrow({
+    .query(async ({ ctx, input }) => {
+      const execution = await prisma.execution.findUniqueOrThrow({
         where: {
           id: input.id,
           workflow: {
@@ -50,6 +72,21 @@ export const executionsRouter = createTRPCRouter({
           },
         },
       });
+
+      // Stored signed blob URLs expire after an hour; re-sign them at read
+      // time so old executions keep working file links (no-op with a public
+      // base URL or without R2).
+      return {
+        ...execution,
+        output: await refreshBlobUrls(execution.output),
+        nodeExecutions: await Promise.all(
+          execution.nodeExecutions.map(async (ne) => ({
+            ...ne,
+            input: await refreshBlobUrls(ne.input),
+            output: await refreshBlobUrls(ne.output),
+          })),
+        ),
+      };
     }),
   rerun: protectedProcedure
     .input(z.object({ id: z.string() }))
@@ -64,9 +101,23 @@ export const executionsRouter = createTRPCRouter({
         select: { workflowId: true, input: true },
       });
 
+      // A blob-seeded run stored `{ __blobRef }`; re-dispatch by key so the
+      // full snapshot (too big for the event payload) is hydrated in-function.
+      const blobRef = asBlobRef(execution.input);
+      if (blobRef && !isBlobConfigured()) {
+        throw new Error(
+          "This run's input lives in blob storage, but R2 is not configured. " +
+            "Set the R2_* environment variables to re-run it.",
+        );
+      }
+
       await sendWorkflowExecution({
         workflowId: execution.workflowId,
-        initialData: (execution.input as Record<string, unknown>) ?? {},
+        ...(blobRef
+          ? { initialDataBlobKey: blobRef }
+          : {
+              initialData: (execution.input as Record<string, unknown>) ?? {},
+            }),
       });
 
       return { success: true };
@@ -95,7 +146,7 @@ export const executionsRouter = createTRPCRouter({
       const snapshot = await prisma.nodeExecution.findFirst({
         where: { executionId: input.executionId, nodeId: input.nodeId },
         orderBy: { sequence: "asc" },
-        select: { input: true, status: true },
+        select: { input: true, inputBlobKey: true, status: true },
       });
 
       if (!snapshot) {
@@ -104,6 +155,34 @@ export const executionsRouter = createTRPCRouter({
       if (snapshot.status === NodeExecutionStatus.SKIPPED) {
         // A skipped node never ran, so there's no meaningful state to replay.
         throw new Error("Can't replay from a node that was skipped");
+      }
+
+      // An oversized input was stored as a truncation marker; replaying from
+      // the marker would silently feed the run garbage (every upstream
+      // reference resolves empty). Use the full R2 snapshot when one exists,
+      // refuse clearly when it doesn't.
+      if (isClampedMarker(snapshot.input)) {
+        if (!snapshot.inputBlobKey) {
+          throw new Error(
+            "This node's input was too large to store inline and no full " +
+              "snapshot exists (the run predates full snapshots or blob " +
+              "storage was off when it ran), so replaying it would use " +
+              "incomplete data. Re-run the whole workflow instead.",
+          );
+        }
+        if (!isBlobConfigured()) {
+          throw new Error(
+            "This node's full input lives in blob storage, but R2 is not " +
+              "configured. Set the R2_* environment variables to replay it.",
+          );
+        }
+        await sendWorkflowExecution({
+          workflowId: execution.workflowId,
+          initialDataBlobKey: snapshot.inputBlobKey,
+          replayFromNodeId: input.nodeId,
+          replayOfExecutionId: input.executionId,
+        });
+        return { success: true };
       }
 
       await sendWorkflowExecution({

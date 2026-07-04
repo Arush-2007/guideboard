@@ -158,6 +158,7 @@ export async function runWorkflowNodes({
   sortedNodes,
   connections = [],
   userId,
+  executionId,
   initialData,
   step,
   publish,
@@ -167,6 +168,8 @@ export async function runWorkflowNodes({
   sortedNodes: ExecutableNode[];
   connections?: ExecutableConnection[];
   userId: string;
+  /** Execution row id, threaded to executors for deterministic resource keys. */
+  executionId: string;
   initialData?: WorkflowContext;
   step: StepTools;
   publish: Realtime.PublishFn;
@@ -247,6 +250,7 @@ export async function runWorkflowNodes({
         data: node.data as Record<string, unknown>,
         nodeId: node.id,
         outputKey: getOutputKeyForNode(node.type, node.id, node.ref),
+        executionId,
         userId,
         context: before,
         step,

@@ -461,6 +461,9 @@ model NodeExecution {
   status     NodeExecutionStatus @default(RUNNING)
   input      Json?
   output     Json?
+  // R2 key of the full (unclamped) input snapshot; set only when `input` was
+  // replaced by a clampJson truncation marker. Enables lossless replay-from-node.
+  inputBlobKey String?
   error      String?             @db.Text
   errorStack String?             @db.Text
 

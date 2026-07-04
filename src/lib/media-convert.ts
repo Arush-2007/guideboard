@@ -1,5 +1,6 @@
 import "server-only";
 import { FORMAT_META, type Format } from "@/lib/conversions";
+import { assertWithinTransferLimit } from "@/lib/file-limits";
 
 /**
  * Binary/media conversions (images, PDF, audio, video) can't run in the
@@ -216,8 +217,20 @@ export async function fetchMediaResult(
     );
   }
 
+  // Size guard before AND after buffering (header can be absent or lie): the
+  // whole output is held in memory on its way to R2, so an oversized transcode
+  // must fail cleanly instead of OOMing the executor.
+  const declared = download.headers.get("content-length");
+  assertWithinTransferLimit(
+    declared ? Number(declared) : null,
+    "The converted file",
+  );
+
+  const bytes = new Uint8Array(await download.arrayBuffer());
+  assertWithinTransferLimit(bytes.byteLength, "The converted file");
+
   return {
-    bytes: new Uint8Array(await download.arrayBuffer()),
+    bytes,
     contentType: FORMAT_META[to].mime ?? "application/octet-stream",
   };
 }

@@ -77,6 +77,7 @@ const run = (
     data,
     nodeId: "c1",
     outputKey: "CONVERT_1",
+    executionId: "exec_test",
     userId: "u1",
     context,
     step,
@@ -210,6 +211,11 @@ describe("convertExecutor", () => {
     // Step B: poll+download run against the job id from step A, then stored once.
     expect(fetchMediaResultMock).toHaveBeenCalledWith("job-1", "png");
     expect(putBlobMock).toHaveBeenCalledTimes(1);
+    // Deterministic key (execution + node scoped): a retried store step
+    // overwrites its own object, and pruning can GC by execution prefix.
+    expect(putBlobMock).toHaveBeenCalledWith(
+      expect.objectContaining({ key: "conversions/u1/exec_test/c1.png" }),
+    );
     expect(result.CONVERT_1).toMatchObject({
       from: "jpg",
       to: "png",

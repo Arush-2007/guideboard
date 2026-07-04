@@ -1,6 +1,8 @@
 import "server-only";
 import {
+  DeleteObjectsCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -105,29 +107,45 @@ const normalizeExt = (ext: string): string =>
 export type PutBlobArgs = {
   bytes: Uint8Array | Buffer;
   contentType: string;
-  /** Scopes the object key per user so blobs are namespaced + easy to prune. */
-  userId: string;
-  /** File extension (with or without a leading dot) for the object key. */
-  ext: string;
-};
+} & (
+  | {
+      /**
+       * Caller-controlled object key. Use a deterministic key (derived from
+       * execution/node ids) inside Inngest steps so a retried step overwrites
+       * its own object instead of orphaning the previous attempt's upload.
+       */
+      key: string;
+      userId?: never;
+      ext?: never;
+    }
+  | {
+      key?: never;
+      /** Scopes the object key per user so blobs are namespaced + easy to prune. */
+      userId: string;
+      /** File extension (with or without a leading dot) for the object key. */
+      ext: string;
+    }
+);
 
 /**
- * Uploads bytes to R2 and returns a `BlobHandle`. The key is
+ * Uploads bytes to R2 and returns a `BlobHandle`. With `key`, the object is
+ * written at exactly that key; otherwise the key is
  * `conversions/<userId>/<cuid2>.<ext>` — collision-free (cuid2) and namespaced
  * per user. Returns the public URL when `R2_PUBLIC_BASE_URL` is set, otherwise a
  * time-limited signed URL.
  */
-export async function putBlob({
-  bytes,
-  contentType,
-  userId,
-  ext,
-}: PutBlobArgs): Promise<BlobHandle> {
+export async function putBlob(args: PutBlobArgs): Promise<BlobHandle> {
+  const { bytes, contentType } = args;
   const config = readConfig();
   const s3 = getClient(config);
 
-  const safeExt = normalizeExt(ext);
-  const key = `conversions/${userId}/${createId()}${safeExt ? `.${safeExt}` : ""}`;
+  let key: string;
+  if (args.key !== undefined) {
+    key = args.key;
+  } else {
+    const safeExt = normalizeExt(args.ext);
+    key = `conversions/${args.userId}/${createId()}${safeExt ? `.${safeExt}` : ""}`;
+  }
 
   await s3.send(
     new PutObjectCommand({
@@ -160,4 +178,65 @@ export async function getSignedBlobUrl(
     new GetObjectCommand({ Bucket: config.bucket, Key: key }),
     { expiresIn: ttlSeconds },
   );
+}
+
+/** Downloads a stored object and returns its body as a UTF-8 string. */
+export async function getBlobText(key: string): Promise<string> {
+  const config = readConfig();
+  const s3 = getClient(config);
+  const result = await s3.send(
+    new GetObjectCommand({ Bucket: config.bucket, Key: key }),
+  );
+  if (!result.Body) {
+    throw new Error(`Blob ${key} has no body`);
+  }
+  return result.Body.transformToString();
+}
+
+/** Downloads and JSON-parses a stored object (e.g. a replay context snapshot). */
+export async function getBlobJson(key: string): Promise<unknown> {
+  return JSON.parse(await getBlobText(key));
+}
+
+/**
+ * Deletes every object under a key prefix (paginated; DeleteObjects caps at
+ * 1000 keys per call). Used by retention pruning to drop an execution's stored
+ * artifacts (`conversions/<userId>/<executionId>/`, `replay-contexts/<executionId>/`).
+ * Returns the number of objects deleted.
+ */
+export async function deleteBlobsByPrefix(prefix: string): Promise<number> {
+  const config = readConfig();
+  const s3 = getClient(config);
+
+  let deleted = 0;
+  let continuationToken: string | undefined;
+
+  do {
+    const page = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: config.bucket,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    const keys = (page.Contents ?? [])
+      .map((obj) => obj.Key)
+      .filter((k): k is string => Boolean(k));
+
+    if (keys.length > 0) {
+      await s3.send(
+        new DeleteObjectsCommand({
+          Bucket: config.bucket,
+          Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+        }),
+      );
+      deleted += keys.length;
+    }
+
+    continuationToken = page.IsTruncated
+      ? page.NextContinuationToken
+      : undefined;
+  } while (continuationToken);
+
+  return deleted;
 }

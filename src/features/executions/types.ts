@@ -15,6 +15,12 @@ export interface NodeExecutorParams<TData = Record<string, unknown>> {
    * variable picker advertises and downstream `@<...>@` references resolve.
    */
   outputKey: string;
+  /**
+   * The Execution row's id. Use it (with `nodeId`) to derive deterministic
+   * external resource keys — e.g. blob object keys — so Inngest step retries
+   * overwrite their own artifact instead of orphaning the previous attempt's.
+   */
+  executionId: string;
   userId: string;
   context: WorkflowContext;
   step: StepTools;

@@ -701,7 +701,7 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
           </div>
         )}
 
-        {execution.output && (
+        {execution.output != null && (
           <div className="mt-6 p-4 bg-muted rounded-md">
             <Collapsible
               open={showFinalOutput}

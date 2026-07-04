@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type ClampedMarker, clampJson } from "./clamp-json";
+import { type ClampedMarker, clampJson, isClampedMarker } from "./clamp-json";
 
 const isMarker = (v: unknown): v is ClampedMarker =>
   typeof v === "object" &&
@@ -38,5 +38,19 @@ describe("clampJson", () => {
 
   it("maps undefined to null", () => {
     expect(clampJson(undefined)).toBeNull();
+  });
+});
+
+describe("isClampedMarker", () => {
+  it("accepts a marker produced by clampJson", () => {
+    expect(isClampedMarker(clampJson({ blob: "x".repeat(50_000) }))).toBe(true);
+  });
+
+  it("rejects ordinary values and lookalikes", () => {
+    expect(isClampedMarker({ a: 1 })).toBe(false);
+    expect(isClampedMarker(null)).toBe(false);
+    expect(isClampedMarker("__truncated")).toBe(false);
+    // The flag must be literally true, not merely truthy/present.
+    expect(isClampedMarker({ __truncated: "yes" })).toBe(false);
   });
 });
