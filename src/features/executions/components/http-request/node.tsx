@@ -3,14 +3,17 @@
 import dynamic from "next/dynamic";
 
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { GlobeIcon } from "lucide-react";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { HttpRequestFormValues } from "./dialog";
 const HttpRequestDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.HttpRequestDialog),
 );
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.HTTP_REQUEST);
 
 type HttpRequestNodeData = {
   variableName?: string;
@@ -64,8 +67,8 @@ export const HttpRequestNode = memo((props: NodeProps<HttpRequestNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon={GlobeIcon}
-        name="HTTP Request"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

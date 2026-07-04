@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { ClipboardCheck } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { CandidateScoringFormValues } from "./dialog";
@@ -12,6 +13,8 @@ import type { CandidateScoringFormValues } from "./dialog";
 const CandidateScoringDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.CandidateScoringDialog),
 );
+
+const option = getNodeOption(NodeType.CANDIDATE_SCORING);
 
 type CandidateScoringNodeData = Partial<CandidateScoringFormValues>;
 
@@ -63,8 +66,8 @@ export const CandidateScoringNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon={ClipboardCheck}
-          name="Candidate Scoring"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

@@ -11,6 +11,10 @@ import type { TelegramActionFormValues } from "./dialog";
 const TelegramActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.TelegramActionDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.TELEGRAM_ACTION);
 
 type TelegramActionNodeData = {
   credentialId?: string;
@@ -69,8 +73,8 @@ export const TelegramActionNode = memo(
         <BaseExecutionNode
           {...props}
           id={props.id}
-          icon="/logos/telegram.svg"
-          name="Send Telegram"
+          icon={option.icon}
+          name={option.label}
           status={nodeStatus}
           description={description}
           onSettings={handleOpenSettings}

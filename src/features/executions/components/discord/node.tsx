@@ -10,7 +10,11 @@ import type { DiscordFormValues } from "./dialog";
 const DiscordDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.DiscordDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.DISCORD);
 
 type DiscordNodeData = {
   webhookUrl?: string;
@@ -67,8 +71,8 @@ export const DiscordNode = memo((props: NodeProps<DiscordNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/discord.svg"
-        name="Discord"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

@@ -6,12 +6,16 @@ import { type NodeProps, type Node, useReactFlow } from "@xyflow/react";
 import { memo, useState } from "react";
 import { toast } from "sonner";
 import { BaseTriggerNode } from "../base-trigger-node";
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
 import { saveYoutubeCommentTriggerConfig } from "./actions";
 import type { YoutubeCommentTriggerFormValues } from "./dialog";
 const YoutubeCommentTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.YoutubeCommentTriggerDialog),
 );
+
+const option = getNodeOption(NodeType.YOUTUBE_COMMENT_TRIGGER);
 
 type YoutubeCommentTriggerData = {
   videoId?: string;
@@ -68,8 +72,8 @@ export const YoutubeCommentTriggerNode = memo(
         )}
         <BaseTriggerNode
           {...props}
-          icon="/logos/youtube.svg"
-          name="YouTube Comment Trigger"
+          icon={option.icon}
+          name={option.label}
           description={description}
           status={nodeStatus}
           onSettings={handleOpenSettings}

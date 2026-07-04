@@ -5,7 +5,11 @@ import { BaseTriggerNode } from "../base-trigger-node";
 const GmailTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GmailTriggerDialog),
 );
+import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.GMAIL_TRIGGER);
 
 export const GmailTriggerNode = memo((props: NodeProps) => {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -21,8 +25,8 @@ export const GmailTriggerNode = memo((props: NodeProps) => {
       )}
       <BaseTriggerNode
         {...props}
-        icon="/logos/gmail.svg"
-        name="Gmail Trigger"
+        icon={option.icon}
+        name={option.label}
         description="When a new unread email is received"
         status={nodeStatus}
         onSettings={handleOpenSettings}

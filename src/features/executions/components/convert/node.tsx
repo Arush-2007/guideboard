@@ -1,10 +1,11 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import { Replace } from "lucide-react";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import {
   asFormat,
   FORMAT_META,
@@ -17,6 +18,8 @@ import type { ConvertFormValues } from "./dialog";
 const ConvertDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.ConvertDialog),
 );
+
+const option = getNodeOption(NodeType.CONVERT);
 
 type ConvertNodeData = {
   to?: string;
@@ -73,8 +76,8 @@ export const ConvertNode = memo((props: NodeProps<ConvertNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon={Replace}
-        name="Convert"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

@@ -24,6 +24,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { INTEGRATIONS } from "@/config/integrations";
 import { authClient } from "@/lib/auth-client";
 
 const loginSchema = z.object({
@@ -120,8 +121,8 @@ export function LoginForm() {
                     disabled={isPending}
                   >
                     <Image
-                      alt="GitHub"
-                      src="/logos/github.svg"
+                      alt={INTEGRATIONS.github.label}
+                      src={INTEGRATIONS.github.icon}
                       width={20}
                       height={20}
                       unoptimized
@@ -136,8 +137,8 @@ export function LoginForm() {
                     disabled={isPending}
                   >
                     <Image
-                      alt="Google"
-                      src="/logos/google.svg"
+                      alt={INTEGRATIONS.google.label}
+                      src={INTEGRATIONS.google.icon}
                       width={20}
                       height={20}
                       unoptimized

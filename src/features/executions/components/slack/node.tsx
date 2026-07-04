@@ -11,6 +11,10 @@ import type { SlackFormValues } from "./dialog";
 const SlackDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.SlackDialog),
 );
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
+
+const option = getNodeOption(NodeType.SLACK);
 
 type SlackNodeData = {
   webhookUrls?: string[];
@@ -72,8 +76,8 @@ export const SlackNode = memo((props: NodeProps<SlackNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon="/logos/slack.svg"
-        name="Send to Slack"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

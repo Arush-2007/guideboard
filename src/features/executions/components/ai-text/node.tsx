@@ -5,13 +5,16 @@ import dynamic from "next/dynamic";
 import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { useParams } from "next/navigation";
-import { BrainCircuit } from "lucide-react";
+import { getNodeOption } from "@/config/node-options";
+import { NodeType } from "@/generated/prisma";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { AiTextFormValues } from "./dialog";
 const AiTextDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.AiTextDialog),
 );
 import { useNodeStatus } from "../../hooks/use-node-status";
+
+const option = getNodeOption(NodeType.AI_TEXT);
 
 type AiTextNodeData = {
   provider?: "openai" | "anthropic" | "gemini";
@@ -70,8 +73,8 @@ export const AiTextNode = memo((props: NodeProps<AiTextNodeType>) => {
       <BaseExecutionNode
         {...props}
         id={props.id}
-        icon={BrainCircuit}
-        name="AI"
+        icon={option.icon}
+        name={option.label}
         status={nodeStatus}
         description={description}
         onSettings={handleOpenSettings}

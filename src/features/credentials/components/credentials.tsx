@@ -26,8 +26,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  getCredentialIntegration,
+  INTEGRATIONS,
+} from "@/config/integrations";
 import type { Credential } from "@/generated/prisma";
-import { CredentialType } from "@/generated/prisma";
 import { authClient } from "@/lib/auth-client";
 import { useEntitySearch } from "@/hooks/use-entity-search";
 import {
@@ -216,8 +219,8 @@ export const CredentialsConnectedAppsSection = () => {
       <SectionHeading>Connected apps</SectionHeading>
 
       <ConnectedAppRow
-        logo="/logos/instagram.svg"
-        name="Instagram"
+        logo={INTEGRATIONS.instagram.icon}
+        name={INTEGRATIONS.instagram.label}
         status={
           instagram.isPending
             ? "Loading…"
@@ -238,8 +241,8 @@ export const CredentialsConnectedAppsSection = () => {
       />
 
       <ConnectedAppRow
-        logo="/logos/youtube.svg"
-        name="YouTube"
+        logo={INTEGRATIONS.youtube.icon}
+        name={INTEGRATIONS.youtube.label}
         status={
           youtube.isPending
             ? "Loading…"
@@ -260,8 +263,8 @@ export const CredentialsConnectedAppsSection = () => {
       />
 
       <ConnectedAppRow
-        logo="/logos/google.svg"
-        name="Google"
+        logo={INTEGRATIONS.google.icon}
+        name={INTEGRATIONS.google.label}
         status={
           google.isPending
             ? "Loading…"
@@ -390,21 +393,6 @@ export const CredentialsEmpty = () => {
   );
 };
 
-const credentialLogos: Record<CredentialType, string> = {
-  [CredentialType.OPENAI]: "/logos/openai.svg",
-  [CredentialType.ANTHROPIC]: "/logos/anthropic.svg",
-  [CredentialType.GEMINI]: "/logos/gemini.svg",
-  [CredentialType.INSTAGRAM]: "/logos/instagram.svg",
-  [CredentialType.NOTION]: "/logos/notion.svg",
-  [CredentialType.TELEGRAM]: "/logos/telegram.svg",
-  [CredentialType.WHATSAPP]: "/logos/whatsapp.svg",
-  [CredentialType.XAI]: "/logos/xai.svg",
-  [CredentialType.GROQ]: "/logos/groq.svg",
-  [CredentialType.AFFINDA]: "/logos/affinda.svg",
-  [CredentialType.LEVER]: "/logos/lever.svg",
-  [CredentialType.TYPEFORM]: "/logos/typeform.svg",
-};
-
 export const CredentialItem = ({ data }: { data: Credential }) => {
   const removeCredential = useRemoveCredential();
 
@@ -412,7 +400,7 @@ export const CredentialItem = ({ data }: { data: Credential }) => {
     removeCredential.mutate({ id: data.id });
   };
 
-  const logo = credentialLogos[data.type] || "/logos/openai.svg";
+  const logo = getCredentialIntegration(data.type).icon;
 
   return (
     <EntityItem
