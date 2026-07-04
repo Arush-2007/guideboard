@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { INTEGRATIONS } from "@/config/integrations";
 import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import { CredentialType } from "@/generated/prisma";
 
@@ -318,8 +319,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/xai.svg"
-                              alt="xAI"
+                              src={INTEGRATIONS.xai.icon}
+                              alt={INTEGRATIONS.xai.label}
                               width={14}
                               height={14}
                               className="dark:invert"
@@ -359,8 +360,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/gemini.svg"
-                              alt="Gemini"
+                              src={INTEGRATIONS.gemini.icon}
+                              alt={INTEGRATIONS.gemini.label}
                               width={14}
                               height={14}
                               unoptimized
@@ -399,8 +400,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/openai.svg"
-                              alt="OpenAI"
+                              src={INTEGRATIONS.openai.icon}
+                              alt={INTEGRATIONS.openai.label}
                               width={14}
                               height={14}
                               unoptimized
@@ -439,8 +440,8 @@ export const AiReplyGeneratorDialog = ({
                         <SelectItem key={cred.id} value={cred.id}>
                           <div className="flex items-center gap-2">
                             <Image
-                              src="/logos/groq.svg"
-                              alt="Groq"
+                              src={INTEGRATIONS.groq.icon}
+                              alt={INTEGRATIONS.groq.label}
                               width={14}
                               height={14}
                               unoptimized
