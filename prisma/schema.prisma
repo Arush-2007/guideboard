@@ -35,6 +35,7 @@ model User {
   schedulePolls        SchedulePoll[]
   webhookTriggers      WebhookTrigger[]
   googleCredential     GoogleCredential?
+  microsoftCredential  MicrosoftCredential?
   conversations        Conversation[]
   notificationSettings NotificationSettings?
 
@@ -161,6 +162,21 @@ model GoogleCredential {
   refreshToken String
   expiresAt    DateTime?
   scopes       String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model MicrosoftCredential {
+  id           String    @id @default(cuid())
+  userId       String    @unique
+  accessToken  String
+  refreshToken String
+  expiresAt    DateTime?
+  microsoftId  String
+  displayName  String
+  email        String
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -334,6 +350,7 @@ enum NodeType {
   WHATSAPP_ACTION
   GMAIL_ACTION
   GOOGLE_SHEETS_ACTION
+  EXCEL_ACTION
   RESUME_PARSER
   CANDIDATE_SCORING
   ATS_ACTION

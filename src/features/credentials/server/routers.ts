@@ -5,6 +5,15 @@ import { CredentialType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { refreshMicrosoftTokenIfNeeded } from "@/lib/microsoft-token";
+import {
+  GRAPH_BASE,
+  getFirstTableOnWorksheet,
+  getTableColumnNames,
+  graphHeaders,
+  workbookUrl,
+  XLSX_MIME_TYPE,
+} from "@/lib/ms-graph";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
 import {
   createTRPCRouter,
@@ -309,6 +318,22 @@ export const credentialsRouter = createTRPCRouter({
     });
     return { ok: true as const };
   }),
+  getMicrosoft: protectedProcedure.query(async ({ ctx }) => {
+    return prisma.microsoftCredential.findUnique({
+      where: { userId: ctx.auth.user.id },
+      select: {
+        id: true,
+        displayName: true,
+        email: true,
+      },
+    });
+  }),
+  disconnectMicrosoft: protectedProcedure.mutation(async ({ ctx }) => {
+    await prisma.microsoftCredential.deleteMany({
+      where: { userId: ctx.auth.user.id },
+    });
+    return { ok: true as const };
+  }),
   // Read-only status of the user's linked Google account. Google is connected
   // implicitly via "Sign in with Google" (a database hook mirrors the OAuth
   // tokens into GoogleCredential — see src/lib/auth.ts), so surfacing it here
@@ -599,6 +624,91 @@ export const credentialsRouter = createTRPCRouter({
         .filter((h) => h.length > 0);
 
       return { headers };
+    }),
+  // --- Excel on OneDrive (Microsoft Graph workbook API) ---
+  // Lists the user's .xlsx workbooks for the Excel node's workbook dropdown.
+  getExcelWorkbooks: protectedProcedure.query(async ({ ctx }) => {
+    type DriveSearchResponse = {
+      value?: Array<{
+        id?: string;
+        name?: string;
+        file?: { mimeType?: string };
+      }>;
+    };
+
+    const accessToken = await refreshMicrosoftTokenIfNeeded(ctx.auth.user.id);
+    const data = await ky
+      .get(`${GRAPH_BASE}/me/drive/root/search(q='.xlsx')`, {
+        searchParams: { $select: "id,name,file", $top: "100" },
+        headers: graphHeaders(accessToken),
+      })
+      .json<DriveSearchResponse>();
+
+    return (data.value ?? [])
+      .filter((item) => item.file?.mimeType === XLSX_MIME_TYPE)
+      .map((item) => ({
+        id: item.id ?? "",
+        name: item.name ?? "Untitled workbook",
+      }))
+      .filter((item) => item.id.length > 0);
+  }),
+  getExcelWorksheets: protectedProcedure
+    .input(z.object({ workbookId: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      type WorksheetsResponse = {
+        value?: Array<{ id?: string; name?: string; position?: number }>;
+      };
+
+      const accessToken = await refreshMicrosoftTokenIfNeeded(
+        ctx.auth.user.id,
+      );
+      const data = await ky
+        .get(`${workbookUrl(input.workbookId)}/worksheets`, {
+          searchParams: { $select: "id,name,position" },
+          headers: graphHeaders(accessToken),
+        })
+        .json<WorksheetsResponse>();
+
+      return (data.value ?? [])
+        .map((sheet) => ({
+          id: sheet.id ?? "",
+          name: sheet.name ?? "",
+          position: sheet.position ?? 0,
+        }))
+        .filter((sheet) => sheet.name.length > 0)
+        .sort((a, b) => a.position - b.position);
+    }),
+  // Header columns of the first Table on a worksheet. `tableName: null` means
+  // the sheet has no Excel Table yet — the dialog shows "format as Table"
+  // guidance in that case (the Excel node only writes into Tables).
+  getExcelColumns: protectedProcedure
+    .input(
+      z.object({
+        workbookId: z.string().min(1),
+        worksheetName: z.string().min(1),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const accessToken = await refreshMicrosoftTokenIfNeeded(
+        ctx.auth.user.id,
+      );
+      const table = await getFirstTableOnWorksheet({
+        accessToken,
+        workbookId: input.workbookId,
+        worksheetName: input.worksheetName,
+      });
+
+      if (!table) {
+        return { headers: [] as string[], tableName: null };
+      }
+
+      const headers = await getTableColumnNames({
+        accessToken,
+        workbookId: input.workbookId,
+        tableName: table.name,
+      });
+
+      return { headers, tableName: table.name };
     }),
   getNotionPages: protectedProcedure.query(async ({ ctx }) => {
     type NotionSearchResponse = {

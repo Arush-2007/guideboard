@@ -6,6 +6,7 @@ import {
   CredentialsInstagramAuthErrorToast,
   CredentialsList,
   CredentialsLoading,
+  CredentialsMicrosoftAuthErrorToast,
   CredentialsYoutubeAuthErrorToast,
 } from "@/features/credentials/components/credentials";
 import { credentialsParamsLoader } from "@/features/credentials/server/params-loader";
@@ -33,6 +34,7 @@ const Page = async ({ searchParams }: Props) => {
           <Suspense fallback={null}>
             <CredentialsInstagramAuthErrorToast />
             <CredentialsYoutubeAuthErrorToast />
+            <CredentialsMicrosoftAuthErrorToast />
           </Suspense>
           <CredentialsConnectedAppsSection />
           <CredentialsApiKeysSection>

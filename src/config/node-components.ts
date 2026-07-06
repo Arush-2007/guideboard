@@ -8,6 +8,7 @@ import { CandidateScoringNode } from "@/features/executions/components/candidate
 import { ConditionNode } from "@/features/executions/components/condition/node";
 import { ConvertNode } from "@/features/executions/components/convert/node";
 import { DiscordNode } from "@/features/executions/components/discord/node";
+import { ExcelActionNode } from "@/features/executions/components/excel-action/node";
 import { GeminiNode } from "@/features/executions/components/gemini/node";
 import { GmailActionNode } from "@/features/executions/components/gmail-action/node";
 import { GoogleSheetsActionNode } from "@/features/executions/components/google-sheets-action/node";
@@ -65,6 +66,7 @@ export const nodeComponents = {
   [NodeType.WHATSAPP_ACTION]: WhatsappActionNode,
   [NodeType.GMAIL_ACTION]: GmailActionNode,
   [NodeType.GOOGLE_SHEETS_ACTION]: GoogleSheetsActionNode,
+  [NodeType.EXCEL_ACTION]: ExcelActionNode,
   [NodeType.RESUME_PARSER]: ResumeParserNode,
   [NodeType.CANDIDATE_SCORING]: CandidateScoringNode,
   [NodeType.ATS_ACTION]: AtsActionNode,

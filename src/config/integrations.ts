@@ -21,6 +21,8 @@ export const INTEGRATIONS = {
   groq: { label: "Groq", icon: "/logos/groq.svg" },
   instagram: { label: "Instagram", icon: "/logos/instagram.svg" },
   lever: { label: "Lever", icon: "/logos/lever.svg" },
+  microsoft: { label: "Microsoft", icon: "/logos/microsoft.svg" },
+  microsoftExcel: { label: "Microsoft Excel", icon: "/logos/excel.svg" },
   notion: { label: "Notion", icon: "/logos/notion.svg" },
   openai: { label: "OpenAI", icon: "/logos/openai.svg" },
   slack: { label: "Slack", icon: "/logos/slack.svg" },
