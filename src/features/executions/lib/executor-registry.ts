@@ -17,6 +17,7 @@ import { candidateScoringExecutor } from "../components/candidate-scoring/execut
 import { conditionExecutor } from "../components/condition/executor";
 import { convertExecutor } from "../components/convert/executor";
 import { discordExecutor } from "../components/discord/executor";
+import { excelActionExecutor } from "../components/excel-action/executor";
 import { geminiExecutor } from "../components/gemini/executor";
 import { gmailActionExecutor } from "../components/gmail-action/executor";
 import { googleSheetsActionExecutor } from "../components/google-sheets-action/executor";
@@ -61,6 +62,7 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.GMAIL_ACTION]: gmailActionExecutor,
   [NodeType.GMAIL_TRIGGER]: gmailTriggerExecutor,
   [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionExecutor,
+  [NodeType.EXCEL_ACTION]: excelActionExecutor,
   [NodeType.GOOGLE_SHEETS_TRIGGER]: googleSheetsTriggerExecutor,
   [NodeType.SCHEDULE_TRIGGER]: scheduleTriggerExecutor,
   [NodeType.WEBHOOK_TRIGGER]: webhookTriggerExecutor,

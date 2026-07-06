@@ -161,6 +161,36 @@ export const useDisconnectYoutube = () => {
 };
 
 /**
+ * Linked Microsoft account (OAuth), without sensitive fields
+ */
+export const useMicrosoftCredential = () => {
+  const trpc = useTRPC();
+  return useQuery(trpc.credentials.getMicrosoft.queryOptions());
+};
+
+/**
+ * Remove linked Microsoft account for the current user
+ */
+export const useDisconnectMicrosoft = () => {
+  const queryClient = useQueryClient();
+  const trpc = useTRPC();
+
+  return useMutation(
+    trpc.credentials.disconnectMicrosoft.mutationOptions({
+      onSuccess: () => {
+        toast.success("Microsoft disconnected");
+        queryClient.invalidateQueries(
+          trpc.credentials.getMicrosoft.queryOptions(),
+        );
+      },
+      onError: (error) => {
+        toast.error(error.message);
+      },
+    }),
+  );
+};
+
+/**
  * Linked Google account (OAuth via sign-in), without sensitive fields
  */
 export const useGoogleCredential = () => {

@@ -9,6 +9,7 @@ import { fetchConditionRealtimeToken } from "@/features/executions/components/co
 import { fetchConvertRealtimeToken } from "@/features/executions/components/convert/actions";
 import { fetchDiscordRealtimeToken } from "@/features/executions/components/discord/actions";
 import { fetchGeminiRealtimeToken } from "@/features/executions/components/gemini/actions";
+import { fetchExcelActionRealtimeToken } from "@/features/executions/components/excel-action/actions";
 import { fetchGmailActionRealtimeToken } from "@/features/executions/components/gmail-action/actions";
 import { fetchGoogleSheetsActionRealtimeToken } from "@/features/executions/components/google-sheets-action/actions";
 import { fetchHttpRequestRealtimeToken } from "@/features/executions/components/http-request/actions";
@@ -43,6 +44,7 @@ import { CONDITION_CHANNEL_NAME } from "@/inngest/channels/condition";
 import { CONVERT_CHANNEL_NAME } from "@/inngest/channels/convert";
 import { DISCORD_CHANNEL_NAME } from "@/inngest/channels/discord";
 import { GEMINI_CHANNEL_NAME } from "@/inngest/channels/gemini";
+import { EXCEL_ACTION_CHANNEL_NAME } from "@/inngest/channels/excel-action";
 import { GMAIL_ACTION_CHANNEL_NAME } from "@/inngest/channels/gmail-action";
 import { GMAIL_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/gmail-trigger";
 import { GOOGLE_FORM_TRIGGER_CHANNEL_NAME } from "@/inngest/channels/google-form-trigger";
@@ -201,6 +203,10 @@ export const nodeStatusRegistry: Partial<Record<NodeType, NodeStatusChannel>> =
     [NodeType.GOOGLE_SHEETS_ACTION]: {
       channelName: GOOGLE_SHEETS_ACTION_CHANNEL_NAME,
       refreshToken: fetchGoogleSheetsActionRealtimeToken,
+    },
+    [NodeType.EXCEL_ACTION]: {
+      channelName: EXCEL_ACTION_CHANNEL_NAME,
+      refreshToken: fetchExcelActionRealtimeToken,
     },
     [NodeType.RESUME_PARSER]: {
       channelName: RESUME_PARSER_CHANNEL_NAME,
