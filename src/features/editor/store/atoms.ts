@@ -23,6 +23,19 @@ export const isDirtyAtom = atom(false);
 // the editor is dirty; <NavGuardDialog> (mounted in the editor) reacts to it.
 export const navGuardTargetAtom = atom<string | null>(null);
 
+// Undo/redo actions plus their availability, published by <HistoryController>
+// (its single writer) which owns the history stacks off the React Flow store.
+// Read by the canvas undo/redo buttons — and, next, the Ctrl+Z/Ctrl+Shift+Z
+// shortcuts — so every trigger drives one engine. `null` until the controller
+// mounts.
+export type HistoryControls = {
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+};
+export const historyControlsAtom = atom<HistoryControls | null>(null);
+
 // A node that has been chosen from the selector but not yet placed on the
 // canvas. It waits in the staging tray until the user drags it onto the canvas,
 // at which point a real React Flow node is created and the staged entry removed.

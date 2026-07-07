@@ -44,8 +44,10 @@ import {
 } from "../store/atoms";
 import { AddNodeButton } from "./add-node-button";
 import { ExecuteWorkflowButton } from "./execute-workflow-button";
+import { HistoryController } from "./history-controller";
 import { NavGuardDialog } from "./nav-guard-dialog";
 import { StagingTray } from "./staging-tray";
+import { UndoRedoButtons } from "./undo-redo-buttons";
 
 // MiniMap with overlaid view controls: zoom in/out at the top-right of the
 // minimap, and a "center view" (fit) button along its bottom. Replaces the
@@ -312,6 +314,18 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         {/* Watches the React Flow store to keep `isDirtyAtom` in sync (renders
             nothing). Inside the provider so it can read the store. */}
         <DirtyTracker />
+        {/* Owns undo/redo: observes the same store to record history and
+            restores into it. Renders nothing; publishes controls for the
+            toolbar buttons. Inside the provider so it can read the store, and
+            fed editor.tsx's setters so a restore keeps the controlled prop in
+            sync. */}
+        <HistoryController
+          setNodes={setNodes}
+          setEdges={setEdges}
+          initialNodes={workflow.nodes}
+          initialEdges={workflow.edges}
+          workflowId={workflowId}
+        />
         {/* One realtime subscription per distinct channel on the canvas; each
             renders nothing and feeds the shared node-status atom. */}
         {activeChannels.map((channel) => (
@@ -351,6 +365,11 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
               className={backgroundConfig.className}
               color={backgroundConfig.color}
             />
+            <Panel position="top-left">
+              <div className="rounded-xl border-2 border-primary bg-card p-1 shadow-sm">
+                <UndoRedoButtons />
+              </div>
+            </Panel>
             <Panel position="top-right">
               <div className="rounded-xl border-2 border-primary bg-card p-1 shadow-sm">
                 <AddNodeButton />
