@@ -6,6 +6,7 @@ import Image from "next/image";
 import { memo, type ReactNode } from "react";
 import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
 import { BaseHandle } from "@/components/react-flow/base-handle";
+import { NeedsConfigBadge } from "@/components/react-flow/needs-config-badge";
 import { WorkflowNode } from "@/components/workflow-node";
 import { type NodeStatus, NodeStatusIndicator } from "@/components/react-flow/node-status-indicator";
 
@@ -56,6 +57,7 @@ export const BaseTriggerNode = memo(
             onDoubleClick={onDoubleClick}
             className="relative size-20 rounded-2xl"
           >
+            <NeedsConfigBadge nodeId={id} />
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
                 <Image

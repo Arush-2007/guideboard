@@ -31,6 +31,7 @@ import { useSuspenseWorkflow } from "@/features/workflows/hooks/use-workflows";
 import "@xyflow/react/dist/style.css";
 import { useAtomValue, useSetAtom } from "jotai";
 import { nodeComponents } from "@/config/node-components";
+import { getNodeConfigIssues } from "@/config/node-schemas";
 import { NodeStatusSubscriber } from "@/features/executions/components/node-status-subscriber";
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
@@ -40,6 +41,7 @@ import { invalidConnectionReason } from "../lib/connection-validation";
 import { serializeSnapshot } from "../lib/snapshot";
 import {
   editorAtom,
+  invalidNodeConfigAtom,
   isDirtyAtom,
   lastSavedSnapshotAtom,
   STAGED_NODE_MIME,
@@ -162,6 +164,44 @@ const DirtyTracker = () => {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
+
+  return null;
+};
+
+// Validates every node's config against the `node-schemas.ts` registry and is
+// the sole writer of `invalidNodeConfigAtom` (read by the per-node "needs
+// configuration" badge and the Execute button). Like <DirtyTracker>, it reads
+// the React Flow store — the same source the Save button persists — because
+// config-dialog edits go through `useReactFlow().setNodes` and land in the store,
+// not editor.tsx's local `useState`. Must be a child of <ReactFlowProvider>.
+//
+// The validation loop runs on every store change (a cheap `safeParse` per node),
+// but the atom is written ONLY when the invalid-map actually changes, so pure
+// position drags never re-render the nodes that read it.
+const ConfigValidator = () => {
+  const nodes = useStore((state) => state.nodes);
+  const setInvalid = useSetAtom(invalidNodeConfigAtom);
+  const lastKeyRef = useRef("");
+
+  useEffect(() => {
+    const map: Record<string, string[]> = {};
+    for (const node of nodes) {
+      if (!node.type || node.type === NodeType.INITIAL) continue;
+      const issues = getNodeConfigIssues(node.type as NodeType, node.data);
+      if (issues.length > 0) map[node.id] = issues;
+    }
+
+    // Order-independent change key so React Flow reordering the nodes array
+    // (e.g. elevate-on-select) can't masquerade as a config change.
+    const key = Object.keys(map)
+      .sort()
+      .map((id) => `${id}:${map[id].join("|")}`)
+      .join(";");
+    if (key !== lastKeyRef.current) {
+      lastKeyRef.current = key;
+      setInvalid(map);
+    }
+  }, [nodes, setInvalid]);
 
   return null;
 };
@@ -358,6 +398,10 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         {/* Watches the React Flow store to keep `isDirtyAtom` in sync (renders
             nothing). Inside the provider so it can read the store. */}
         <DirtyTracker />
+        {/* Validates node config against the schema registry off the same store,
+            publishing `invalidNodeConfigAtom` for the per-node badge and the
+            Execute button. Renders nothing. */}
+        <ConfigValidator />
         {/* Owns undo/redo: observes the same store to record history and
             restores into it. Renders nothing; publishes controls for the
             toolbar buttons. Inside the provider so it can read the store, and

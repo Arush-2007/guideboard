@@ -59,3 +59,11 @@ export const STAGED_NODE_MIME = "application/guideboard-staged-node";
 // own slice via useNodeStatus(nodeId), so a status update re-renders just that
 // node instead of every node on the canvas.
 export const nodeStatusMapAtom = atom<Record<string, NodeStatus>>({});
+
+// Shared map of nodeId -> config-validation issue summaries, present ONLY for
+// nodes whose `data` fails its `node-schemas.ts` schema. Written solely by
+// <ConfigValidator> (which validates the React Flow store against the registry).
+// Each node reads only whether *it* is invalid via useHasInvalidConfig(nodeId)
+// — a boolean slice, so fixing one node re-renders just that node, not the whole
+// canvas. The Execute button reads the whole map to gate + name offenders.
+export const invalidNodeConfigAtom = atom<Record<string, string[]>>({});
