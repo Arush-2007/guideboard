@@ -18,7 +18,8 @@ import { ExecutionStatus } from "@/generated/prisma";
 import { CheckCircle2Icon, ClockIcon, Loader2Icon, XCircleIcon } from "lucide-react";
 
 export const ExecutionsList = () => {
-  const executions = useSuspenseExecutions();
+  // The list owns live polling for the page; pagination just reads the cache.
+  const executions = useSuspenseExecutions({ live: true });
 
   return (
     <EntityList
