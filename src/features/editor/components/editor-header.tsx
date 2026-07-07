@@ -1,8 +1,9 @@
 "use client";
 
-import { Button } from "@/components/ui/button";
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { SaveIcon } from "lucide-react";
+import { useAtomValue } from "jotai";
+import { CheckIcon, Loader2Icon } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -10,40 +11,59 @@ import {
   BreadcrumbList,
   BreadcrumbSeparator,
 } from "@/components/ui/breadcrumb";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
-import { useSuspenseWorkflow, useUpdateWorkflow, useUpdateWorkflowName } from "@/features/workflows/hooks/use-workflows";
-import { useAtomValue } from "jotai";
-import { editorAtom } from "../store/atoms";
+import { SidebarTrigger } from "@/components/ui/sidebar";
+import {
+  useSuspenseWorkflow,
+  useUpdateWorkflowName,
+} from "@/features/workflows/hooks/use-workflows";
+import { useNavGuard } from "../hooks/use-nav-guard";
+import { useSaveEditorWorkflow } from "../hooks/use-save-workflow";
+import { isDirtyAtom } from "../store/atoms";
 
 export const EditorSaveButton = ({ workflowId }: { workflowId: string }) => {
-  const editor = useAtomValue(editorAtom);
-  const saveWorkflow = useUpdateWorkflow();
+  const isDirty = useAtomValue(isDirtyAtom);
+  const { save, isSaving } = useSaveEditorWorkflow(workflowId);
 
-  const handleSave = () => {
-    if (!editor) {
-      return;
+  const handleSave = async () => {
+    try {
+      await save();
+    } catch {
+      // The failure toast is raised by the underlying mutation.
     }
-
-    const nodes = editor.getNodes();
-    const edges = editor.getEdges();
-
-    saveWorkflow.mutate({
-      id: workflowId,
-      nodes,
-      edges,
-    });
-  }
+  };
 
   return (
     <div className="ml-auto">
-      <Button size="sm" onClick={handleSave} disabled={saveWorkflow.isPending} className="h-[2.025rem] px-4 text-[1.09rem]">
-        <SaveIcon className="size-5" />
-        Save
+      <Button
+        size="sm"
+        onClick={handleSave}
+        disabled={isSaving || !isDirty}
+        className="h-[2.025rem] px-4 text-[1.09rem]"
+      >
+        {isSaving ? (
+          <>
+            <Loader2Icon className="size-5 animate-spin" />
+            Saving…
+          </>
+        ) : isDirty ? (
+          <>
+            <span
+              className="size-2 rounded-full bg-current"
+              aria-hidden="true"
+            />
+            Save
+          </>
+        ) : (
+          <>
+            <CheckIcon className="size-5" />
+            Saved
+          </>
+        )}
       </Button>
     </div>
-  )
+  );
 };
 
 export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
@@ -106,23 +126,28 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
         onKeyDown={handleKeyDown}
         className="h-9 w-auto min-w-[100px] px-2 text-[1.09rem]"
       />
-    )
+    );
   }
 
   return (
-    <BreadcrumbItem onClick={() => setIsEditing(true)} className="cursor-pointer hover:text-foreground transition-colors">
+    <BreadcrumbItem
+      onClick={() => setIsEditing(true)}
+      className="cursor-pointer hover:text-foreground transition-colors"
+    >
       {workflow.name}
     </BreadcrumbItem>
-  )
+  );
 };
 
 export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
+  const guardNav = useNavGuard();
+
   return (
     <Breadcrumb>
       <BreadcrumbList className="text-[1.09rem]">
         <BreadcrumbItem>
           <BreadcrumbLink asChild>
-            <Link prefetch href="/workflows">
+            <Link prefetch href="/workflows" onClick={guardNav("/workflows")}>
               Workflows
             </Link>
           </BreadcrumbLink>
@@ -131,7 +156,7 @@ export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
         <EditorNameInput workflowId={workflowId} />
       </BreadcrumbList>
     </Breadcrumb>
-  )
+  );
 };
 
 export const EditorHeader = ({ workflowId }: { workflowId: string }) => {

@@ -19,6 +19,7 @@ import {
   ReactFlowProvider,
   useNodesInitialized,
   useReactFlow,
+  useStore,
 } from "@xyflow/react";
 import { LocateFixedIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,14 +33,18 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
+import { serializeSnapshot } from "../lib/snapshot";
 import {
   editorAtom,
+  isDirtyAtom,
+  lastSavedSnapshotAtom,
   STAGED_NODE_MIME,
   type StagedNode,
   stagedNodesAtom,
 } from "../store/atoms";
 import { AddNodeButton } from "./add-node-button";
 import { ExecuteWorkflowButton } from "./execute-workflow-button";
+import { NavGuardDialog } from "./nav-guard-dialog";
 import { StagingTray } from "./staging-tray";
 
 // MiniMap with overlaid view controls: zoom in/out at the top-right of the
@@ -114,6 +119,47 @@ const FitViewOnLoad = () => {
   return null;
 };
 
+// Tracks whether the canvas differs from the last-saved baseline and is the
+// sole writer of `isDirtyAtom` (read by the header save button and the nav
+// guard). It reads nodes/edges from the React Flow store — the *same* source
+// the Save button persists (`editor.getNodes()`) — rather than the editor's
+// local `useState`. Config-dialog edits go through `useReactFlow().setNodes`
+// and land in the store; the local state only reliably reflects interactive
+// changes like drags, so reading it here missed every configuration edit. Must
+// be a child of <ReactFlowProvider>. It also owns the refresh/close guard so it
+// fires off the same source of truth.
+const DirtyTracker = () => {
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
+  const lastSaved = useAtomValue(lastSavedSnapshotAtom);
+  const setIsDirty = useSetAtom(isDirtyAtom);
+
+  const isDirty = useMemo(() => {
+    if (lastSaved === null) {
+      return false;
+    }
+    return serializeSnapshot(nodes, edges) !== lastSaved;
+  }, [nodes, edges, lastSaved]);
+
+  useEffect(() => {
+    setIsDirty(isDirty);
+  }, [isDirty, setIsDirty]);
+
+  useEffect(() => {
+    if (!isDirty) {
+      return;
+    }
+    const handler = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isDirty]);
+
+  return null;
+};
+
 export const EditorLoading = () => {
   return <LoadingView message="Loading editor..." />;
 };
@@ -131,6 +177,24 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
 
   const [nodes, setNodes] = useState<Node[]>(workflow.nodes);
   const [edges, setEdges] = useState<Edge[]>(workflow.edges);
+
+  const lastSaved = useAtomValue(lastSavedSnapshotAtom);
+  const setLastSaved = useSetAtom(lastSavedSnapshotAtom);
+
+  // Seed the saved-snapshot baseline for the loaded workflow, and re-seed when
+  // the workflow id changes (a different workflow opened) or the baseline is
+  // null. `workflow.nodes` is the last-persisted state, which is exactly the
+  // baseline we want; it is the single writer of the baseline alongside the save
+  // hook. The `null` case is defensive self-healing so nothing can leave
+  // dirty-tracking permanently dead. The live comparison happens in
+  // <DirtyTracker> off the React Flow store.
+  const seededWorkflowId = useRef<string | null>(null);
+  useEffect(() => {
+    if (seededWorkflowId.current !== workflow.id || lastSaved === null) {
+      seededWorkflowId.current = workflow.id;
+      setLastSaved(serializeSnapshot(workflow.nodes, workflow.edges));
+    }
+  }, [workflow, lastSaved, setLastSaved]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) =>
@@ -245,6 +309,9 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
   return (
     <ReactFlowProvider>
       <div className="flex size-full flex-col overflow-hidden border border-border/70 bg-card shadow-sm">
+        {/* Watches the React Flow store to keep `isDirtyAtom` in sync (renders
+            nothing). Inside the provider so it can read the store. */}
+        <DirtyTracker />
         {/* One realtime subscription per distinct channel on the canvas; each
             renders nothing and feeds the shared node-status atom. */}
         {activeChannels.map((channel) => (
@@ -304,6 +371,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
           <StagingTray />
           <MiniMapWithControls />
         </div>
+        <NavGuardDialog workflowId={workflowId} />
       </div>
     </ReactFlowProvider>
   );

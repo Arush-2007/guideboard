@@ -5,6 +5,24 @@ import type { NodeType } from "@/generated/prisma";
 
 export const editorAtom = atom<ReactFlowInstance | null>(null);
 
+// Frozen serialization of the canvas as it was last persisted (on initial load
+// and after every successful save). `null` until the editor has loaded a
+// workflow. Held as a string (not an object) so it can never alias — and so can
+// never be silently mutated by — the live node data. Dirty-tracking compares
+// the live canvas's serialization against this.
+export const lastSavedSnapshotAtom = atom<string | null>(null);
+
+// Whether the canvas differs from `lastSavedSnapshotAtom`. Written solely by
+// <DirtyTracker> (which compares the React Flow store against the baseline) and
+// read by the header save button and the navigation guard, which live in
+// sibling subtrees.
+export const isDirtyAtom = atom(false);
+
+// The pending in-app navigation target while a save-guard dialog is open, or
+// `null` when no guard is pending. A guarded link/sidebar item sets this when
+// the editor is dirty; <NavGuardDialog> (mounted in the editor) reacts to it.
+export const navGuardTargetAtom = atom<string | null>(null);
+
 // A node that has been chosen from the selector but not yet placed on the
 // canvas. It waits in the staging tray until the user drags it onto the canvas,
 // at which point a real React Flow node is created and the staged entry removed.
