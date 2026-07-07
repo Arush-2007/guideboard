@@ -472,4 +472,8 @@ model NodeExecution {
   durationMs  Int?
 
   @@index([executionId, sequence])
+  // On-demand canvas failure lookup: latest FAILED run for a given node
+  // (executions.getLatestNodeFailure) filters by nodeId, so it needs its own
+  // index — the composite above is keyed on executionId and can't serve it.
+  @@index([nodeId])
 }

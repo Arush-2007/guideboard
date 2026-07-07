@@ -405,3 +405,121 @@ describe("executions.getStats", () => {
     expect(stats.topFailingNodes).toEqual([]);
   });
 });
+
+describe("executions.getLatestNodeFailure", () => {
+  // Seeds a workflow + execution + one NodeExecution for the given node. Defaults
+  // to a FAILED node owned by the current test user; `userId` overrides ownership
+  // and `status` lets a test seed a non-failed row.
+  const seedNode = async ({
+    userId = authState.userId,
+    nodeId,
+    error,
+    completedAt,
+    status = NodeExecutionStatus.FAILED,
+    eventId,
+  }: {
+    userId?: string;
+    nodeId: string;
+    error?: string | null;
+    completedAt?: Date;
+    status?: NodeExecutionStatus;
+    eventId: string;
+  }) => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Failure workflow", userId },
+    });
+    const execution = await prisma.execution.create({
+      data: {
+        workflowId: workflow.id,
+        inngestEventId: eventId,
+        status: ExecutionStatus.FAILED,
+      },
+    });
+    await prisma.nodeExecution.create({
+      data: {
+        executionId: execution.id,
+        nodeId,
+        nodeType: NodeType.HTTP_REQUEST,
+        nodeName: "Call API",
+        sequence: 0,
+        status,
+        error: error ?? null,
+        completedAt: completedAt ?? new Date(),
+        durationMs: 100,
+      },
+    });
+    return { workflow, execution };
+  };
+
+  it("returns the latest failure for a node, with its executionId and error", async () => {
+    const base = Date.now();
+    await seedNode({
+      nodeId: "n_http",
+      error: "old failure",
+      completedAt: new Date(base - 10_000),
+      eventId: "evt-fail-old",
+    });
+    const latest = await seedNode({
+      nodeId: "n_http",
+      error: "boom: connect ECONNREFUSED",
+      completedAt: new Date(base - 1_000),
+      eventId: "evt-fail-new",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_http",
+    });
+
+    expect(res).not.toBeNull();
+    expect(res?.executionId).toBe(latest.execution.id);
+    expect(res?.error).toBe("boom: connect ECONNREFUSED");
+  });
+
+  it("returns null when the node has only succeeded", async () => {
+    await seedNode({
+      nodeId: "n_ok",
+      status: NodeExecutionStatus.SUCCESS,
+      eventId: "evt-ok",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_ok",
+    });
+    expect(res).toBeNull();
+  });
+
+  it("returns null for a node with no recorded runs", async () => {
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "does-not-exist",
+    });
+    expect(res).toBeNull();
+  });
+
+  it("does not return a failure for a node the caller does not own", async () => {
+    const other = await createTestUser();
+    await seedNode({
+      userId: other.id,
+      nodeId: "n_foreign",
+      error: "secret failure",
+      eventId: "evt-foreign",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_foreign",
+    });
+    expect(res).toBeNull();
+  });
+
+  it("truncates a long error message", async () => {
+    await seedNode({
+      nodeId: "n_long",
+      error: "x".repeat(5_000),
+      eventId: "evt-long",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_long",
+    });
+    expect(res?.error).toHaveLength(600);
+  });
+});

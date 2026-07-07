@@ -8,6 +8,11 @@ import prisma from "@/lib/db";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import { refreshBlobUrls } from "./refresh-blob-urls";
 
+// The on-canvas failure popover shows an error at a glance, not the full stack.
+// Cap the returned message so the payload stays small; the untrimmed text is
+// always available on the execution detail page ("View execution").
+const MAX_NODE_FAILURE_ERROR_LENGTH = 600;
+
 /**
  * Execution rows seeded from a blob-stored snapshot persist `{ __blobRef }`
  * instead of the oversized payload (see executeWorkflow's create-execution).
@@ -44,6 +49,39 @@ export const executionsRouter = createTRPCRouter({
       },
     });
   }),
+  // On-demand failure detail for one canvas node: the latest FAILED run of that
+  // node, owner-scoped through execution -> workflow. Powers the red-node popover
+  // in the editor so a failure shows its real error + a link to the run without
+  // leaving the canvas. `nodeId` is a globally-unique Node cuid, so it alone
+  // identifies the node; the query is served by NodeExecution[nodeId]. Returns
+  // null when the node has no recorded failure (e.g. it has since succeeded).
+  getLatestNodeFailure: protectedProcedure
+    .input(z.object({ nodeId: z.string() }))
+    .query(async ({ ctx, input }) => {
+      const failure = await prisma.nodeExecution.findFirst({
+        where: {
+          nodeId: input.nodeId,
+          status: NodeExecutionStatus.FAILED,
+          execution: { workflow: { userId: ctx.auth.user.id } },
+        },
+        orderBy: { completedAt: "desc" },
+        // Only what the canvas popover renders: the error text + the run to link
+        // to. Full detail (stack, node name, timing) lives on the detail page.
+        select: {
+          executionId: true,
+          error: true,
+        },
+      });
+
+      if (!failure) return null;
+
+      return {
+        executionId: failure.executionId,
+        error: failure.error
+          ? failure.error.slice(0, MAX_NODE_FAILURE_ERROR_LENGTH)
+          : null,
+      };
+    }),
   getOne: protectedProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ ctx, input }) => {

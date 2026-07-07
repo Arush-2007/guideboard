@@ -4,11 +4,15 @@ import { type NodeProps, Position, useReactFlow } from "@xyflow/react";
 import type { LucideIcon } from "lucide-react";
 import Image from "next/image";
 import { memo, type ReactNode } from "react";
-import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
 import { BaseHandle } from "@/components/react-flow/base-handle";
+import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
 import { NeedsConfigBadge } from "@/components/react-flow/needs-config-badge";
+import { NodeFailureBadge } from "@/components/react-flow/node-failure-badge";
+import {
+  type NodeStatus,
+  NodeStatusIndicator,
+} from "@/components/react-flow/node-status-indicator";
 import { WorkflowNode } from "@/components/workflow-node";
-import { type NodeStatus, NodeStatusIndicator } from "@/components/react-flow/node-status-indicator";
 
 interface BaseTriggerNodeProps extends NodeProps {
   icon: LucideIcon | string;
@@ -18,7 +22,7 @@ interface BaseTriggerNodeProps extends NodeProps {
   status?: NodeStatus;
   onSettings?: () => void;
   onDoubleClick?: () => void;
-};
+}
 
 export const BaseTriggerNode = memo(
   ({
@@ -42,11 +46,7 @@ export const BaseTriggerNode = memo(
     };
 
     return (
-      <WorkflowNode
-        name={name}
-        onDelete={handleDelete}
-        onSettings={onSettings}
-      >
+      <WorkflowNode name={name} onDelete={handleDelete} onSettings={onSettings}>
         <NodeStatusIndicator
           status={status}
           variant="border"
@@ -58,6 +58,7 @@ export const BaseTriggerNode = memo(
             className="relative size-20 rounded-2xl"
           >
             <NeedsConfigBadge nodeId={id} />
+            {status === "error" ? <NodeFailureBadge nodeId={id} /> : null}
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
                 <Image
@@ -79,7 +80,7 @@ export const BaseTriggerNode = memo(
           </BaseNode>
         </NodeStatusIndicator>
       </WorkflowNode>
-    )
+    );
   },
 );
 
