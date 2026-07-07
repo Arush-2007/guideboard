@@ -302,20 +302,27 @@ export const executionsRouter = createTRPCRouter({
           .min(PAGINATION.MIN_PAGE_SIZE)
           .max(PAGINATION.MAX_PAGE_SIZE)
           .default(PAGINATION.DEFAULT_PAGE_SIZE),
+        status: z.nativeEnum(ExecutionStatus).nullish(),
+        workflowId: z.string().nullish(),
       }),
     )
     .query(async ({ ctx, input }) => {
-      const { page, pageSize } = input;
+      const { page, pageSize, status, workflowId } = input;
+
+      // Owner scope always applies; status/workflow narrow it when set. The same
+      // `where` feeds findMany and count so totalCount (and thus pagination)
+      // stays consistent with the active filters.
+      const where = {
+        workflow: { userId: ctx.auth.user.id },
+        ...(status ? { status } : {}),
+        ...(workflowId ? { workflowId } : {}),
+      };
 
       const [items, totalCount] = await Promise.all([
         prisma.execution.findMany({
           skip: (page - 1) * pageSize,
           take: pageSize,
-          where: {
-            workflow: {
-              userId: ctx.auth.user.id,
-            },
-          },
+          where,
           orderBy: {
             startedAt: "desc",
           },
@@ -328,13 +335,7 @@ export const executionsRouter = createTRPCRouter({
             },
           },
         }),
-        prisma.execution.count({
-          where: {
-            workflow: {
-              userId: ctx.auth.user.id,
-            },
-          },
-        }),
+        prisma.execution.count({ where }),
       ]);
 
       const totalPages = Math.ceil(totalCount / pageSize);

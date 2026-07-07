@@ -8,6 +8,7 @@ import {
   ExecutionsList,
   ExecutionsLoading,
 } from "@/features/executions/components/executions";
+import { ExecutionsFilters } from "@/features/executions/components/executions-filters";
 import { executionsParamsLoader } from "@/features/executions/server/params-loader";
 import { prefetchExecutions } from "@/features/executions/server/prefetch";
 import { requireAuth } from "@/lib/auth-utils";
@@ -29,6 +30,7 @@ const Page = async ({ searchParams }: Props) => {
         <div className="mb-6">
           <ExecutionStats />
         </div>
+        <ExecutionsFilters />
         <ErrorBoundary fallback={<ExecutionsError />}>
           <Suspense fallback={<ExecutionsLoading />}>
             <ExecutionsList />

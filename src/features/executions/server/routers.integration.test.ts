@@ -212,6 +212,113 @@ describe("executions.rerun", () => {
   });
 });
 
+describe("executions.getMany filters", () => {
+  const seedExecution = (workflowId: string, status: ExecutionStatus) =>
+    prisma.execution.create({
+      data: {
+        workflowId,
+        inngestEventId: `evt-${Math.random()}`,
+        status,
+      },
+    });
+
+  it("filters by status, and totalCount reflects the filter", async () => {
+    const wf = await prisma.workflow.create({
+      data: { name: "Filters wf", userId: authState.userId },
+    });
+    await seedExecution(wf.id, ExecutionStatus.SUCCESS);
+    await seedExecution(wf.id, ExecutionStatus.FAILED);
+    await seedExecution(wf.id, ExecutionStatus.FAILED);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      status: ExecutionStatus.FAILED,
+    });
+
+    expect(res.totalCount).toBe(2);
+    expect(res.items).toHaveLength(2);
+    expect(res.items.every((e) => e.status === ExecutionStatus.FAILED)).toBe(
+      true,
+    );
+  });
+
+  it("filters by workflowId", async () => {
+    const [a, b] = await Promise.all([
+      prisma.workflow.create({ data: { name: "A", userId: authState.userId } }),
+      prisma.workflow.create({ data: { name: "B", userId: authState.userId } }),
+    ]);
+    await seedExecution(a.id, ExecutionStatus.SUCCESS);
+    await seedExecution(b.id, ExecutionStatus.SUCCESS);
+    await seedExecution(b.id, ExecutionStatus.RUNNING);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      workflowId: b.id,
+    });
+
+    expect(res.totalCount).toBe(2);
+    expect(res.items.every((e) => e.workflowId === b.id)).toBe(true);
+  });
+
+  it("combines status and workflow filters", async () => {
+    const [a, b] = await Promise.all([
+      prisma.workflow.create({ data: { name: "A", userId: authState.userId } }),
+      prisma.workflow.create({ data: { name: "B", userId: authState.userId } }),
+    ]);
+    await seedExecution(a.id, ExecutionStatus.FAILED);
+    await seedExecution(b.id, ExecutionStatus.FAILED);
+    await seedExecution(b.id, ExecutionStatus.SUCCESS);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      status: ExecutionStatus.FAILED,
+      workflowId: b.id,
+    });
+
+    expect(res.totalCount).toBe(1);
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]?.workflowId).toBe(b.id);
+    expect(res.items[0]?.status).toBe(ExecutionStatus.FAILED);
+  });
+
+  it("ignores null filters (returns all the user's runs)", async () => {
+    const wf = await prisma.workflow.create({
+      data: { name: "No filter", userId: authState.userId },
+    });
+    await seedExecution(wf.id, ExecutionStatus.SUCCESS);
+    await seedExecution(wf.id, ExecutionStatus.FAILED);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      status: null,
+      workflowId: null,
+    });
+
+    expect(res.totalCount).toBe(2);
+  });
+
+  it("returns nothing for a workflow the caller does not own", async () => {
+    const other = await createTestUser();
+    const foreignWf = await prisma.workflow.create({
+      data: { name: "Foreign", userId: other.id },
+    });
+    await seedExecution(foreignWf.id, ExecutionStatus.SUCCESS);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      workflowId: foreignWf.id,
+    });
+
+    expect(res.totalCount).toBe(0);
+    expect(res.items).toHaveLength(0);
+  });
+});
+
 describe("executions.getStats", () => {
   it("aggregates status counts, success rate, avg duration, daily buckets and top failing nodes", async () => {
     const workflow = await prisma.workflow.create({
