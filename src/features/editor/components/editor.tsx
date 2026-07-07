@@ -10,6 +10,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type IsValidConnection,
   MarkerType,
   MiniMap,
   type Node,
@@ -23,6 +24,7 @@ import {
 } from "@xyflow/react";
 import { LocateFixedIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ErrorView, LoadingView } from "@/components/entity-components";
 import { useSuspenseWorkflow } from "@/features/workflows/hooks/use-workflows";
 
@@ -33,6 +35,8 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
+import { useEditorShortcuts } from "../hooks/use-editor-shortcuts";
+import { invalidConnectionReason } from "../lib/connection-validation";
 import { serializeSnapshot } from "../lib/snapshot";
 import {
   editorAtom,
@@ -162,6 +166,22 @@ const DirtyTracker = () => {
   return null;
 };
 
+// Mounts the editor's global keyboard layer (Ctrl+S/Z/Shift+Z/Y/D/A). Renders
+// nothing; lives inside <ReactFlowProvider> next to the other controllers.
+// Receives editor.tsx's `setNodes` so duplicate/select-all write the
+// authoritative controlled state (see the hook for why store-only writes are
+// unsafe here).
+const EditorShortcuts = ({
+  workflowId,
+  setNodes,
+}: {
+  workflowId: string;
+  setNodes: React.Dispatch<React.SetStateAction<Node[]>>;
+}) => {
+  useEditorShortcuts(workflowId, setNodes);
+  return null;
+};
+
 export const EditorLoading = () => {
   return <LoadingView message="Loading editor..." />;
 };
@@ -212,6 +232,30 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
     (params: Connection) =>
       setEdges((edgesSnapshot) => addEdge(params, edgesSnapshot)),
     [],
+  );
+
+  // Draw-time guard: React Flow refuses to create an edge for which this returns
+  // false (self-loop, an edge into a trigger, or one that would form a cycle the
+  // engine's topological sort would later reject). React Flow calls this many
+  // times per second while the pointer hovers a candidate handle, so the toast
+  // uses a stable id: repeated calls update the one toast in place (no stacking)
+  // and keep it visible for the whole hover, and each new attempt re-shows it.
+  // Reading `nodes`/`edges` from the controlled state is current during a drag
+  // since neither changes mid-drag.
+  const isValidConnection = useCallback<IsValidConnection>(
+    (connection) => {
+      const reason = invalidConnectionReason(
+        connection as Connection,
+        nodes,
+        edges,
+      );
+      if (reason) {
+        toast.error(reason, { id: "invalid-connection" });
+        return false;
+      }
+      return true;
+    },
+    [nodes, edges],
   );
 
   const onDragOver = useCallback((e: React.DragEvent) => {
@@ -326,6 +370,10 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
           initialEdges={workflow.edges}
           workflowId={workflowId}
         />
+        {/* Global keyboard shortcuts (save, undo/redo, duplicate, select-all).
+            Renders nothing; inside the provider and fed setNodes so duplicate/
+            select-all keep the controlled state authoritative. */}
+        <EditorShortcuts workflowId={workflowId} setNodes={setNodes} />
         {/* One realtime subscription per distinct channel on the canvas; each
             renders nothing and feeds the shared node-status atom. */}
         {activeChannels.map((channel) => (
@@ -345,9 +393,11 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={isValidConnection}
             nodeTypes={nodeComponents}
             defaultEdgeOptions={defaultEdgeOptions}
             onInit={setEditor}
+            deleteKeyCode={["Delete", "Backspace"]}
             fitView
             fitViewOptions={{ maxZoom: 1.4 }}
             maxZoom={2}

@@ -43,19 +43,14 @@ export const BaseExecutionNode = memo(
     onDoubleClick,
     outputs = DEFAULT_OUTPUTS,
   }: BaseExecutionNodeProps) => {
-    const { setNodes, setEdges } = useReactFlow();
+    // Delete through React Flow's own API so the removal flows through
+    // `onNodesChange` (keeping editor.tsx's controlled state authoritative — a
+    // store-only `setNodes` left it stale and a later drag resurrected the node)
+    // while still updating the store the canvas, Save, and history observer read.
+    // `deleteElements` removes the node's connected edges automatically.
+    const { deleteElements } = useReactFlow();
     const handleDelete = () => {
-      setNodes((currentNodes) => {
-        const updatedNodes = currentNodes.filter((node) => node.id !== id);
-        return updatedNodes;
-      });
-
-      setEdges((currentEdges) => {
-        const updatedEdges = currentEdges.filter(
-          (edge) => edge.source !== id && edge.target !== id,
-        );
-        return updatedEdges;
-      });
+      void deleteElements({ nodes: [{ id }] });
     };
 
     return (

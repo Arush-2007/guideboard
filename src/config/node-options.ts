@@ -96,6 +96,13 @@ export const triggerNodeOptions: NodeOption[] = [
   },
 ];
 
+// Single source of truth for "is this node type a trigger?", derived from the
+// options above so it can never drift from the selectable trigger list. Consumed
+// by draw-time connection validation to reject edges that point into a trigger.
+export const triggerNodeTypeSet: ReadonlySet<NodeType> = new Set(
+  triggerNodeOptions.map((option) => option.type),
+);
+
 export const executionNodeOptions: NodeOption[] = [
   {
     type: NodeType.HTTP_REQUEST,

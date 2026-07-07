@@ -276,7 +276,7 @@
 }
 
 /* React Flow node selection styles */
-.react-flow__node.selected #base-node {
+.react-flow__node.selected [data-slot="base-node"] {
   @apply ring-3 ring-muted-foreground/25 shadow-lg;
 }
 
