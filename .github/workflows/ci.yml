@@ -27,6 +27,28 @@ jobs:
         continue-on-error: true
       - run: npm test
 
+  # Guards the production build itself: `next build` failures (e.g. the
+  # Sentry/Turbopack page-data-collection breakage fixed by the next 15.5.20 +
+  # @sentry/nextjs 10.64.0 bumps) are invisible to tsc and vitest, so the only
+  # faithful test is running the build. Verified to pass without a .env — all
+  # runtime env reads are lazy/optional; without SENTRY_AUTH_TOKEN the Sentry
+  # plugin skips source-map upload.
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Same dummy value as the test job: `prisma generate` reads the
+      # datasource url from the schema but never connects.
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/db"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+
   integration:
     runs-on: ubuntu-latest
     services:
