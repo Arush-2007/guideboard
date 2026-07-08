@@ -45,6 +45,7 @@ const STATUS_EMITTING_NODE_TYPES: ReadonlySet<NodeType> = new Set([
   NodeType.WHATSAPP_ACTION,
   NodeType.GMAIL_ACTION,
   NodeType.GOOGLE_SHEETS_ACTION,
+  NodeType.EXCEL_ACTION,
   NodeType.RESUME_PARSER,
   NodeType.CANDIDATE_SCORING,
   NodeType.ATS_ACTION,

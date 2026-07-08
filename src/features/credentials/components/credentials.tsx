@@ -34,9 +34,11 @@ import { authClient } from "@/lib/auth-client";
 import { useEntitySearch } from "@/hooks/use-entity-search";
 import {
   useDisconnectInstagram,
+  useDisconnectMicrosoft,
   useDisconnectYoutube,
   useGoogleCredential,
   useInstagramCredential,
+  useMicrosoftCredential,
   useRemoveCredential,
   useSuspenseCredentials,
   useYoutubeCredential,
@@ -163,6 +165,31 @@ export const CredentialsYoutubeAuthErrorToast = () => {
   return null;
 };
 
+export const CredentialsMicrosoftAuthErrorToast = () => {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+
+  useEffect(() => {
+    const error = searchParams.get("error");
+    if (error !== "microsoft_auth_failed" && error !== "microsoft_not_configured") {
+      return;
+    }
+
+    toast.error(
+      error === "microsoft_not_configured"
+        ? "Microsoft isn't configured on this server yet — MICROSOFT_CLIENT_ID / MICROSOFT_REDIRECT_URI are missing from the environment."
+        : "Microsoft connection failed. Use a work or school account (personal accounts are not supported) and try again.",
+    );
+
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("error");
+    const qs = next.toString();
+    router.replace(qs ? `/credentials?${qs}` : "/credentials");
+  }, [searchParams, router]);
+
+  return null;
+};
+
 // Google connect/reconnect goes through Better Auth account-linking (not a
 // dedicated /api/auth route). Linking re-runs Google OAuth with the offline
 // Sheets/Gmail/Drive/Forms scopes, and the account DB hook mirrors the tokens
@@ -205,8 +232,10 @@ export const CredentialsConnectedAppsSection = () => {
   const instagram = useInstagramCredential();
   const youtube = useYoutubeCredential();
   const google = useGoogleCredential();
+  const microsoft = useMicrosoftCredential();
   const disconnectInstagram = useDisconnectInstagram();
   const disconnectYoutube = useDisconnectYoutube();
+  const disconnectMicrosoft = useDisconnectMicrosoft();
 
   const instagramExpiringSoon =
     instagram.data?.tokenExpiresAt != null &&
@@ -256,6 +285,28 @@ export const CredentialsConnectedAppsSection = () => {
               authHref="/api/auth/youtube"
               onDisconnect={() => disconnectYoutube.mutate()}
               isDisconnecting={disconnectYoutube.isPending}
+            />
+          )
+        }
+      />
+
+      <ConnectedAppRow
+        logo={INTEGRATIONS.microsoft.icon}
+        name={INTEGRATIONS.microsoft.label}
+        status={
+          microsoft.isPending
+            ? "Loading…"
+            : microsoft.data
+              ? `Connected as ${microsoft.data.email}`
+              : "Powers the Excel node — connect a work or school account"
+        }
+        action={
+          microsoft.isPending ? null : (
+            <OAuthAppActions
+              connected={!!microsoft.data}
+              authHref="/api/auth/microsoft"
+              onDisconnect={() => disconnectMicrosoft.mutate()}
+              isDisconnecting={disconnectMicrosoft.isPending}
             />
           )
         }

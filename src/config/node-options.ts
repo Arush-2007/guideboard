@@ -186,6 +186,12 @@ export const executionNodeOptions: NodeOption[] = [
     icon: INTEGRATIONS.googleSheets.icon,
   },
   {
+    type: NodeType.EXCEL_ACTION,
+    label: "Microsoft Excel",
+    description: "Append or upsert rows in an Excel workbook on OneDrive",
+    icon: INTEGRATIONS.microsoftExcel.icon,
+  },
+  {
     type: NodeType.RESUME_PARSER,
     label: "Resume Parser",
     description:

@@ -320,6 +320,48 @@ const scheduleTriggerSchema = z
 // upstream data onto named targets.
 const mappingSchema = z.record(z.string(), z.string());
 
+const excelActionSchema = z
+  .object({
+    operation: z.enum(["append_row", "upsert_by_key"]),
+    workbookId: z.string().min(1, "Workbook is required"),
+    worksheetName: z.string().min(1, "Worksheet is required"),
+    columnMappings: mappingSchema.optional(),
+    keyColumn: z.string().optional(),
+    keyValue: z.string().optional(),
+    // header -> upsert write mode for a matched row: overwrite ("set") or
+    // numeric accumulate ("add", for running totals).
+    columnModes: z.record(z.string(), z.enum(["set", "add"])).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasMappings = data.columnMappings
+      ? Object.values(data.columnMappings).some((v) => v.trim())
+      : false;
+    if (!hasMappings) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Map at least one column",
+        path: ["columnMappings"],
+      });
+    }
+    if (data.operation === "upsert_by_key") {
+      if (!data.keyColumn?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Key column is required to upsert",
+          path: ["keyColumn"],
+        });
+      }
+      if (!data.keyValue?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Key value is required to upsert",
+          path: ["keyValue"],
+        });
+      }
+    }
+  })
+  .passthrough();
+
 const googleSheetsActionSchema = z
   .object({
     action: z.enum(["append_row", "read_rows"]),
@@ -518,6 +560,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.WHATSAPP_ACTION]: whatsappActionSchema,
   [NodeType.GMAIL_ACTION]: gmailActionSchema,
   [NodeType.GOOGLE_SHEETS_ACTION]: googleSheetsActionSchema,
+  [NodeType.EXCEL_ACTION]: excelActionSchema,
   [NodeType.RESUME_PARSER]: resumeParserSchema,
   [NodeType.CANDIDATE_SCORING]: candidateScoringSchema,
   [NodeType.ATS_ACTION]: atsActionSchema,
