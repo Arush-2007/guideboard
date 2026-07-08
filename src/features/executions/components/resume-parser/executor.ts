@@ -3,7 +3,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { resumeParserChannel } from "@/inngest/channels/resume-parser";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
@@ -55,7 +55,7 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
   publish,
 }) => {
   await publish(
-    resumeParserChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   let config: ResumeParserData;
@@ -63,7 +63,7 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
     config = parseNodeConfig(NodeType.RESUME_PARSER, data) as ResumeParserData;
   } catch (error) {
     await publish(
-      resumeParserChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -74,7 +74,7 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
   const sourceUrl = renderTemplate(config.sourceUrl ?? "", context).trim();
   if (!sourceUrl) {
     await publish(
-      resumeParserChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError("Resume Parser: a resume URL is required");
   }
@@ -150,13 +150,13 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
     }
 
     await publish(
-      resumeParserChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
 
     return { ...context, [outputKey]: output };
   } catch (error) {
     await publish(
-      resumeParserChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     if (error instanceof NonRetriableError) throw error;
     throw new NonRetriableError(

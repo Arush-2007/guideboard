@@ -8,7 +8,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { aiTextChannel } from "@/inngest/channels/ai-text";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -46,7 +46,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   publish,
 }) => {
   await publish(
-    aiTextChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -57,7 +57,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     config = parseNodeConfig(NodeType.AI_TEXT, data) as AiTextData;
   } catch (error) {
     await publish(
-      aiTextChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -70,7 +70,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
   const provider = config.provider;
   if (!provider) {
     await publish(
-      aiTextChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -94,7 +94,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
 
   if (!credential) {
     await publish(
-      aiTextChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -104,7 +104,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
 
   if (credential.type !== expectedCredentialType) {
     await publish(
-      aiTextChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -175,7 +175,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
       steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      aiTextChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -191,7 +191,7 @@ export const aiTextExecutor: NodeExecutor<AiTextData> = async ({
     };
   } catch (error) {
     await publish(
-      aiTextChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

@@ -2,7 +2,7 @@ import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { convertChannel } from "@/inngest/channels/convert";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { type BlobHandle, isBlobConfigured, putBlob } from "@/lib/blob";
 import {
   asFormat,
@@ -55,13 +55,13 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
   step,
   publish,
 }) => {
-  await publish(convertChannel(userId).status({ nodeId, status: "loading" }));
+  await publish(nodeStatusChannel(userId).status({ nodeId, status: "loading" }));
 
   let config: ConvertData;
   try {
     config = parseNodeConfig(NodeType.CONVERT, data) as ConvertData;
   } catch (error) {
-    await publish(convertChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
     );
@@ -69,7 +69,7 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
 
   const input = renderTemplate(config.input ?? "", context).trim();
   if (!input) {
-    await publish(convertChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError("Convert: an input value is required");
   }
 
@@ -77,7 +77,7 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
   const legacy = legacyConversionToPair(config.conversion);
   const to = asFormat(config.to) ?? legacy?.to;
   if (!to) {
-    await publish(convertChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError("Convert: a target format is required");
   }
 
@@ -95,7 +95,7 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
   if (!from || !descriptor) {
     // Raise in both ways: structured log (→ console always, → Sentry in prod via
     // the logger) AND a NonRetriableError that fails the run / surfaces in the UI.
-    await publish(convertChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     logger.error(COMPATIBILITY_ERROR, new Error(COMPATIBILITY_ERROR), {
       nodeId,
       detectedFrom: from ?? "unknown",
@@ -204,14 +204,14 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
       }
     }
 
-    await publish(convertChannel(userId).status({ nodeId, status: "success" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "success" }));
 
     return {
       ...context,
       [outputKey]: { result, from, to, file } satisfies ConvertOutput,
     };
   } catch (error) {
-    await publish(convertChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     if (error instanceof NonRetriableError) throw error;
     // An oversized file is a user-fixable input problem on any engine —
     // retrying won't shrink it. Matched by name as well because an error

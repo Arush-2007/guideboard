@@ -1,16 +1,10 @@
 "use server";
 
-import { instagramCommentTriggerChannel } from "@/inngest/channels/instagram-comment-trigger";
-import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { headers } from "next/headers";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
-
-export async function fetchInstagramCommentTriggerRealtimeToken() {
-  return mintUserStatusToken(instagramCommentTriggerChannel);
-}
 
 export type InstagramCommentTriggerConfig = {
   postId?: string;

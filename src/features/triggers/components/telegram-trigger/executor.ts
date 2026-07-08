@@ -1,5 +1,5 @@
 import type { NodeExecutor } from "@/features/executions/types";
-import { telegramTriggerChannel } from "@/inngest/channels/telegram-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 import { NonRetriableError } from "inngest";
@@ -10,7 +10,7 @@ export const telegramTriggerExecutor: NodeExecutor<
   TelegramTriggerData
 > = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    telegramTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -20,7 +20,7 @@ export const telegramTriggerExecutor: NodeExecutor<
     parseNodeConfig(NodeType.TELEGRAM_TRIGGER, data);
   } catch (error) {
     await publish(
-      telegramTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -33,7 +33,7 @@ export const telegramTriggerExecutor: NodeExecutor<
   const result = await step.run("telegram-trigger", async () => context);
 
   await publish(
-    telegramTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

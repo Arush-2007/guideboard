@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { telegramActionChannel } from "@/inngest/channels/telegram-action";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -27,7 +27,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
   publish,
 }) => {
   await publish(
-    telegramActionChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -41,7 +41,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     ) as TelegramActionData;
   } catch (error) {
     await publish(
-      telegramActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -62,7 +62,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
 
   if (!credential || credential.type !== CredentialType.TELEGRAM) {
     await publish(
-      telegramActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -77,7 +77,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     botToken = decrypt(credential.value).trim();
   } catch {
     await publish(
-      telegramActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -87,7 +87,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
 
   if (!botToken) {
     await publish(
-      telegramActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -126,7 +126,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     });
 
     await publish(
-      telegramActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -135,7 +135,7 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      telegramActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { googleSheetsActionChannel } from "@/inngest/channels/google-sheets-action";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { buildSheetRow } from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
@@ -55,7 +55,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
   GoogleSheetsActionData
 > = async ({ data, nodeId, outputKey, userId, context, step, publish }) => {
   await publish(
-    googleSheetsActionChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -69,7 +69,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     ) as GoogleSheetsActionData;
   } catch (error) {
     await publish(
-      googleSheetsActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -94,7 +94,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
   if (!spreadsheetId || !sheetName) {
     await publish(
-      googleSheetsActionChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       "Google Sheets Action: spreadsheetId and sheetName are required",
@@ -104,7 +104,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
   // Range is only needed for read_rows or the legacy values-based append.
   if (!hasMappings && !range) {
     await publish(
-      googleSheetsActionChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       "Google Sheets Action: a column mapping or a range is required",
@@ -217,7 +217,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     });
 
     await publish(
-      googleSheetsActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -225,7 +225,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     return result;
   } catch (error) {
     await publish(
-      googleSheetsActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

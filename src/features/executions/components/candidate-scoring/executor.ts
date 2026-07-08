@@ -4,7 +4,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import type { CompareOperator } from "@/features/executions/lib/compare";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { candidateScoringChannel } from "@/inngest/channels/candidate-scoring";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import {
   type ResolvedScoringRule,
   type ScoringDecision,
@@ -131,7 +131,7 @@ export const candidateScoringExecutor: NodeExecutor<
   CandidateScoringData
 > = async ({ data, nodeId, outputKey, userId, context, step, publish }) => {
   await publish(
-    candidateScoringChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   let config: CandidateScoringData;
@@ -142,7 +142,7 @@ export const candidateScoringExecutor: NodeExecutor<
     ) as CandidateScoringData;
   } catch (error) {
     await publish(
-      candidateScoringChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -246,7 +246,7 @@ export const candidateScoringExecutor: NodeExecutor<
     }
 
     await publish(
-      candidateScoringChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
 
     return {
@@ -259,7 +259,7 @@ export const candidateScoringExecutor: NodeExecutor<
     };
   } catch (error) {
     await publish(
-      candidateScoringChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     if (error instanceof NonRetriableError) throw error;
     throw new NonRetriableError(

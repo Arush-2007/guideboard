@@ -5,7 +5,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { openAiChannel } from "@/inngest/channels/openai";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -26,7 +26,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
   publish,
 }) => {
   await publish(
-    openAiChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -37,7 +37,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
     config = parseNodeConfig(NodeType.OPENAI, data) as OpenAiData;
   } catch (error) {
     await publish(
-      openAiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -62,7 +62,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
 
   if (!credential) {
     await publish(
-      openAiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -90,7 +90,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
       steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      openAiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -104,7 +104,7 @@ export const openAiExecutor: NodeExecutor<OpenAiData> = async ({
     };
   } catch (error) {
     await publish(
-      openAiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

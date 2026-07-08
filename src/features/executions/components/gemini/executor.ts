@@ -5,7 +5,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { geminiChannel } from "@/inngest/channels/gemini";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -26,7 +26,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
   publish,
 }) => {
   await publish(
-    geminiChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -37,7 +37,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
     config = parseNodeConfig(NodeType.GEMINI, data) as GeminiData;
   } catch (error) {
     await publish(
-      geminiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -62,7 +62,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
 
   if (!credential) {
     await publish(
-      geminiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -90,7 +90,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
       steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      geminiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -104,7 +104,7 @@ export const geminiExecutor: NodeExecutor<GeminiData> = async ({
     };
   } catch (error) {
     await publish(
-      geminiChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { discordChannel } from "@/inngest/channels/discord";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { renderTemplate } from "@/lib/templating";
 
 type DiscordData = {
@@ -23,7 +23,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
   publish,
 }) => {
   await publish(
-    discordChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -34,7 +34,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     config = parseNodeConfig(NodeType.DISCORD, data) as DiscordData;
   } catch (error) {
     await publish(
-      discordChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -53,7 +53,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     const result = await step.run("discord-webhook", async () => {
       if (!config.webhookUrl) {
         await publish(
-          discordChannel(userId).status({
+          nodeStatusChannel(userId).status({
             nodeId,
             status: "error",
           }),
@@ -77,7 +77,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     });
 
     await publish(
-      discordChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -86,7 +86,7 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
     return result;
   } catch (error) {
     await publish(
-      discordChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

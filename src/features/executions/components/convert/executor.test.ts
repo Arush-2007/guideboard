@@ -43,8 +43,8 @@ vi.mock("@/lib/blob", () => ({
 
 // Make `.status(payload)` return the payload so `publish` receives it verbatim,
 // decoupling the test from the realtime message envelope.
-vi.mock("@/inngest/channels/convert", () => ({
-  convertChannel: () => ({ status: (payload: unknown) => payload }),
+vi.mock("@/inngest/channels/node-status", () => ({
+  nodeStatusChannel: () => ({ status: (payload: unknown) => payload }),
 }));
 
 import type { NodeExecutorParams } from "@/features/executions/types";

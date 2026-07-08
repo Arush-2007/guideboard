@@ -3,7 +3,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { atsActionChannel } from "@/inngest/channels/ats-action";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -46,13 +46,13 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
   step,
   publish,
 }) => {
-  await publish(atsActionChannel(userId).status({ nodeId, status: "loading" }));
+  await publish(nodeStatusChannel(userId).status({ nodeId, status: "loading" }));
 
   let config: AtsActionData;
   try {
     config = parseNodeConfig(NodeType.ATS_ACTION, data) as AtsActionData;
   } catch (error) {
-    await publish(atsActionChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
     );
@@ -133,11 +133,11 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
     });
 
     await publish(
-      atsActionChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
     return { ...context, [outputKey]: result };
   } catch (error) {
-    await publish(atsActionChannel(userId).status({ nodeId, status: "error" }));
+    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
     if (error instanceof NonRetriableError) throw error;
     throw new NonRetriableError(
       error instanceof Error ? error.message : "ATS sync failed",

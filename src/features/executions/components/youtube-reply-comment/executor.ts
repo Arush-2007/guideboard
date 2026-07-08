@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { youtubeReplyChannel } from "@/inngest/channels/youtube-reply-comment";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { renderTemplate } from "@/lib/templating";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
 
@@ -25,7 +25,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
   publish,
 }) => {
   await publish(
-    youtubeReplyChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -39,7 +39,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
     ) as YoutubeReplyData;
   } catch (error) {
     await publish(
-      youtubeReplyChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -54,7 +54,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
       const commentId = context.commentId as string | undefined;
       if (!commentId) {
         await publish(
-          youtubeReplyChannel(userId).status({ nodeId, status: "error" }),
+          nodeStatusChannel(userId).status({ nodeId, status: "error" }),
         );
         throw new NonRetriableError(
           "YouTube Reply node: commentId is missing from workflow context",
@@ -94,13 +94,13 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
     });
 
     await publish(
-      youtubeReplyChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
 
     return result;
   } catch (error) {
     await publish(
-      youtubeReplyChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw error;
   }

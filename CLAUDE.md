@@ -40,8 +40,8 @@ Every node type is an enum member in `NodeType` (Prisma schema) plus three paral
 3. **`src/features/executions/lib/executor-registry.ts`** — maps `NodeType` → its server-side `NodeExecutor`. `getExecutor(type)` throws if a type is unregistered.
 
 For executors that emit realtime status, there are two more registrations:
-1. The node type → channel/token mapping in **`src/features/executions/lib/node-status-registry.ts`** (consumed by the editor's `<NodeStatusSubscriber>`s and `useNodeStatus`).
-2. A per-user channel file in `src/inngest/channels/`. Channels are **parameterized by `userId`** (e.g. `channel((userId) => \`anthropic-execution:${userId}\`)`) so each user's status stream is isolated. Executors publish with `xChannel(userId).status({ nodeId, status })`, and the `fetch*RealtimeToken` server action mints a session-scoped token via `mintUserStatusToken(xChannel)` (`src/inngest/channels/mint-status-token.ts`).
+1. The status-emitting `NodeType` allowlist (`STATUS_EMITTING_NODE_TYPES`) in **`src/features/executions/lib/node-status-registry.ts`**, consumed by the editor's `<NodeStatusSubscriber>`. When you add a node whose executor streams status, add its `NodeType` here.
+2. All node statuses share **one** per-user channel, `src/inngest/channels/node-status.ts` — `channel((userId) => \`node-status:${userId}\`)`, parameterized by `userId` so each user's stream is isolated. Executors publish with `nodeStatusChannel(userId).status({ nodeId, status })`; the single `fetchNodeStatusRealtimeToken` action (`src/features/executions/lib/node-status-token.ts`) mints a session-scoped token via `mintUserStatusToken(nodeStatusChannel)` (`src/inngest/channels/mint-status-token.ts`). The editor opens exactly one subscription regardless of node-type count — do **not** add a channel file per node.
 
 Realtime `publish` is provided by `realtimeMiddleware()` on the Inngest client (`src/inngest/client.ts`); there is **no** `channels: [...]` array to maintain on `executeWorkflow`.
 

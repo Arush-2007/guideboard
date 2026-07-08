@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { slackChannel } from "@/inngest/channels/slack";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { renderTemplate } from "@/lib/templating";
 
 type SlackData = {
@@ -24,7 +24,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
   publish,
 }) => {
   await publish(
-    slackChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -35,7 +35,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     config = parseNodeConfig(NodeType.SLACK, data) as SlackData;
   } catch (error) {
     await publish(
-      slackChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -79,7 +79,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     });
 
     await publish(
-      slackChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -88,7 +88,7 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
     return result;
   } catch (error) {
     await publish(
-      slackChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

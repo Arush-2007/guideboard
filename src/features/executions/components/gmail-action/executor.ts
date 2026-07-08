@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { gmailActionChannel } from "@/inngest/channels/gmail-action";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { renderTemplate } from "@/lib/templating";
 
@@ -32,7 +32,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
   publish,
 }) => {
   await publish(
-    gmailActionChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -43,7 +43,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
     config = parseNodeConfig(NodeType.GMAIL_ACTION, data) as GmailActionData;
   } catch (error) {
     await publish(
-      gmailActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -106,7 +106,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
     });
 
     await publish(
-      gmailActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -115,7 +115,7 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      gmailActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

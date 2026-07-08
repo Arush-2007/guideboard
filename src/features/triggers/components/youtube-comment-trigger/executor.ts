@@ -1,5 +1,5 @@
 import type { NodeExecutor } from "@/features/executions/types";
-import { youtubeCommentTriggerChannel } from "@/inngest/channels/youtube-comment-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 import { NonRetriableError } from "inngest";
@@ -10,7 +10,7 @@ export const youtubeCommentTriggerExecutor: NodeExecutor<
   YoutubeCommentTriggerData
 > = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    youtubeCommentTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -20,7 +20,7 @@ export const youtubeCommentTriggerExecutor: NodeExecutor<
     parseNodeConfig(NodeType.YOUTUBE_COMMENT_TRIGGER, data);
   } catch (error) {
     await publish(
-      youtubeCommentTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -33,7 +33,7 @@ export const youtubeCommentTriggerExecutor: NodeExecutor<
   const result = await step.run("youtube-comment-trigger", async () => context);
 
   await publish(
-    youtubeCommentTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

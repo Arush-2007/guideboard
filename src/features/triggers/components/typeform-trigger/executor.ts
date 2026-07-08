@@ -2,7 +2,7 @@ import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { typeformTriggerChannel } from "@/inngest/channels/typeform-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 
 type TypeformTriggerData = {
   credentialId?: string;
@@ -15,14 +15,14 @@ export const typeformTriggerExecutor: NodeExecutor<
   TypeformTriggerData
 > = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    typeformTriggerChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   try {
     parseNodeConfig(NodeType.TYPEFORM_TRIGGER, data);
   } catch (error) {
     await publish(
-      typeformTriggerChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -36,7 +36,7 @@ export const typeformTriggerExecutor: NodeExecutor<
   const result = await step.run("typeform-trigger", async () => context);
 
   await publish(
-    typeformTriggerChannel(userId).status({ nodeId, status: "success" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "success" }),
   );
 
   return result;
