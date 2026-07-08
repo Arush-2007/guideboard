@@ -40,7 +40,7 @@ export const EditorSaveButton = ({ workflowId }: { workflowId: string }) => {
         size="sm"
         onClick={handleSave}
         disabled={isSaving || !isDirty}
-        className="h-[2.025rem] px-4 text-[1.09rem]"
+        className="h-editor-save px-4 text-chrome"
       >
         {isSaving ? (
           <>
@@ -124,7 +124,7 @@ export const EditorNameInput = ({ workflowId }: { workflowId: string }) => {
         onChange={(e) => setName(e.target.value)}
         onBlur={handleSave}
         onKeyDown={handleKeyDown}
-        className="h-9 w-auto min-w-[100px] px-2 text-[1.09rem]"
+        className="h-9 w-auto min-w-[100px] px-2 text-chrome"
       />
     );
   }
@@ -144,7 +144,7 @@ export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
 
   return (
     <Breadcrumb>
-      <BreadcrumbList className="text-[1.09rem]">
+      <BreadcrumbList className="text-chrome">
         <BreadcrumbItem>
           <BreadcrumbLink asChild>
             <Link prefetch href="/workflows" onClick={guardNav("/workflows")}>
@@ -161,7 +161,7 @@ export const EditorBreadcrumbs = ({ workflowId }: { workflowId: string }) => {
 
 export const EditorHeader = ({ workflowId }: { workflowId: string }) => {
   return (
-    <header className="sticky top-0 z-20 flex h-[2.97675rem] shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    <header className="sticky top-0 z-20 flex h-editor-header shrink-0 items-center gap-2 border-b bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <SidebarTrigger />
       <div className="pointer-events-none absolute left-1/2 -translate-x-1/2">
         <div className="pointer-events-auto">

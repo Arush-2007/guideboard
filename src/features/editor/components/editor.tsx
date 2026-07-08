@@ -67,10 +67,10 @@ const MiniMapWithControls = () => {
     "flex items-center justify-center rounded-md border border-border/70 bg-card text-foreground shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground";
 
   return (
-    <div className="absolute bottom-[13.5px] right-[15px]">
+    <div className="shrink-0">
       <div className="relative">
         <MiniMap
-          className="!static !m-0 !h-[135px] !rounded-xl !border-2 !border-primary !bg-card"
+          className="!static !m-0 !h-editor-tray !rounded-xl !border-2 !border-primary !bg-card"
           maskColor="transparent"
           pannable
           zoomable
@@ -80,17 +80,17 @@ const MiniMapWithControls = () => {
             type="button"
             aria-label="Zoom in"
             onClick={() => zoomIn({ duration: 200 })}
-            className={`${controlButton} size-[1.815rem]`}
+            className={`${controlButton} size-editor-control`}
           >
-            <PlusIcon className="size-[1.059rem]" />
+            <PlusIcon className="size-editor-control-icon" />
           </button>
           <button
             type="button"
             aria-label="Zoom out"
             onClick={() => zoomOut({ duration: 200 })}
-            className={`${controlButton} size-[1.815rem]`}
+            className={`${controlButton} size-editor-control`}
           >
-            <MinusIcon className="size-[1.059rem]" />
+            <MinusIcon className="size-editor-control-icon" />
           </button>
         </div>
         <div className="absolute bottom-1.5 right-1.5 flex justify-end">
@@ -98,9 +98,9 @@ const MiniMapWithControls = () => {
             type="button"
             aria-label="Center view"
             onClick={() => fitView({ duration: 300, maxZoom: 1.4 })}
-            className={`${controlButton} h-[1.815rem] px-2 gap-1`}
+            className={`${controlButton} h-editor-control px-2 gap-1`}
           >
-            <LocateFixedIcon className="size-[1.059rem]" />
+            <LocateFixedIcon className="size-editor-control-icon" />
           </button>
         </div>
       </div>
@@ -230,7 +230,7 @@ const EditorShortcuts = ({
 export const EditorLoading = () => {
   return (
     <>
-      <div className="sticky top-0 z-20 flex h-[2.97675rem] shrink-0 items-center gap-2 border-b bg-background/95 px-4">
+      <div className="sticky top-0 z-20 flex h-editor-header shrink-0 items-center gap-2 border-b bg-background/95 px-4">
         <Skeleton className="size-7 rounded-md" />
         <Skeleton className="absolute left-1/2 h-5 w-40 -translate-x-1/2" />
         <Skeleton className="ml-auto h-8 w-24 rounded-md" />
@@ -251,7 +251,7 @@ export const EditorLoading = () => {
                 <Skeleton className="size-24 rounded-2xl" />
               </div>
             </div>
-            <div className="flex h-[162px] shrink-0 items-center justify-between border-t border-border/70 bg-background px-4">
+            <div className="flex h-editor-bar shrink-0 items-center justify-between border-t border-border/70 bg-background px-4">
               <Skeleton className="h-28 w-56 rounded-xl" />
               <Skeleton className="h-28 w-44 rounded-xl" />
             </div>
@@ -512,7 +512,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         </div>
         {/* Bottom bar holding the staging tray (left) and the minimap (right),
             outside the canvas so neither covers the flow. */}
-        <div className="relative h-[162px] shrink-0 border-t border-border/70 bg-background">
+        <div className="flex h-editor-bar shrink-0 items-center justify-between gap-4 border-t border-border/70 bg-background px-4">
           <StagingTray />
           <MiniMapWithControls />
         </div>

@@ -66,6 +66,16 @@
   --shadow-opacity: var(--shadow-opacity);
   --color-shadow-color: var(--shadow-color);
   --color-destructive-foreground: var(--destructive-foreground);
+
+  /* Editor chrome — hand-tuned dimensions from the manual visual pass,
+     tokenized so new editor UI derives from one definition (Phase 4). */
+  --spacing-editor-header: 2.97675rem; /* sticky header bar height */
+  --spacing-editor-bar: 162px; /* bottom staging/minimap bar height */
+  --spacing-editor-tray: 135px; /* staging tray + minimap inner height */
+  --spacing-editor-control: 1.815rem; /* minimap overlay control-button square */
+  --spacing-editor-control-icon: 1.059rem; /* icon inside an overlay control */
+  --spacing-editor-save: 2.025rem; /* editor save-button height */
+  --text-chrome: 1.09rem; /* editor header type size */
 }
 
 :root {
