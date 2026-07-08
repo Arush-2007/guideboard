@@ -1,10 +1,9 @@
+import { QueryErrorBoundary } from "@/components/query-error-boundary";
 import { ExecutionDetailLoading, ExecutionView } from "@/features/executions/components/execution";
-import { ExecutionsError } from "@/features/executions/components/executions";
 import { prefetchExecution } from "@/features/executions/server/prefetch";
 import { requireAuth } from "@/lib/auth-utils";
 import { HydrateClient } from "@/trpc/server";
 import { Suspense } from "react";
-import { ErrorBoundary } from "react-error-boundary";
 
 interface PageProps {
   params: Promise<{
@@ -22,11 +21,11 @@ const Page = async ({ params }: PageProps) => {
     <div className="p-4 md:px-10 md:py-6 h-full">
       <div className="mx-auto max-w-screen-md w-full flex flex-col gap-y-8 h-full">
         <HydrateClient>
-          <ErrorBoundary fallback={<ExecutionsError />}>
+          <QueryErrorBoundary message="Error loading execution">
             <Suspense fallback={<ExecutionDetailLoading />}>
               <ExecutionView executionId={executionId} />
             </Suspense>
-          </ErrorBoundary>
+          </QueryErrorBoundary>
         </HydrateClient>
       </div>
     </div>

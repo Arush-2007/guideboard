@@ -9,7 +9,6 @@ import {
   EntityList,
   EntityListSkeleton,
   EntityPagination,
-  ErrorView,
 } from "@/components/entity-components";
 import { useSuspenseExecutions } from "../hooks/use-executions"
 import { useExecutionsParams } from "../hooks/use-executions-params";
@@ -71,10 +70,6 @@ export const ExecutionsContainer = ({
 
 export const ExecutionsLoading = () => {
   return <EntityListSkeleton />;
-};
-
-export const ExecutionsError = () => {
-  return <ErrorView message="Error loading executions" />;
 };
 
 export const ExecutionsEmpty = () => {

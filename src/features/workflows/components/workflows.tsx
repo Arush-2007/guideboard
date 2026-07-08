@@ -9,7 +9,6 @@ import {
   EntityListSkeleton,
   EntityPagination,
   EntitySearch,
-  ErrorView,
 } from "@/components/entity-components";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -270,10 +269,6 @@ export const WorkflowsContainer = ({
 
 export const WorkflowsLoading = () => {
   return <EntityListSkeleton />;
-};
-
-export const WorkflowsError = () => {
-  return <ErrorView message="Error loading workflows" />;
 };
 
 export const WorkflowsEmpty = () => {

@@ -1,4 +1,4 @@
-import { AlertTriangleIcon, Loader2Icon, MoreVerticalIcon, PackageOpenIcon, PlusIcon, SearchIcon, TrashIcon } from "lucide-react";
+import { AlertTriangleIcon, Loader2Icon, MoreVerticalIcon, PackageOpenIcon, PlusIcon, RotateCwIcon, SearchIcon, TrashIcon } from "lucide-react";
 import { Button } from "./ui/button";
 import Link from "next/link";
 import { Input } from "./ui/input";
@@ -231,7 +231,8 @@ export const EntityListSkeleton = ({ count = 5 }: { count?: number }) => {
 
 export const ErrorView = ({
   message,
-}: StateViewProps) => {
+  onRetry,
+}: StateViewProps & { onRetry?: () => void }) => {
   return (
     <div className="flex justify-center items-center h-full flex-1 flex-col gap-y-4">
       <AlertTriangleIcon className="size-6 text-primary" />
@@ -239,6 +240,12 @@ export const ErrorView = ({
         <p className="text-sm text-muted-foreground">
           {message}
         </p>
+      )}
+      {onRetry && (
+        <Button variant="outline" size="sm" className="rounded-full" onClick={onRetry}>
+          <RotateCwIcon className="size-4" />
+          Try again
+        </Button>
       )}
     </div>
   );

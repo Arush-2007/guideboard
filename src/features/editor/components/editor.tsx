@@ -25,7 +25,6 @@ import {
 import { LocateFixedIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ErrorView } from "@/components/entity-components";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSuspenseWorkflow } from "@/features/workflows/hooks/use-workflows";
 
@@ -261,10 +260,6 @@ export const EditorLoading = () => {
       </main>
     </>
   );
-};
-
-export const EditorError = () => {
-  return <ErrorView message="Error loading editor" />;
 };
 
 export const Editor = ({ workflowId }: { workflowId: string }) => {

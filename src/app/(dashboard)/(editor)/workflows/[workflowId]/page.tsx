@@ -1,14 +1,13 @@
-import { 
-  Editor, 
-  EditorError, 
-  EditorLoading
+import { QueryErrorBoundary } from "@/components/query-error-boundary";
+import {
+  Editor,
+  EditorLoading,
 } from "@/features/editor/components/editor";
 import { EditorHeader } from "@/features/editor/components/editor-header";
 import { prefetchWorkflow } from "@/features/workflows/server/prefetch";
 import { requireAuth } from "@/lib/auth-utils";
 import { HydrateClient } from "@/trpc/server";
 import { Suspense } from "react";
-import { ErrorBoundary } from "react-error-boundary";
 
 interface PageProps {
   params: Promise<{
@@ -24,7 +23,7 @@ const Page = async ({ params }: PageProps) => {
 
   return (
     <HydrateClient>
-      <ErrorBoundary fallback={<EditorError />}>
+      <QueryErrorBoundary message="Error loading editor">
         <Suspense fallback={<EditorLoading />}>
           <EditorHeader workflowId={workflowId} />
           <main className="relative flex min-h-0 flex-1 flex-col">
@@ -33,7 +32,7 @@ const Page = async ({ params }: PageProps) => {
             </div>
           </main>
         </Suspense>
-      </ErrorBoundary>
+      </QueryErrorBoundary>
     </HydrateClient>
   )
 };

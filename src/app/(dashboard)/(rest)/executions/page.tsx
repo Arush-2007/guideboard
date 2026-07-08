@@ -1,10 +1,9 @@
 import type { SearchParams } from "nuqs";
 import { Suspense } from "react";
-import { ErrorBoundary } from "react-error-boundary";
+import { QueryErrorBoundary } from "@/components/query-error-boundary";
 import { ExecutionStats } from "@/features/executions/components/execution-stats";
 import {
   ExecutionsContainer,
-  ExecutionsError,
   ExecutionsList,
   ExecutionsLoading,
 } from "@/features/executions/components/executions";
@@ -31,11 +30,11 @@ const Page = async ({ searchParams }: Props) => {
           <ExecutionStats />
         </div>
         <ExecutionsFilters />
-        <ErrorBoundary fallback={<ExecutionsError />}>
+        <QueryErrorBoundary message="Error loading executions">
           <Suspense fallback={<ExecutionsLoading />}>
             <ExecutionsList />
           </Suspense>
-        </ErrorBoundary>
+        </QueryErrorBoundary>
       </HydrateClient>
     </ExecutionsContainer>
   );

@@ -1,8 +1,8 @@
+import { QueryErrorBoundary } from "@/components/query-error-boundary";
 import {
   CredentialsApiKeysSection,
   CredentialsConnectedAppsSection,
   CredentialsContainer,
-  CredentialsError,
   CredentialsInstagramAuthErrorToast,
   CredentialsList,
   CredentialsLoading,
@@ -12,9 +12,8 @@ import { credentialsParamsLoader } from "@/features/credentials/server/params-lo
 import { prefetchCredentials } from "@/features/credentials/server/prefetch";
 import { requireAuth } from "@/lib/auth-utils";
 import { HydrateClient } from "@/trpc/server";
-import { SearchParams } from "nuqs";
+import type { SearchParams } from "nuqs";
 import { Suspense } from "react";
-import { ErrorBoundary } from "react-error-boundary";
 
 type Props = {
   searchParams: Promise<SearchParams>;
@@ -29,7 +28,7 @@ const Page = async ({ searchParams }: Props) => {
   return (
     <CredentialsContainer>
       <HydrateClient>
-        <ErrorBoundary fallback={<CredentialsError />}>
+        <QueryErrorBoundary message="Error loading credentials">
           <Suspense fallback={null}>
             <CredentialsInstagramAuthErrorToast />
             <CredentialsYoutubeAuthErrorToast />
@@ -40,7 +39,7 @@ const Page = async ({ searchParams }: Props) => {
               <CredentialsList />
             </Suspense>
           </CredentialsApiKeysSection>
-        </ErrorBoundary>
+        </QueryErrorBoundary>
       </HydrateClient>
     </CredentialsContainer>
   );
