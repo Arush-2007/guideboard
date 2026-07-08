@@ -1,15 +1,14 @@
 "use client";
 
 import { formatDistanceToNow } from "date-fns";
-import { 
+import {
   EmptyView,
-  EntityContainer, 
-  EntityHeader, 
-  EntityItem, 
-  EntityList, 
-  EntityPagination, 
-  ErrorView,
-  LoadingView
+  EntityContainer,
+  EntityHeader,
+  EntityItem,
+  EntityList,
+  EntityListSkeleton,
+  EntityPagination,
 } from "@/components/entity-components";
 import { useSuspenseExecutions } from "../hooks/use-executions"
 import { useExecutionsParams } from "../hooks/use-executions-params";
@@ -18,7 +17,8 @@ import { ExecutionStatus } from "@/generated/prisma";
 import { CheckCircle2Icon, ClockIcon, Loader2Icon, XCircleIcon } from "lucide-react";
 
 export const ExecutionsList = () => {
-  const executions = useSuspenseExecutions();
+  // The list owns live polling for the page; pagination just reads the cache.
+  const executions = useSuspenseExecutions({ live: true });
 
   return (
     <EntityList
@@ -69,11 +69,7 @@ export const ExecutionsContainer = ({
 };
 
 export const ExecutionsLoading = () => {
-  return <LoadingView message="Loading executions..." />;
-};
-
-export const ExecutionsError = () => {
-  return <ErrorView message="Error loading executions" />;
+  return <EntityListSkeleton />;
 };
 
 export const ExecutionsEmpty = () => {

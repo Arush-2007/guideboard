@@ -13,6 +13,7 @@ export const BaseNode = forwardRef<
 >(({ className, status, ...props }, ref) => (
   <div
     ref={ref}
+    data-slot="base-node"
     className={cn(
       "relative rounded-sm border border-muted-foreground bg-card text-card-foreground hover:bg-accent",
       className,

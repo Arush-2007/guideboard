@@ -499,8 +499,11 @@ const atsActionSchema = z
 // them). No domain-specific (HR) fields — any workflow can consume the responses.
 const typeformTriggerSchema = z
   .object({
-    credentialId: z.string().optional(),
-    formId: z.string().optional(),
+    // A Typeform trigger cannot function without a connected account and a chosen
+    // form — the dialog requires both — so require them here. `formTitle` and
+    // `discoveredFields` are derived conveniences and stay optional.
+    credentialId: z.string().min(1, "A Typeform credential is required"),
+    formId: z.string().min(1, "A form is required"),
     formTitle: z.string().optional(),
     discoveredFields: z
       .array(z.object({ path: z.string(), label: z.string() }))
@@ -513,7 +516,9 @@ const typeformTriggerSchema = z
 // No domain-specific (HR) fields — any workflow can consume the raw responses.
 const googleFormTriggerSchema = z
   .object({
-    formId: z.string().optional(),
+    // A Google Form trigger needs a chosen form to reference responses and route
+    // submissions; require it. `formTitle`/`discoveredFields` stay optional.
+    formId: z.string().min(1, "A form is required"),
     formTitle: z.string().optional(),
     discoveredFields: z
       .array(z.object({ path: z.string(), label: z.string() }))
@@ -570,11 +575,30 @@ export function parseNodeConfig(type: NodeType, data: unknown) {
   const result = schema.safeParse(data);
   if (result.success) return result.data;
 
-  const issues = result.error.issues
-    .map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`)
-    .join("; ");
-
   throw new Error(
-    `Invalid node.data for NodeType="${type}": ${issues || "unknown Zod error"}`,
+    `Invalid node.data for NodeType="${type}": ${
+      getNodeConfigIssues(type, data).join("; ") || "unknown Zod error"
+    }`,
+  );
+}
+
+/**
+ * Non-throwing companion to `parseNodeConfig`, for build-time UI validation in
+ * the editor. Returns the list of issue summaries for a node's config (an empty
+ * array means valid). `parseNodeConfig` stays the runtime entry point; both read
+ * the *same* `nodeConfigSchemas` registry, so there is exactly one source of
+ * schema truth — never add a client-only check here.
+ */
+export function getNodeConfigIssues(type: NodeType, data: unknown): string[] {
+  const schema = nodeConfigSchemas[type];
+  if (!schema) {
+    return [`No node config schema registered for NodeType="${type}"`];
+  }
+
+  const result = schema.safeParse(data);
+  if (result.success) return [];
+
+  return result.error.issues.map(
+    (i) => `${i.path.join(".") || "<root>"}: ${i.message}`,
   );
 }

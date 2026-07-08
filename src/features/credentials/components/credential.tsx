@@ -23,6 +23,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import { getCredentialIntegration } from "@/config/integrations";
 import {
   Select,
@@ -370,6 +371,36 @@ export const CredentialForm = ({ initialData }: CredentialFormProps) => {
         </CardContent>
       </Card>
     </>
+  );
+};
+
+// Suspense fallback for the credential detail route. A light form-card
+// placeholder mirroring `CredentialForm` — title/description, a few
+// label + input field rows, and a submit block — so the form lands without a
+// jump. (The list route keeps its own `EntityListSkeleton` fallback.)
+export const CredentialDetailLoading = () => {
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <Skeleton className="h-6 w-40" />
+        <Skeleton className="mt-2 h-3.5 w-64" />
+      </CardHeader>
+      <CardContent>
+        <div className="space-y-6">
+          {Array.from({ length: 3 }, (_, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder form
+              key={index}
+              className="space-y-2"
+            >
+              <Skeleton className="h-4 w-16" />
+              <Skeleton className="h-9 w-full rounded-md" />
+            </div>
+          ))}
+          <Skeleton className="h-9 w-28 rounded-md" />
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 

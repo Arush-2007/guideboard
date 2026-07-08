@@ -6,7 +6,7 @@ import {
 } from "@/features/executions/lib/compare";
 import { type NodeExecutor, routed } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { conditionChannel } from "@/inngest/channels/condition";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { renderTemplate } from "@/lib/templating";
 import { CONDITION_OUTPUTS } from "./handles";
 
@@ -26,7 +26,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
   publish,
 }) => {
   await publish(
-    conditionChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -37,7 +37,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     config = parseNodeConfig(NodeType.CONDITION, data) as ConditionData;
   } catch (error) {
     await publish(
-      conditionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -67,7 +67,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     });
 
     await publish(
-      conditionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -92,7 +92,7 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
     );
   } catch (error) {
     await publish(
-      conditionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

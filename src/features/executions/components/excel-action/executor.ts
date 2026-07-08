@@ -4,7 +4,7 @@ import ky, { HTTPError } from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { excelActionChannel } from "@/inngest/channels/excel-action";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { refreshMicrosoftTokenIfNeeded } from "@/lib/microsoft-token";
 import {
   getFirstTableOnWorksheet,
@@ -101,7 +101,7 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
   publish,
 }) => {
   await publish(
-    excelActionChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   let config: ExcelActionData;
@@ -109,7 +109,7 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
     config = parseNodeConfig(NodeType.EXCEL_ACTION, data) as ExcelActionData;
   } catch (error) {
     await publish(
-      excelActionChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -134,7 +134,7 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
 
   const fail = async (message: string): Promise<never> => {
     await publish(
-      excelActionChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(message);
   };
@@ -393,12 +393,12 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
     });
 
     await publish(
-      excelActionChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
     return result;
   } catch (error) {
     await publish(
-      excelActionChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw error;
   }

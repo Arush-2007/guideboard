@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { whatsappActionChannel } from "@/inngest/channels/whatsapp-action";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -31,7 +31,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
   publish,
 }) => {
   await publish(
-    whatsappActionChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -45,7 +45,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     ) as WhatsappActionData;
   } catch (error) {
     await publish(
-      whatsappActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -86,7 +86,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
 
   if (!credential) {
     await publish(
-      whatsappActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -99,7 +99,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     parsed = JSON.parse(decrypt(credential.value)) as WhatsappCredentialValue;
   } catch {
     await publish(
-      whatsappActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -114,7 +114,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
 
   if (!accessToken || !phoneNumberId) {
     await publish(
-      whatsappActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -167,7 +167,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     });
 
     await publish(
-      whatsappActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -176,7 +176,7 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
     return result;
   } catch (error) {
     await publish(
-      whatsappActionChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

@@ -6,7 +6,7 @@ import {
 } from "@/features/executions/lib/compare";
 import { type NodeExecutor, routed } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { switchChannel } from "@/inngest/channels/switch";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { renderTemplate } from "@/lib/templating";
 import { SWITCH_DEFAULT_OUTPUT } from "./handles";
 
@@ -31,7 +31,7 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
   publish,
 }) => {
   await publish(
-    switchChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -42,7 +42,7 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
     config = parseNodeConfig(NodeType.SWITCH, data) as SwitchData;
   } catch (error) {
     await publish(
-      switchChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -73,7 +73,7 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
     });
 
     await publish(
-      switchChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -86,7 +86,7 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
     ]);
   } catch (error) {
     await publish(
-      switchChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

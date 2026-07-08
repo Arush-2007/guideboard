@@ -66,6 +66,16 @@
   --shadow-opacity: var(--shadow-opacity);
   --color-shadow-color: var(--shadow-color);
   --color-destructive-foreground: var(--destructive-foreground);
+
+  /* Editor chrome — hand-tuned dimensions from the manual visual pass,
+     tokenized so new editor UI derives from one definition (Phase 4). */
+  --spacing-editor-header: 2.97675rem; /* sticky header bar height */
+  --spacing-editor-bar: 162px; /* bottom staging/minimap bar height */
+  --spacing-editor-tray: 135px; /* staging tray + minimap inner height */
+  --spacing-editor-control: 1.815rem; /* minimap overlay control-button square */
+  --spacing-editor-control-icon: 1.059rem; /* icon inside an overlay control */
+  --spacing-editor-save: 2.025rem; /* editor save-button height */
+  --text-chrome: 1.09rem; /* editor header type size */
 }
 
 :root {
@@ -127,36 +137,6 @@
     0px 1px 3px 0px hsl(0 0% 0% / 0.1), 0px 8px 10px -1px hsl(0 0% 0% / 0.1);
   --shadow-2xl: 0px 1px 3px 0px hsl(0 0% 0% / 0.25);
   --tracking-normal: 0em;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: oklch(0.15 0.02 258);
-    --foreground: oklch(0.94 0.0045 255.04);
-    --card: oklch(0.2 0.018 260);
-    --card-foreground: oklch(0.94 0.0045 255.04);
-    --popover: oklch(0.19 0.017 260);
-    --popover-foreground: oklch(0.94 0.0045 255.04);
-    --primary: oklch(0.69 0.148 253.93);
-    --primary-foreground: oklch(0.16 0.017 258);
-    --secondary: oklch(0.245 0.017 262);
-    --secondary-foreground: oklch(0.94 0.0045 255.04);
-    --muted: oklch(0.245 0.017 262);
-    --muted-foreground: oklch(0.76 0.0105 255.24);
-    --accent: oklch(0.275 0.024 260);
-    --accent-foreground: oklch(0.915 0.012 254.01);
-    --border: oklch(0.315 0.02 260.66);
-    --input: oklch(0.295 0.018 260.66);
-    --ring: oklch(0.69 0.148 253.93);
-    --sidebar: oklch(0.175 0.018 259);
-    --sidebar-foreground: oklch(0.94 0.0045 255.04);
-    --sidebar-primary: oklch(0.69 0.148 253.93);
-    --sidebar-primary-foreground: oklch(0.16 0.017 258);
-    --sidebar-accent: oklch(0.27 0.024 260.04);
-    --sidebar-accent-foreground: oklch(0.915 0.012 254.01);
-    --sidebar-border: oklch(0.315 0.02 260.66);
-    --sidebar-ring: oklch(0.69 0.148 253.93);
-  }
 }
 
 .dark {
@@ -276,7 +256,7 @@
 }
 
 /* React Flow node selection styles */
-.react-flow__node.selected #base-node {
+.react-flow__node.selected [data-slot="base-node"] {
   @apply ring-3 ring-muted-foreground/25 shadow-lg;
 }
 

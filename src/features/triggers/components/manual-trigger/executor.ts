@@ -1,6 +1,6 @@
 import { NonRetriableError } from "inngest";
 import type { NodeExecutor } from "@/features/executions/types";
-import { manualTriggerChannel } from "@/inngest/channels/manual-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 
@@ -15,7 +15,7 @@ export const manualTriggerExecutor: NodeExecutor<ManualTriggerData> = async ({
   data,
 }) => {
   await publish(
-    manualTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -25,7 +25,7 @@ export const manualTriggerExecutor: NodeExecutor<ManualTriggerData> = async ({
     parseNodeConfig(NodeType.MANUAL_TRIGGER, data);
   } catch (error) {
     await publish(
-      manualTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -38,7 +38,7 @@ export const manualTriggerExecutor: NodeExecutor<ManualTriggerData> = async ({
   const result = await step.run("manual-trigger", async () => context);
 
   await publish(
-    manualTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

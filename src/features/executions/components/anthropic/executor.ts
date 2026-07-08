@@ -5,7 +5,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { anthropicChannel } from "@/inngest/channels/anthropic";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { renderTemplate } from "@/lib/templating";
@@ -26,7 +26,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
   publish,
 }) => {
   await publish(
-    anthropicChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -37,7 +37,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
     config = parseNodeConfig(NodeType.ANTHROPIC, data) as AnthropicData;
   } catch (error) {
     await publish(
-      anthropicChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -62,7 +62,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
 
   if (!credential) {
     await publish(
-      anthropicChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -94,7 +94,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
       steps[0].content[0].type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      anthropicChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "success",
       }),
@@ -108,7 +108,7 @@ export const anthropicExecutor: NodeExecutor<AnthropicData> = async ({
     };
   } catch (error) {
     await publish(
-      anthropicChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),

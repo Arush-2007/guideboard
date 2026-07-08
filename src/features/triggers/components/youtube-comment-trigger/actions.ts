@@ -3,15 +3,9 @@
 import { headers } from "next/headers";
 import { parseNodeConfig } from "@/config/node-schemas";
 import { NodeType } from "@/generated/prisma";
-import { mintUserStatusToken } from "@/inngest/channels/mint-status-token";
-import { youtubeCommentTriggerChannel } from "@/inngest/channels/youtube-comment-trigger";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { logger } from "@/lib/logger";
-
-export async function fetchYoutubeCommentTriggerRealtimeToken() {
-  return mintUserStatusToken(youtubeCommentTriggerChannel);
-}
 
 export type YoutubeCommentTriggerConfig = {
   videoId?: string;

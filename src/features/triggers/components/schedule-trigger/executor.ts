@@ -2,7 +2,7 @@ import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { scheduleTriggerChannel } from "@/inngest/channels/schedule-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 
 type ScheduleTriggerData = Record<string, unknown>;
 
@@ -16,7 +16,7 @@ export const scheduleTriggerExecutor: NodeExecutor<
   ScheduleTriggerData
 > = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    scheduleTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -26,7 +26,7 @@ export const scheduleTriggerExecutor: NodeExecutor<
     parseNodeConfig(NodeType.SCHEDULE_TRIGGER, data);
   } catch (error) {
     await publish(
-      scheduleTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -39,7 +39,7 @@ export const scheduleTriggerExecutor: NodeExecutor<
   const result = await step.run("schedule-trigger", async () => context);
 
   await publish(
-    scheduleTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

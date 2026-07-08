@@ -1,5 +1,5 @@
 import type { NodeExecutor } from "@/features/executions/types";
-import { gmailTriggerChannel } from "@/inngest/channels/gmail-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 import { NonRetriableError } from "inngest";
@@ -15,7 +15,7 @@ export const gmailTriggerExecutor: NodeExecutor<GmailTriggerData> = async ({
   data,
 }) => {
   await publish(
-    gmailTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -25,7 +25,7 @@ export const gmailTriggerExecutor: NodeExecutor<GmailTriggerData> = async ({
     parseNodeConfig(NodeType.GMAIL_TRIGGER, data);
   } catch (error) {
     await publish(
-      gmailTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -38,7 +38,7 @@ export const gmailTriggerExecutor: NodeExecutor<GmailTriggerData> = async ({
   const result = await step.run("gmail-trigger", async () => context);
 
   await publish(
-    gmailTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

@@ -2,7 +2,7 @@ import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { googleFormTriggerChannel } from "@/inngest/channels/google-form-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 
 type GoogleFormTriggerData = {
   formId?: string;
@@ -14,14 +14,14 @@ export const googleFormTriggerExecutor: NodeExecutor<
   GoogleFormTriggerData
 > = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    googleFormTriggerChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   try {
     parseNodeConfig(NodeType.GOOGLE_FORM_TRIGGER, data);
   } catch (error) {
     await publish(
-      googleFormTriggerChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -34,7 +34,7 @@ export const googleFormTriggerExecutor: NodeExecutor<
   const result = await step.run("google-form-trigger", async () => context);
 
   await publish(
-    googleFormTriggerChannel(userId).status({ nodeId, status: "success" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "success" }),
   );
 
   return result;

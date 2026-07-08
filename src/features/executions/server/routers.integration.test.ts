@@ -212,6 +212,113 @@ describe("executions.rerun", () => {
   });
 });
 
+describe("executions.getMany filters", () => {
+  const seedExecution = (workflowId: string, status: ExecutionStatus) =>
+    prisma.execution.create({
+      data: {
+        workflowId,
+        inngestEventId: `evt-${Math.random()}`,
+        status,
+      },
+    });
+
+  it("filters by status, and totalCount reflects the filter", async () => {
+    const wf = await prisma.workflow.create({
+      data: { name: "Filters wf", userId: authState.userId },
+    });
+    await seedExecution(wf.id, ExecutionStatus.SUCCESS);
+    await seedExecution(wf.id, ExecutionStatus.FAILED);
+    await seedExecution(wf.id, ExecutionStatus.FAILED);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      status: ExecutionStatus.FAILED,
+    });
+
+    expect(res.totalCount).toBe(2);
+    expect(res.items).toHaveLength(2);
+    expect(res.items.every((e) => e.status === ExecutionStatus.FAILED)).toBe(
+      true,
+    );
+  });
+
+  it("filters by workflowId", async () => {
+    const [a, b] = await Promise.all([
+      prisma.workflow.create({ data: { name: "A", userId: authState.userId } }),
+      prisma.workflow.create({ data: { name: "B", userId: authState.userId } }),
+    ]);
+    await seedExecution(a.id, ExecutionStatus.SUCCESS);
+    await seedExecution(b.id, ExecutionStatus.SUCCESS);
+    await seedExecution(b.id, ExecutionStatus.RUNNING);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      workflowId: b.id,
+    });
+
+    expect(res.totalCount).toBe(2);
+    expect(res.items.every((e) => e.workflowId === b.id)).toBe(true);
+  });
+
+  it("combines status and workflow filters", async () => {
+    const [a, b] = await Promise.all([
+      prisma.workflow.create({ data: { name: "A", userId: authState.userId } }),
+      prisma.workflow.create({ data: { name: "B", userId: authState.userId } }),
+    ]);
+    await seedExecution(a.id, ExecutionStatus.FAILED);
+    await seedExecution(b.id, ExecutionStatus.FAILED);
+    await seedExecution(b.id, ExecutionStatus.SUCCESS);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      status: ExecutionStatus.FAILED,
+      workflowId: b.id,
+    });
+
+    expect(res.totalCount).toBe(1);
+    expect(res.items).toHaveLength(1);
+    expect(res.items[0]?.workflowId).toBe(b.id);
+    expect(res.items[0]?.status).toBe(ExecutionStatus.FAILED);
+  });
+
+  it("ignores null filters (returns all the user's runs)", async () => {
+    const wf = await prisma.workflow.create({
+      data: { name: "No filter", userId: authState.userId },
+    });
+    await seedExecution(wf.id, ExecutionStatus.SUCCESS);
+    await seedExecution(wf.id, ExecutionStatus.FAILED);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      status: null,
+      workflowId: null,
+    });
+
+    expect(res.totalCount).toBe(2);
+  });
+
+  it("returns nothing for a workflow the caller does not own", async () => {
+    const other = await createTestUser();
+    const foreignWf = await prisma.workflow.create({
+      data: { name: "Foreign", userId: other.id },
+    });
+    await seedExecution(foreignWf.id, ExecutionStatus.SUCCESS);
+
+    const res = await caller.executions.getMany({
+      page: 1,
+      pageSize: 10,
+      workflowId: foreignWf.id,
+    });
+
+    expect(res.totalCount).toBe(0);
+    expect(res.items).toHaveLength(0);
+  });
+});
+
 describe("executions.getStats", () => {
   it("aggregates status counts, success rate, avg duration, daily buckets and top failing nodes", async () => {
     const workflow = await prisma.workflow.create({
@@ -296,5 +403,123 @@ describe("executions.getStats", () => {
     expect(stats.avgDurationSeconds).toBeNull();
     expect(stats.runsPerDay).toEqual([]);
     expect(stats.topFailingNodes).toEqual([]);
+  });
+});
+
+describe("executions.getLatestNodeFailure", () => {
+  // Seeds a workflow + execution + one NodeExecution for the given node. Defaults
+  // to a FAILED node owned by the current test user; `userId` overrides ownership
+  // and `status` lets a test seed a non-failed row.
+  const seedNode = async ({
+    userId = authState.userId,
+    nodeId,
+    error,
+    completedAt,
+    status = NodeExecutionStatus.FAILED,
+    eventId,
+  }: {
+    userId?: string;
+    nodeId: string;
+    error?: string | null;
+    completedAt?: Date;
+    status?: NodeExecutionStatus;
+    eventId: string;
+  }) => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Failure workflow", userId },
+    });
+    const execution = await prisma.execution.create({
+      data: {
+        workflowId: workflow.id,
+        inngestEventId: eventId,
+        status: ExecutionStatus.FAILED,
+      },
+    });
+    await prisma.nodeExecution.create({
+      data: {
+        executionId: execution.id,
+        nodeId,
+        nodeType: NodeType.HTTP_REQUEST,
+        nodeName: "Call API",
+        sequence: 0,
+        status,
+        error: error ?? null,
+        completedAt: completedAt ?? new Date(),
+        durationMs: 100,
+      },
+    });
+    return { workflow, execution };
+  };
+
+  it("returns the latest failure for a node, with its executionId and error", async () => {
+    const base = Date.now();
+    await seedNode({
+      nodeId: "n_http",
+      error: "old failure",
+      completedAt: new Date(base - 10_000),
+      eventId: "evt-fail-old",
+    });
+    const latest = await seedNode({
+      nodeId: "n_http",
+      error: "boom: connect ECONNREFUSED",
+      completedAt: new Date(base - 1_000),
+      eventId: "evt-fail-new",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_http",
+    });
+
+    expect(res).not.toBeNull();
+    expect(res?.executionId).toBe(latest.execution.id);
+    expect(res?.error).toBe("boom: connect ECONNREFUSED");
+  });
+
+  it("returns null when the node has only succeeded", async () => {
+    await seedNode({
+      nodeId: "n_ok",
+      status: NodeExecutionStatus.SUCCESS,
+      eventId: "evt-ok",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_ok",
+    });
+    expect(res).toBeNull();
+  });
+
+  it("returns null for a node with no recorded runs", async () => {
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "does-not-exist",
+    });
+    expect(res).toBeNull();
+  });
+
+  it("does not return a failure for a node the caller does not own", async () => {
+    const other = await createTestUser();
+    await seedNode({
+      userId: other.id,
+      nodeId: "n_foreign",
+      error: "secret failure",
+      eventId: "evt-foreign",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_foreign",
+    });
+    expect(res).toBeNull();
+  });
+
+  it("truncates a long error message", async () => {
+    await seedNode({
+      nodeId: "n_long",
+      error: "x".repeat(5_000),
+      eventId: "evt-long",
+    });
+
+    const res = await caller.executions.getLatestNodeFailure({
+      nodeId: "n_long",
+    });
+    expect(res?.error).toHaveLength(600);
   });
 });

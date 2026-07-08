@@ -2,7 +2,7 @@ import { NonRetriableError } from "inngest";
 import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
-import { googleSheetsTriggerChannel } from "@/inngest/channels/google-sheets-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 
 type GoogleSheetsTriggerData = {
   spreadsheetId?: string;
@@ -13,7 +13,7 @@ export const googleSheetsTriggerExecutor: NodeExecutor<
   GoogleSheetsTriggerData
 > = async ({ nodeId, userId, context, step, publish, data }) => {
   await publish(
-    googleSheetsTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -23,7 +23,7 @@ export const googleSheetsTriggerExecutor: NodeExecutor<
     parseNodeConfig(NodeType.GOOGLE_SHEETS_TRIGGER, data);
   } catch (error) {
     await publish(
-      googleSheetsTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -36,7 +36,7 @@ export const googleSheetsTriggerExecutor: NodeExecutor<
   const result = await step.run("google-sheets-trigger", async () => context);
 
   await publish(
-    googleSheetsTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

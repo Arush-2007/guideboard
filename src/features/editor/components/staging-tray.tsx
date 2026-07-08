@@ -60,7 +60,8 @@ const StagedChip = ({ node }: { node: StagedNode }) => {
 // The "organizing window": a horizontal tray along the bottom of the canvas,
 // just left of the minimap, where nodes selected from the selector wait until
 // the user drags them out onto the canvas. Styled to match the minimap (rounded,
-// primary border, same height/inset) and reserves room on the right for it.
+// primary border, same height); as the flex-1 child of the bottom bar it fills
+// the space left of the minimap and shrinks (min-w-0) as the minimap widens.
 export const StagingTray = () => {
   const staged = useAtomValue(stagedNodesAtom);
 
@@ -76,7 +77,7 @@ export const StagingTray = () => {
     <div
       onDrop={swallowDrop}
       onDragOver={(e) => e.preventDefault()}
-      className="pointer-events-auto absolute bottom-[13.5px] left-[15px] right-[230px] z-20 flex h-[135px] flex-col gap-2 rounded-xl border-2 border-primary bg-card p-3 shadow-sm"
+      className="flex h-editor-tray min-w-0 flex-1 flex-col gap-2 rounded-xl border-2 border-primary bg-card p-3 shadow-sm"
     >
       <span className="text-center text-xs font-medium text-muted-foreground">
         Drag the node to Canvas to use.

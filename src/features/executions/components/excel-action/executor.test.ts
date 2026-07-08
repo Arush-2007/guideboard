@@ -58,8 +58,8 @@ vi.mock("@/lib/microsoft-token", () => ({
 }));
 
 // Make `.status(payload)` return the payload so `publish` receives it verbatim.
-vi.mock("@/inngest/channels/excel-action", () => ({
-  excelActionChannel: () => ({ status: (payload: unknown) => payload }),
+vi.mock("@/inngest/channels/node-status", () => ({
+  nodeStatusChannel: () => ({ status: (payload: unknown) => payload }),
 }));
 
 import type { NodeExecutorParams } from "@/features/executions/types";

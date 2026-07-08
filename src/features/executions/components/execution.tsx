@@ -5,6 +5,7 @@ import { formatDistanceToNow } from "date-fns";
 import {
   CheckCircle2Icon,
   ClockIcon,
+  CopyIcon,
   Loader2Icon,
   RedoIcon,
   RotateCwIcon,
@@ -26,7 +27,9 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
+import { formatDuration } from "@/features/executions/lib/format-duration";
 import {
   COMPARE_OPERATOR_LABELS,
   type CompareOperator,
@@ -134,6 +137,32 @@ const ReplayFromNodeButton = ({
     >
       <RedoIcon className="size-3.5" />
       {replay.isPending ? "Starting…" : "Replay from here"}
+    </Button>
+  );
+};
+
+// Copies a data block's raw, pretty-printed JSON (the exact values, not the
+// friendly rendering) to the clipboard. Mirrors the app's copy convention (see
+// webhook-trigger dialog): write + toast, no transient state.
+const CopyJsonButton = ({ value }: { value: unknown }) => {
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
+      toast.success("Copied");
+    } catch {
+      toast.error("Failed to copy");
+    }
+  };
+
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      className="h-6 px-2 text-xs"
+      onClick={handleCopy}
+    >
+      <CopyIcon className="size-3.5" />
+      Copy
     </Button>
   );
 };
@@ -290,26 +319,29 @@ const DataSection = ({
     <div>
       <div className="mb-1 flex items-center justify-between">
         <p className="text-xs font-medium text-muted-foreground">{label}</p>
-        {hasFriendly ? (
-          <div className="flex items-center gap-1">
-            <Button
-              variant={showRaw ? "ghost" : "secondary"}
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => setShowRaw(false)}
-            >
-              Friendly
-            </Button>
-            <Button
-              variant={showRaw ? "secondary" : "ghost"}
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => setShowRaw(true)}
-            >
-              Raw
-            </Button>
-          </div>
-        ) : null}
+        <div className="flex items-center gap-1">
+          {hasFriendly ? (
+            <>
+              <Button
+                variant={showRaw ? "ghost" : "secondary"}
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setShowRaw(false)}
+              >
+                Friendly
+              </Button>
+              <Button
+                variant={showRaw ? "secondary" : "ghost"}
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => setShowRaw(true)}
+              >
+                Raw
+              </Button>
+            </>
+          ) : null}
+          <CopyJsonButton value={raw} />
+        </div>
       </div>
 
       {hasFriendly && !showRaw ? (
@@ -496,7 +528,7 @@ const NodeRow = ({
         <div className="ml-auto flex items-center gap-2">
           {node.durationMs != null ? (
             <span className="text-xs text-muted-foreground">
-              ~{node.durationMs}ms
+              {formatDuration(node.durationMs)}
             </span>
           ) : null}
           {!isSkipped ? (
@@ -535,17 +567,58 @@ const NodeRow = ({
   );
 };
 
+// Suspense fallback for the execution detail route. Mirrors `ExecutionView`'s
+// card — status-icon header, the 2-col metadata grid, and a short stack of
+// node-row placeholders — so the real detail lands without a layout jump.
+export const ExecutionDetailLoading = () => {
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <Skeleton className="size-5 rounded-full" />
+          <div className="flex flex-col gap-y-2">
+            <Skeleton className="h-5 w-28" />
+            <Skeleton className="h-3.5 w-52" />
+          </div>
+          <Skeleton className="ml-auto h-9 w-24 rounded-md" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder grid
+              key={index}
+              className="flex flex-col gap-y-2"
+            >
+              <Skeleton className="h-3.5 w-20" />
+              <Skeleton className="h-4 w-32" />
+            </div>
+          ))}
+        </div>
+        <div className="mt-6 space-y-2">
+          <Skeleton className="h-4 w-14" />
+          {Array.from({ length: 3 }, (_, index) => (
+            <Skeleton
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder list
+              key={index}
+              className="h-14 w-full rounded-xl"
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
+
 export const ExecutionView = ({ executionId }: { executionId: string }) => {
   const { data: execution } = useSuspenseExecution(executionId);
   const [showStackTrace, setShowStackTrace] = useState(false);
   const [showFinalOutput, setShowFinalOutput] = useState(false);
 
-  const duration = execution.completedAt
-    ? Math.round(
-        (new Date(execution.completedAt).getTime() -
-          new Date(execution.startedAt).getTime()) /
-          1000,
-      )
+  const totalDurationMs = execution.completedAt
+    ? new Date(execution.completedAt).getTime() -
+      new Date(execution.startedAt).getTime()
     : null;
 
   // Map each context key to the node that wrote it, so a downstream node's input
@@ -635,12 +708,12 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
             </div>
           ) : null}
 
-          {duration !== null ? (
+          {totalDurationMs !== null ? (
             <div>
               <p className="text-sm font-medium text-muted-foreground">
                 Duration
               </p>
-              <p className="text-sm">{duration}s</p>
+              <p className="text-sm">{formatDuration(totalDurationMs)}</p>
             </div>
           ) : null}
 
@@ -709,11 +782,14 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
             >
               <div className="flex items-center justify-between">
                 <p className="text-sm font-medium">Final output</p>
-                <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="h-7 px-2">
-                    {showFinalOutput ? "Hide data" : "Show data"}
-                  </Button>
-                </CollapsibleTrigger>
+                <div className="flex items-center gap-1">
+                  <CopyJsonButton value={execution.output} />
+                  <CollapsibleTrigger asChild>
+                    <Button variant="ghost" size="sm" className="h-7 px-2">
+                      {showFinalOutput ? "Hide data" : "Show data"}
+                    </Button>
+                  </CollapsibleTrigger>
+                </div>
               </div>
               <CollapsibleContent className="mt-2">
                 <pre className="text-xs font-mono overflow-auto">

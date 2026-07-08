@@ -13,10 +13,9 @@ import {
   EntityHeader,
   EntityItem,
   EntityList,
+  EntityListSkeleton,
   EntityPagination,
   EntitySearch,
-  ErrorView,
-  LoadingView,
 } from "@/components/entity-components";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -420,11 +419,7 @@ export const CredentialsContainer = ({
 };
 
 export const CredentialsLoading = () => {
-  return <LoadingView message="Loading credentials..." />;
-};
-
-export const CredentialsError = () => {
-  return <ErrorView message="Error loading credentials" />;
+  return <EntityListSkeleton />;
 };
 
 export const CredentialsEmpty = () => {

@@ -5,7 +5,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import { describeProviderError } from "@/features/executions/lib/provider-error";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { aiReplyGeneratorChannel } from "@/inngest/channels/ai-reply-generator";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 
@@ -42,7 +42,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
   AiReplyGeneratorData
 > = async ({ data, nodeId, userId, context, step, publish }) => {
   await publish(
-    aiReplyGeneratorChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   let config: AiReplyGeneratorData;
@@ -53,7 +53,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
     ) as AiReplyGeneratorData;
   } catch (error) {
     await publish(
-      aiReplyGeneratorChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -90,7 +90,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
 
   if (shouldSkip) {
     await publish(
-      aiReplyGeneratorChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
     return context;
   }
@@ -223,7 +223,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
       steps[0]?.content[0]?.type === "text" ? steps[0].content[0].text : "";
 
     await publish(
-      aiReplyGeneratorChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
 
     return {
@@ -232,7 +232,7 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
     };
   } catch (error) {
     await publish(
-      aiReplyGeneratorChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw describeProviderError(error, providerLabel[resolved.provider]);
   }

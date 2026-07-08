@@ -2,7 +2,7 @@ import { NonRetriableError } from "inngest";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
-import { webhookTriggerChannel } from "@/inngest/channels/webhook-trigger";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 
 type WebhookTriggerData = Record<string, unknown>;
 
@@ -21,7 +21,7 @@ export const webhookTriggerExecutor: NodeExecutor<WebhookTriggerData> = async ({
   data,
 }) => {
   await publish(
-    webhookTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "loading",
     }),
@@ -31,7 +31,7 @@ export const webhookTriggerExecutor: NodeExecutor<WebhookTriggerData> = async ({
     parseNodeConfig(NodeType.WEBHOOK_TRIGGER, data);
   } catch (error) {
     await publish(
-      webhookTriggerChannel(userId).status({
+      nodeStatusChannel(userId).status({
         nodeId,
         status: "error",
       }),
@@ -44,7 +44,7 @@ export const webhookTriggerExecutor: NodeExecutor<WebhookTriggerData> = async ({
   const result = await step.run("webhook-trigger", async () => context);
 
   await publish(
-    webhookTriggerChannel(userId).status({
+    nodeStatusChannel(userId).status({
       nodeId,
       status: "success",
     }),

@@ -176,7 +176,7 @@ export function NodeSelector({
       <SheetTrigger asChild>{children}</SheetTrigger>
       <SheetContent
         side="right"
-        className="top-[2.97675rem] h-[calc(100vh-2.97675rem-162px)] w-full gap-0 p-0 sm:max-w-md"
+        className="top-editor-header h-[calc(100vh-var(--spacing-editor-header)-var(--spacing-editor-bar))] w-full gap-0 p-0 sm:max-w-md"
       >
         <SheetHeader className="border-b">
           <SheetTitle className="sr-only">Add nodes to workflow</SheetTitle>

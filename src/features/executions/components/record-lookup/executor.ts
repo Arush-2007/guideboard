@@ -4,7 +4,7 @@ import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
-import { recordLookupChannel } from "@/inngest/channels/record-lookup";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
@@ -202,7 +202,7 @@ export const recordLookupExecutor: NodeExecutor<RecordLookupData> = async ({
   publish,
 }) => {
   await publish(
-    recordLookupChannel(userId).status({ nodeId, status: "loading" }),
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
   );
 
   let config: RecordLookupData;
@@ -213,7 +213,7 @@ export const recordLookupExecutor: NodeExecutor<RecordLookupData> = async ({
     ) as RecordLookupData;
   } catch (error) {
     await publish(
-      recordLookupChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
@@ -224,7 +224,7 @@ export const recordLookupExecutor: NodeExecutor<RecordLookupData> = async ({
   const value = decode(renderTemplate(config.value ?? "", context)).trim();
   if (!value) {
     await publish(
-      recordLookupChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError("Record Lookup: a value to search for is required");
   }
@@ -237,13 +237,13 @@ export const recordLookupExecutor: NodeExecutor<RecordLookupData> = async ({
     );
 
     await publish(
-      recordLookupChannel(userId).status({ nodeId, status: "success" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
     );
 
     return { ...context, [outputKey]: result };
   } catch (error) {
     await publish(
-      recordLookupChannel(userId).status({ nodeId, status: "error" }),
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     if (error instanceof NonRetriableError) throw error;
     throw new NonRetriableError(

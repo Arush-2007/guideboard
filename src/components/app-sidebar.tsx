@@ -16,13 +16,14 @@ import {
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
-  SidebarGroupLabel,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { useNavGuard } from "@/features/editor/hooks/use-nav-guard";
 import { authClient } from "@/lib/auth-client";
 
 const menuItems = [
@@ -56,6 +57,7 @@ const menuItems = [
 export const AppSidebar = () => {
   const router = useRouter();
   const pathname = usePathname();
+  const guardNav = useNavGuard();
 
   // The workflow editor (/workflows/<id>) renders a heavy React Flow canvas in
   // the content area. Animating the rail width resizes that canvas every frame
@@ -70,8 +72,11 @@ export const AppSidebar = () => {
     >
       <SidebarHeader className="gap-y-4 border-b border-sidebar-border/70 p-4 group-data-[collapsible=icon]:items-center group-data-[collapsible=icon]:px-2">
         <SidebarMenuItem>
-          <SidebarMenuButton asChild className="h-11 gap-x-3 rounded-2xl px-3 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:!h-11 group-data-[collapsible=icon]:!w-8 group-data-[collapsible=icon]:!p-0.5">
-            <Link href="/" prefetch>
+          <SidebarMenuButton
+            asChild
+            className="h-11 gap-x-3 rounded-2xl px-3 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:!h-11 group-data-[collapsible=icon]:!w-8 group-data-[collapsible=icon]:!p-0.5"
+          >
+            <Link href="/" prefetch onClick={guardNav("/")}>
               <Image
                 src="/logos/logo.svg"
                 alt="Guideboard"
@@ -120,7 +125,11 @@ export const AppSidebar = () => {
                       asChild
                       className="h-10 gap-x-3 rounded-xl px-3 text-[13px] font-semibold transition-all duration-200 data-[active=true]:bg-primary data-[active=true]:text-primary-foreground data-[active=true]:shadow-sm hover:bg-sidebar-accent/80 group-data-[collapsible=icon]:!h-10 group-data-[collapsible=icon]:!w-8"
                     >
-                      <Link href={item.url} prefetch>
+                      <Link
+                        href={item.url}
+                        prefetch
+                        onClick={guardNav(item.url)}
+                      >
                         <item.icon className="size-4" />
                         <span>{item.title}</span>
                       </Link>
