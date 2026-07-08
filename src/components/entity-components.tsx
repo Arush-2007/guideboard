@@ -23,6 +23,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
+import { Skeleton } from "./ui/skeleton";
 
 type EntityHeaderProps = {
   title: string;
@@ -199,6 +200,34 @@ export const LoadingView = ({
   );
 };
 
+
+// Layout-shaped placeholder for entity lists (workflows / executions /
+// credentials) while their suspense query resolves. Mirrors `EntityItem`'s card
+// geometry — image square, two text lines, action dot — inside the same
+// `EntityList` gap so real rows land without a layout jump. Rendered inside the
+// container chrome, so it only shapes the list region, not the whole page.
+export const EntityListSkeleton = ({ count = 5 }: { count?: number }) => {
+  return (
+    <div className="flex flex-col gap-y-3.5">
+      {Array.from({ length: count }, (_, index) => (
+        <div
+          // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder list
+          key={index}
+          className="flex items-center justify-between rounded-2xl border border-border/70 p-4 shadow-sm"
+        >
+          <div className="flex min-w-0 items-center gap-3">
+            <Skeleton className="size-9 shrink-0 rounded-xl" />
+            <div className="flex flex-col gap-y-2">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-3 w-48" />
+            </div>
+          </div>
+          <Skeleton className="size-8 shrink-0 rounded-full" />
+        </div>
+      ))}
+    </div>
+  );
+};
 
 export const ErrorView = ({
   message,

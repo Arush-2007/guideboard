@@ -27,6 +27,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
 import { formatDuration } from "@/features/executions/lib/format-duration";
 import {
@@ -563,6 +564,50 @@ const NodeRow = ({
         </CollapsibleContent>
       </Collapsible>
     </div>
+  );
+};
+
+// Suspense fallback for the execution detail route. Mirrors `ExecutionView`'s
+// card — status-icon header, the 2-col metadata grid, and a short stack of
+// node-row placeholders — so the real detail lands without a layout jump.
+export const ExecutionDetailLoading = () => {
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <div className="flex items-center gap-3">
+          <Skeleton className="size-5 rounded-full" />
+          <div className="flex flex-col gap-y-2">
+            <Skeleton className="h-5 w-28" />
+            <Skeleton className="h-3.5 w-52" />
+          </div>
+          <Skeleton className="ml-auto h-9 w-24 rounded-md" />
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid grid-cols-2 gap-4">
+          {Array.from({ length: 6 }, (_, index) => (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder grid
+              key={index}
+              className="flex flex-col gap-y-2"
+            >
+              <Skeleton className="h-3.5 w-20" />
+              <Skeleton className="h-4 w-32" />
+            </div>
+          ))}
+        </div>
+        <div className="mt-6 space-y-2">
+          <Skeleton className="h-4 w-14" />
+          {Array.from({ length: 3 }, (_, index) => (
+            <Skeleton
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder list
+              key={index}
+              className="h-14 w-full rounded-xl"
+            />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 };
 

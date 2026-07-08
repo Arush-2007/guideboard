@@ -25,7 +25,8 @@ import {
 import { LocateFixedIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ErrorView, LoadingView } from "@/components/entity-components";
+import { ErrorView } from "@/components/entity-components";
+import { Skeleton } from "@/components/ui/skeleton";
 import { useSuspenseWorkflow } from "@/features/workflows/hooks/use-workflows";
 
 import "@xyflow/react/dist/style.css";
@@ -222,8 +223,44 @@ const EditorShortcuts = ({
   return null;
 };
 
+// Suspense fallback for the whole editor route: the fallback replaces both
+// `EditorHeader` and the canvas `Editor` (both suspend on the same workflow
+// query), so it mirrors the full chrome — header bar, canvas frame with a few
+// ghost nodes and panel blocks, and the bottom tray/minimap bar — matching the
+// real layout's flex math so nothing jumps when the editor mounts.
 export const EditorLoading = () => {
-  return <LoadingView message="Loading editor..." />;
+  return (
+    <>
+      <div className="sticky top-0 z-20 flex h-[2.97675rem] shrink-0 items-center gap-2 border-b bg-background/95 px-4">
+        <Skeleton className="size-7 rounded-md" />
+        <Skeleton className="absolute left-1/2 h-5 w-40 -translate-x-1/2" />
+        <Skeleton className="ml-auto h-8 w-24 rounded-md" />
+      </div>
+      <main className="relative flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1">
+          <div className="flex size-full flex-col overflow-hidden border border-border/70 bg-card shadow-sm">
+            <div className="relative flex-1 overflow-hidden">
+              <div className="absolute left-2 top-2">
+                <Skeleton className="h-9 w-24 rounded-xl" />
+              </div>
+              <div className="absolute right-2 top-2">
+                <Skeleton className="size-9 rounded-xl" />
+              </div>
+              <div className="flex h-full items-center justify-center gap-12">
+                <Skeleton className="size-24 rounded-2xl" />
+                <Skeleton className="size-24 rounded-2xl" />
+                <Skeleton className="size-24 rounded-2xl" />
+              </div>
+            </div>
+            <div className="flex h-[162px] shrink-0 items-center justify-between border-t border-border/70 bg-background px-4">
+              <Skeleton className="h-28 w-56 rounded-xl" />
+              <Skeleton className="h-28 w-44 rounded-xl" />
+            </div>
+          </div>
+        </div>
+      </main>
+    </>
+  );
 };
 
 export const EditorError = () => {
