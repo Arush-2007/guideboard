@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { encodeCustomFeatureToken } from "./custom-feature-token";
-import { buildSheetRow, isSerialHeader } from "./sheet-row";
+import { sanitizeHeaderKey } from "./sheet-headers";
+import {
+  buildRowByHeader,
+  buildSheetRow,
+  findBlankRequired,
+  isSerialHeader,
+} from "./sheet-row";
 
 const context = {
   telegram: {
@@ -143,5 +149,75 @@ describe("buildSheetRow", () => {
       legacyRowCount: 4,
     });
     expect(row).toEqual(["5", "Ada"]);
+  });
+});
+
+describe("sanitizeHeaderKey", () => {
+  it("strips dots so getByPath does not split the key", () => {
+    expect(sanitizeHeaderKey("Job No.")).toBe("Job No");
+    expect(sanitizeHeaderKey("A.B.C")).toBe("ABC");
+  });
+  it("trims surrounding whitespace", () => {
+    expect(sanitizeHeaderKey("  Pending  ")).toBe("Pending");
+  });
+});
+
+describe("findBlankRequired", () => {
+  const headers = ["Job No", "Name", "Mobile No"];
+
+  it("flags required columns whose cell is blank or whitespace", () => {
+    expect(
+      findBlankRequired(headers, ["0001", "", "  "], ["Name", "Mobile No"]),
+    ).toEqual(["Name", "Mobile No"]);
+  });
+
+  it("passes when required columns are filled", () => {
+    expect(findBlankRequired(headers, ["0001", "Ada", "+1"], ["Name"])).toEqual(
+      [],
+    );
+  });
+
+  it("ignores optional blanks (empty or undefined required list)", () => {
+    expect(findBlankRequired(headers, ["0001", "", ""], [])).toEqual([]);
+    expect(findBlankRequired(headers, ["0001", "", ""], undefined)).toEqual([]);
+  });
+
+  it("matches header names trim-tolerantly", () => {
+    expect(findBlankRequired(["  Name  "], [""], ["Name"])).toEqual(["Name"]);
+  });
+
+  it("never flags a Serial Number cell (it is always populated)", () => {
+    const row = buildSheetRow({
+      headers,
+      mappings: { "Job No": serial({ start: 1, pad: 4 }) },
+      context,
+    });
+    expect(findBlankRequired(headers, row, ["Job No"])).toEqual([]);
+  });
+});
+
+describe("buildRowByHeader", () => {
+  it("keys by header and strips a serial's force-text apostrophe", () => {
+    const headers = ["Job No", "Name"];
+    const mappings = {
+      "Job No": serial({ start: 1, pad: 4 }),
+      Name: "@<telegram.from.firstName>@",
+    };
+    expect(buildRowByHeader(headers, ["'0006", "Ada"], mappings)).toEqual({
+      "Job No": "0006",
+      Name: "Ada",
+    });
+  });
+
+  it("strips dots from header keys", () => {
+    expect(buildRowByHeader(["Job No."], ["0001"], {})).toEqual({
+      "Job No": "0001",
+    });
+  });
+
+  it("preserves a literal apostrophe in a non-serial column", () => {
+    expect(buildRowByHeader(["Note"], ["'hello"], { Note: "'hello" })).toEqual({
+      Note: "'hello",
+    });
   });
 });

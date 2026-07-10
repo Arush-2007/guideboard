@@ -370,6 +370,9 @@ const googleSheetsActionSchema = z
     range: z.string().optional(),
     values: z.string().optional(),
     columnMappings: mappingSchema.optional(),
+    // Headers that may NOT be blank on append (the accessory "may be blank"
+    // toggle turned off). Enforced after the row is built.
+    requiredColumns: z.array(z.string()).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.action === "read_rows") {

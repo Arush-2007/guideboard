@@ -5,8 +5,18 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
+import {
+  readSheetTable,
+  sheetsAuthHeaders,
+  sheetsValuesUrl,
+  toSheetsError,
+} from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
-import { buildSheetRow } from "@/lib/sheet-row";
+import {
+  buildRowByHeader,
+  buildSheetRow,
+  findBlankRequired,
+} from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
 
 type GoogleSheetsActionData = {
@@ -17,6 +27,8 @@ type GoogleSheetsActionData = {
   values?: string;
   // "match the columns" mapping: column header -> template string.
   columnMappings?: Record<string, string>;
+  // Headers that may not be blank on append (accessory "may be blank" off).
+  requiredColumns?: string[];
 };
 
 type GoogleSheetsReadResponse = {
@@ -120,54 +132,76 @@ export const googleSheetsActionExecutor: NodeExecutor<
   try {
     const result = await step.run("google-sheets-action", async () => {
       if (action === "append_row") {
-        // Preferred path: map upstream data onto the sheet's live columns.
+        // Preferred path: map upstream data onto the sheet's live columns. All
+        // Sheets REST plumbing routes through src/lib/google-sheets.ts.
         if (hasMappings) {
-          const fullRange = `${sheetName}!A:ZZ`;
-          const existing = await ky
-            .get(
-              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(fullRange)}`,
-              { headers: { Authorization: `Bearer ${accessToken}` } },
-            )
-            .json<GoogleSheetsReadResponse>();
-
-          const rows = existing.values ?? [];
-          const headerRow = rows[0] ?? [];
-          if (headerRow.length === 0) {
-            throw new NonRetriableError(
-              "Google Sheets Action: the sheet has no header row (row 1) to map columns to",
-            );
-          }
-          const newRow = buildSheetRow({
-            headers: headerRow,
-            mappings: columnMappings,
-            context,
-            // Data rows (header-aligned) so a Serial Number custom-feature
-            // column autofills to max(existing)+1.
-            rows: rows.slice(1),
-            // Keep padded serials (0006) as text — USER_ENTERED would otherwise
-            // drop the leading zeros.
-            serialAsText: true,
-          });
-
-          await ky.post(
-            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(fullRange)}:append`,
-            {
-              headers,
-              searchParams: { valueInputOption: "USER_ENTERED" },
-              json: { values: [newRow] },
-            },
-          );
-
-          return {
-            ...context,
-            [outputKey]: {
-              action,
+          try {
+            const table = await readSheetTable({
+              accessToken,
               spreadsheetId,
               sheetName,
-              appendedRows: 1,
-              row: newRow,
-            },
-          };
+            });
+            if (table.headers.length === 0) {
+              throw new NonRetriableError(
+                "Google Sheets Action: the sheet has no header row (row 1) to map columns to",
+              );
+            }
+            const newRow = buildSheetRow({
+              headers: table.headers,
+              mappings: columnMappings,
+              context,
+              // Data rows (header-aligned) so a Serial Number custom-feature
+              // column autofills to max(existing)+1.
+              rows: table.rows,
+              // Keep padded serials (0006) as text — USER_ENTERED would
+              // otherwise drop the leading zeros.
+              serialAsText: true,
+            });
+
+            // Enforce required columns after the row is built (a serial cell is
+            // always populated, so it never trips this).
+            const blankRequired = findBlankRequired(
+              table.headers,
+              newRow,
+              config.requiredColumns,
+            );
+            if (blankRequired.length > 0) {
+              throw new NonRetriableError(
+                `Google Sheets Action: required column(s) may not be blank: ${blankRequired.join(", ")}`,
+              );
+            }
+
+            await ky.post(
+              `${sheetsValuesUrl(spreadsheetId, `${sheetName}!A:ZZ`)}:append`,
+              {
+                headers: sheetsAuthHeaders(accessToken),
+                searchParams: { valueInputOption: "USER_ENTERED" },
+                json: { values: [newRow] },
+              },
+            );
+
+            return {
+              ...context,
+              [outputKey]: {
+                action,
+                spreadsheetId,
+                sheetName,
+                appendedRows: 1,
+                row: newRow,
+                // Header-keyed view of the appended row so downstream nodes
+                // pick columns (serial apostrophe + header dots stripped).
+                rowByHeader: buildRowByHeader(
+                  table.headers,
+                  newRow,
+                  columnMappings,
+                ),
+              },
+            };
+          } catch (error) {
+            // Map HTTP failures onto Inngest retry semantics; self-thrown
+            // NonRetriableErrors (no header / blank required) pass through.
+            throw await toSheetsError(error);
+          }
         }
 
         // Legacy path: raw JSON values + explicit range.

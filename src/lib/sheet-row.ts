@@ -1,4 +1,5 @@
 import { parseCustomFeatureToken } from "./custom-feature-token";
+import { sanitizeHeaderKey } from "./sheet-headers";
 import { renderTemplate } from "./templating";
 
 /**
@@ -115,4 +116,51 @@ export function buildSheetRow({
 
     return "";
   });
+}
+
+/**
+ * Names of the `required` headers whose corresponding cell in `row` is blank
+ * (empty or whitespace only). Header matching is trim-tolerant so it lines up
+ * with the trimmed headers `readSheetTable` returns. A Serial Number cell is
+ * always populated, so it can never appear here.
+ */
+export function findBlankRequired(
+  headers: string[],
+  row: string[],
+  required: string[] | undefined,
+): string[] {
+  if (!required?.length) return [];
+  const req = new Set(required.map((r) => r.trim()));
+  const blanks: string[] = [];
+  headers.forEach((rawHeader, i) => {
+    const header = rawHeader.trim();
+    if (req.has(header) && !(row[i] ?? "").trim()) blanks.push(header);
+  });
+  return blanks;
+}
+
+/**
+ * The appended row as an object keyed by sanitized header — the node's
+ * `rowByHeader` output, so downstream nodes pick columns instead of hand-typing
+ * paths. A Serial Number column written as force-text (`'0006`) carries a
+ * leading apostrophe that Sheets consumes on write; it is a write artifact, so
+ * it is stripped here — but ONLY for that serial column, so a literal
+ * apostrophe a user mapped into an ordinary column is preserved.
+ */
+export function buildRowByHeader(
+  headers: string[],
+  row: string[],
+  mappings: Record<string, string>,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  headers.forEach((rawHeader, i) => {
+    const header = rawHeader.trim();
+    let cell = row[i] ?? "";
+    const token = parseCustomFeatureToken(mappings[header]);
+    if (token?.featureId === "serialNumber" && cell.startsWith("'")) {
+      cell = cell.slice(1);
+    }
+    out[sanitizeHeaderKey(header)] = cell;
+  });
+  return out;
 }
