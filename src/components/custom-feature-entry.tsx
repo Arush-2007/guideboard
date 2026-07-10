@@ -5,7 +5,10 @@ import type { CustomFeature } from "@/config/custom-features";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
+import {
+  encodeCustomFeatureToken,
+  parseCustomFeatureToken,
+} from "@/lib/custom-feature-token";
 
 /**
  * A single node "custom feature" in the variable picker. Expands on click to
@@ -15,15 +18,25 @@ import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
  */
 export function CustomFeatureEntry({
   feature,
+  currentValue,
   onInsert,
 }: {
   feature: CustomFeature;
+  /** The field's current value — used to pre-fill from an already-saved token. */
+  currentValue?: string;
   onInsert: (token: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [values, setValues] = useState<Record<string, string>>(() =>
-    Object.fromEntries(feature.params.map((p) => [p.key, String(p.default)])),
-  );
+  // Seed the inputs from the previously-saved token (if the field already holds
+  // this feature), falling back to each param's default. Re-reads on every mount
+  // (the picker popover remounts on open), so re-opening shows the last values.
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const saved = parseCustomFeatureToken(currentValue);
+    const savedParams = saved?.featureId === feature.id ? saved.params : {};
+    return Object.fromEntries(
+      feature.params.map((p) => [p.key, savedParams[p.key] ?? String(p.default)]),
+    );
+  });
 
   // Coerce the (string) inputs to numbers, falling back to each param default.
   const resolved = Object.fromEntries(

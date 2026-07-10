@@ -25,6 +25,8 @@ export type VariablePickerProps = {
   onSelect: (variablePath: string) => void;
   disabled?: boolean;
   className?: string;
+  /** The field's current value — lets a custom feature pre-fill from its token. */
+  currentValue?: string;
   /**
    * Insert the bare dotted context path (e.g. `ai_text_abc.output`) instead of
    * the `@<path>@` template form. Used by inputs that consume a raw path rather
@@ -44,6 +46,7 @@ export function VariablePicker({
   disabled,
   className,
   bare,
+  currentValue,
 }: VariablePickerProps) {
   const [open, setOpen] = useState(false);
 
@@ -131,6 +134,7 @@ export function VariablePicker({
                     <CustomFeatureEntry
                       key={feature.id}
                       feature={feature}
+                      currentValue={currentValue}
                       onInsert={(token) => {
                         onSelect(token);
                         setOpen(false);
