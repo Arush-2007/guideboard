@@ -13,6 +13,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
+import { googleFormIdempotencyKey } from "@/lib/webhook-idempotency";
 import { timingSafeStringEqual } from "@/lib/webhook-verify";
 
 export async function POST(request: NextRequest) {
@@ -72,7 +73,7 @@ export async function POST(request: NextRequest) {
       initialData: {
         googleForm: formData,
       },
-      idempotencyKey: `google-form:${workflowId}:${Date.now()}`,
+      idempotencyKey: googleFormIdempotencyKey(workflowId, body.responseId),
     });
 
     return NextResponse.json({ success: true }, { status: 200 });

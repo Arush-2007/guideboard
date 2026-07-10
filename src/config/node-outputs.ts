@@ -348,6 +348,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     rootKey: "googleForm",
     fields: [
       { path: "respondentEmail", label: "Respondent email" },
+      { path: "timestamp", label: "Submitted at" },
       { path: "formTitle", label: "Form title" },
       { path: "responses", label: "All responses (raw)" },
     ],
