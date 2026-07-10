@@ -200,7 +200,10 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
             headers,
             mappings: columnMappings,
             context,
-            currentDataRowCount,
+            // Excel is on halt and keeps the header-name serial autofill; Sheets
+            // uses the Serial Number custom feature instead.
+            legacyHeaderSerial: true,
+            legacyRowCount: currentDataRowCount,
           }).map(coerceCellValue);
 
           // On upsert-insert, an unmapped key column still must carry the key

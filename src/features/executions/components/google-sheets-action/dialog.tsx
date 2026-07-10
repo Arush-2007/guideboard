@@ -259,8 +259,8 @@ export const GoogleSheetsActionDialog = ({
                   </p>
                 ) : (
                   <p className="text-xs text-muted-foreground">
-                    A serial-number column (e.g. "S.No") is filled automatically
-                    if you leave it unmapped.
+                    To auto-number a column, map it to the “Serial Number” field
+                    (the picker’s “Custom” group).
                   </p>
                 )}
               </div>

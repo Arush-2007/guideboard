@@ -137,13 +137,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
               "Google Sheets Action: the sheet has no header row (row 1) to map columns to",
             );
           }
-          const currentDataRowCount = Math.max(rows.length - 1, 0);
-
           const newRow = buildSheetRow({
             headers: headerRow,
             mappings: columnMappings,
             context,
-            currentDataRowCount,
+            // Data rows (header-aligned) so a Serial Number custom-feature
+            // column autofills to max(existing)+1.
+            rows: rows.slice(1),
+            // Keep padded serials (0006) as text — USER_ENTERED would otherwise
+            // drop the leading zeros.
+            serialAsText: true,
           });
 
           await ky.post(
