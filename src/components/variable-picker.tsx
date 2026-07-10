@@ -3,6 +3,7 @@
 import { useEdges, useNodes } from "@xyflow/react";
 import { Braces } from "lucide-react";
 import { useMemo, useState } from "react";
+import { CustomFeatureEntry } from "@/components/custom-feature-entry";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -10,6 +11,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { getCustomFeatures } from "@/config/custom-features";
 import {
   getUpstreamFields,
   type UpstreamFieldRow,
@@ -65,6 +67,15 @@ export function VariablePicker({
     return [...byNode.values()];
   }, [nodes, edges, currentNodeId]);
 
+  // Custom features belong to the CURRENT node's type (not an upstream node),
+  // and are meaningless for bare-path inputs (they insert a `@<custom:…>@`
+  // token, not a dotted path).
+  const customFeatures = useMemo(() => {
+    const node = nodes.find((n) => n.id === currentNodeId);
+    return getCustomFeatures(node?.type);
+  }, [nodes, currentNodeId]);
+  const showCustom = !bare && customFeatures.length > 0;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -93,9 +104,9 @@ export function VariablePicker({
         className="w-80 border-primary/60 p-0"
       >
         <div className="border-b px-3 py-2 text-center text-sm font-medium">
-          Insert a field from a previous step
+          Insert a field
         </div>
-        {groups.length === 0 ? (
+        {groups.length === 0 && !showCustom ? (
           <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             No previous steps are connected before this one yet.
           </div>
@@ -110,6 +121,25 @@ export function VariablePicker({
               e.currentTarget.scrollTop += e.deltaY;
             }}
           >
+            {showCustom ? (
+              <div className="mb-1">
+                <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Custom
+                </div>
+                <ul>
+                  {customFeatures.map((feature) => (
+                    <CustomFeatureEntry
+                      key={feature.id}
+                      feature={feature}
+                      onInsert={(token) => {
+                        onSelect(token);
+                        setOpen(false);
+                      }}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {groups.map((group) => (
               <div key={group.fields[0].nodeId} className="mb-1">
                 <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
