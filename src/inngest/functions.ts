@@ -183,6 +183,12 @@ export const executeWorkflow = inngest.createFunction(
   {
     id: "execute-workflow",
     retries: process.env.NODE_ENV === "production" ? 3 : 0,
+    // Serialize runs of the same workflow: at most one execution in flight per
+    // workflowId. Stops same-workflow triggers (e.g. a form submission and a
+    // hand-edit) from interleaving and racing on shared external state, and
+    // closes the create-vs-check-idempotency window on trigger bursts. Distinct
+    // workflows still run fully in parallel (the key partitions the limit).
+    concurrency: { key: "event.data.workflowId", limit: 1 },
     onFailure: async ({ event }) => {
       const execution = await prisma.execution.update({
         where: { inngestEventId: event.data.event.id },
