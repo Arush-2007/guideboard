@@ -13,6 +13,7 @@ import {
   odataQuote,
   workbookUrl,
 } from "@/lib/ms-graph";
+import { coerceCellValue, toCellNumber } from "@/lib/sheet-cells";
 import { buildSheetRow, isSerialHeader } from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
 
@@ -65,30 +66,6 @@ async function toGraphError(error: unknown): Promise<Error> {
     return new NonRetriableError(message);
   }
   return new Error(message);
-}
-
-/**
- * Excel stores a JSON string as text, so numeric-looking values must be sent
- * as numbers or SUM/conditional formats won't see them. Leading-zero strings
- * (job numbers like "0001") deliberately stay text.
- */
-export function coerceCellValue(value: string): string | number {
-  const trimmed = value.trim();
-  if (!/^-?\d+(\.\d+)?$/.test(trimmed)) return value;
-  if (/^-?0\d/.test(trimmed)) return value;
-  return Number(trimmed);
-}
-
-function toCellNumber(value: unknown, columnName: string): number {
-  const raw = String(value ?? "").trim();
-  if (!raw) return 0;
-  const parsed = Number(raw.replace(/,/g, ""));
-  if (Number.isNaN(parsed)) {
-    throw new NonRetriableError(
-      `Excel Action: column "${columnName}" is set to "Add to existing" but holds the non-numeric value "${raw}"`,
-    );
-  }
-  return parsed;
 }
 
 export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
@@ -354,8 +331,8 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
             const rendered = renderTemplate(template, context);
             if (columnModes[header] === "add") {
               return (
-                toCellNumber(existingRow[index], header) +
-                toCellNumber(rendered, header)
+                toCellNumber(existingRow[index], header, "Excel Action") +
+                toCellNumber(rendered, header, "Excel Action")
               );
             }
             return coerceCellValue(rendered);

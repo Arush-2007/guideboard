@@ -63,7 +63,7 @@ vi.mock("@/inngest/channels/node-status", () => ({
 }));
 
 import type { NodeExecutorParams } from "@/features/executions/types";
-import { coerceCellValue, excelActionExecutor } from "./executor";
+import { excelActionExecutor } from "./executor";
 
 const step = {
   run: async (_name: string, fn: () => unknown) => fn(),
@@ -391,16 +391,5 @@ describe("excelActionExecutor error mapping", () => {
     );
 
     await expect(run(appendData)).rejects.toBeInstanceOf(NonRetriableError);
-  });
-});
-
-describe("coerceCellValue", () => {
-  it("converts plain numerics and preserves leading-zero ids as text", () => {
-    expect(coerceCellValue("4200")).toBe(4200);
-    expect(coerceCellValue("-3.5")).toBe(-3.5);
-    expect(coerceCellValue("0")).toBe(0);
-    expect(coerceCellValue("0001")).toBe("0001");
-    expect(coerceCellValue("DL01AB1234")).toBe("DL01AB1234");
-    expect(coerceCellValue("")).toBe("");
   });
 });
