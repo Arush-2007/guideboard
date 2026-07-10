@@ -33,6 +33,12 @@ export type VariablePickerProps = {
    * than a rendered template — e.g. the Condition node's "Field path".
    */
   bare?: boolean;
+  /**
+   * Horizontal offset for the fixed popover anchor. Defaults to `ml-72` (≈ half
+   * the standard `sm:max-w-xl` dialog). Pass `ml-96` when the picker lives in a
+   * wider `WideOverlayPanel` (`sm:max-w-3xl`) so the popover clears its edge.
+   */
+  anchorClassName?: string;
 };
 
 /** Strips the `@<path>@` template wrapper down to the bare dotted path. */
@@ -47,6 +53,7 @@ export function VariablePicker({
   className,
   bare,
   currentValue,
+  anchorClassName = "ml-72",
 }: VariablePickerProps) {
   const [open, setOpen] = useState(false);
 
@@ -95,10 +102,16 @@ export function VariablePicker({
       </PopoverTrigger>
       {/* Anchor the panel to a fixed point at the right edge of the centered
           config dialog, so it opens in the SAME place every time — independent
-          of which field's button was clicked. ml-72 (18rem) ≈ half the dialog's
-          sm:max-w-xl width; top-1/2 + align="center" keeps it vertically
-          centered next to the dialog. */}
-      <PopoverAnchor className="pointer-events-none fixed top-1/2 left-1/2 ml-72 h-0 w-0" />
+          of which field's button was clicked. anchorClassName sets the offset:
+          ml-72 (18rem) ≈ half the dialog's sm:max-w-xl width; a WideOverlayPanel
+          passes ml-96. top-1/2 + align="center" keeps it vertically centered
+          next to the dialog. */}
+      <PopoverAnchor
+        className={cn(
+          "pointer-events-none fixed top-1/2 left-1/2 h-0 w-0",
+          anchorClassName,
+        )}
+      />
       <PopoverContent
         side="right"
         align="center"

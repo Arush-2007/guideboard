@@ -12,6 +12,8 @@ export type VariableInputProps = React.ComponentProps<typeof Input> & {
   workflowId?: string;
   /** Insert a bare dotted path instead of the `@<path>@` template form. */
   bare?: boolean;
+  /** Override for the picker popover anchor (forwarded to VariablePicker). */
+  anchorClassName?: string;
 };
 
 export const VariableInput = React.forwardRef<
@@ -27,6 +29,7 @@ export const VariableInput = React.forwardRef<
       onChange,
       disabled,
       bare,
+      anchorClassName,
       ...rest
     },
     ref,
@@ -83,6 +86,7 @@ export const VariableInput = React.forwardRef<
             disabled={disabled}
             bare={bare}
             currentValue={strValue}
+            anchorClassName={anchorClassName}
           />
         </div>
       </div>

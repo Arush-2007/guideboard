@@ -22,6 +22,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { useTRPC } from "@/trpc/client";
 import { generateGoogleFormScript } from "./utils";
 
@@ -238,41 +239,36 @@ export const GoogleFormTriggerDialog = ({
       {/* Questions open in their own WIDER window layered on top of the config,
           so long questions get a roomy full-width line (comfortable to read).
           Closed via the built-in top-right X. */}
-      <Dialog open={tableOpen} onOpenChange={setTableOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>Questions in {formTitle || "this form"}</DialogTitle>
-            <DialogDescription>
-              These are now available in the variable picker for this node.
-            </DialogDescription>
-          </DialogHeader>
-          {fields.length === 0 ? (
-            <p className="text-sm text-muted-foreground">
-              No questions found on this form.
-            </p>
-          ) : (
-            <div className="space-y-2">
-              {fields.map((f) => (
-                <div key={f.path} className="rounded-md border p-3">
-                  <p className="text-sm font-medium leading-relaxed">
-                    {f.label}
-                  </p>
-                  <button
-                    type="button"
-                    className="mt-1 inline-block"
-                    onClick={() => copy(`@<${f.path}>@`, "Reference")}
-                    title="Copy reference"
-                  >
-                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                      {`@<${f.path}>@`}
-                    </code>
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      <WideOverlayPanel
+        open={tableOpen}
+        onOpenChange={setTableOpen}
+        title={`Questions in ${formTitle || "this form"}`}
+        description="These are now available in the variable picker for this node."
+      >
+        {fields.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No questions found on this form.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {fields.map((f) => (
+              <div key={f.path} className="rounded-md border p-3">
+                <p className="text-sm font-medium leading-relaxed">{f.label}</p>
+                <button
+                  type="button"
+                  className="mt-1 inline-block"
+                  onClick={() => copy(`@<${f.path}>@`, "Reference")}
+                  title="Copy reference"
+                >
+                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                    {`@<${f.path}>@`}
+                  </code>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </WideOverlayPanel>
     </>
   );
 };
