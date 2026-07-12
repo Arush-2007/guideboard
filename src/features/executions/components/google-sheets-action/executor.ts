@@ -12,6 +12,8 @@ import {
   toSheetsError,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
+import { sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
   buildRowByHeader,
   buildSheetRow,
@@ -20,7 +22,7 @@ import {
 import { renderTemplate } from "@/lib/templating";
 
 type GoogleSheetsActionData = {
-  action?: "append_row" | "read_rows";
+  action?: "append_row" | "read_rows" | "find_rows";
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -29,6 +31,10 @@ type GoogleSheetsActionData = {
   columnMappings?: Record<string, string>;
   // Headers that may not be blank on append (accessory "may be blank" off).
   requiredColumns?: string[];
+  // find_rows: AND-ed filter conditions + which columns to return.
+  conditions?: RowMatchCondition[];
+  selectedColumns?: string[];
+  onMultipleMatches?: "first" | "error";
 };
 
 type GoogleSheetsReadResponse = {
@@ -114,7 +120,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
   }
 
   // Range is only needed for read_rows or the legacy values-based append.
-  if (!hasMappings && !range) {
+  // find_rows reads the whole tab and needs neither a mapping nor a range.
+  if (action !== "find_rows" && !hasMappings && !range) {
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
@@ -230,6 +237,85 @@ export const googleSheetsActionExecutor: NodeExecutor<
             appendedRows: values.length,
           },
         };
+      }
+
+      if (action === "find_rows") {
+        try {
+          const table = await readSheetTable({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+          });
+
+          // Columns to return (default: all headers). Trim-tolerant; blanks dropped.
+          const wanted = config.selectedColumns?.length
+            ? config.selectedColumns
+            : table.headers;
+          // Each column paired with its sanitized output key, computed once.
+          const keyed = wanted
+            .map((c) => c.trim())
+            .filter((c) => c.length > 0)
+            .map((col) => [col, sanitizeHeaderKey(col)] as const);
+
+          const matches = matchRows(
+            table.rowsByHeader,
+            config.conditions ?? [],
+            context,
+          );
+
+          // Optional strictness: fail when more than one row matched.
+          if (config.onMultipleMatches === "error" && matches.length > 1) {
+            throw new NonRetriableError(
+              `Google Sheets Action: find_rows matched ${matches.length} rows, but the node is set to fail on multiple matches`,
+            );
+          }
+
+          // Stored rows are capped; the per-column value lists below are computed
+          // over ALL matches so a downstream `in_list` is complete. Cells are
+          // trimmed so `firstRow`/`rows` agree with `columnValues`.
+          const rows = matches.slice(0, 100).map((m) => {
+            const out: Record<string, string> = {};
+            for (const [col, key] of keyed) {
+              out[key] = getRowCell(m.row, col).trim();
+            }
+            return out;
+          });
+
+          const columnValues: Record<string, string> = {};
+          for (const [col, key] of keyed) {
+            const seen = new Set<string>();
+            const unique: string[] = [];
+            for (const m of matches) {
+              const v = getRowCell(m.row, col).trim();
+              if (v && !seen.has(v)) {
+                seen.add(v);
+                unique.push(v);
+              }
+            }
+            columnValues[key] = JSON.stringify(unique);
+          }
+
+          return {
+            ...context,
+            [outputKey]: {
+              action,
+              spreadsheetId,
+              sheetName,
+              matchCount: matches.length,
+              // Sanitized selected headers — stored so the execution grid can
+              // render column headers even when zero rows matched.
+              columns: keyed.map(([, key]) => key),
+              rows,
+              columnValues,
+              // The first matched row (selected columns, sanitized keys), or {}
+              // when nothing matched. Lets a downstream node reference a SINGLE
+              // value (e.g. `firstRow.Job No`) instead of the columnValues list.
+              firstRow: rows[0] ?? {},
+            },
+          };
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
       }
 
       // read_rows

@@ -74,10 +74,13 @@ export const nodeSummaries: Partial<Record<NodeType, NodeSummary>> = {
       ? `Message sent to chat ${str(output.chatId)}.`
       : "Telegram message sent.",
   [NodeType.NOTION_ACTION]: () => "Created a Notion page.",
-  [NodeType.GOOGLE_SHEETS_ACTION]: ({ output }) =>
-    output?.appendedRows != null
+  [NodeType.GOOGLE_SHEETS_ACTION]: ({ output }) => {
+    // find_rows renders its own grid + summary in the execution view.
+    if (output?.action === "find_rows") return null;
+    return output?.appendedRows != null
       ? `Appended ${str(output.appendedRows)} row(s) to the sheet.`
-      : "Updated the sheet.",
+      : "Updated the sheet.";
+  },
   [NodeType.CONVERT]: ({ output }) => {
     const from = asFormat(typeof output?.from === "string" ? output.from : "");
     const to = asFormat(typeof output?.to === "string" ? output.to : "");

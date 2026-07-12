@@ -1,8 +1,8 @@
-import {
-  type CompareOperator,
-  evaluateCondition,
-} from "@/features/executions/lib/compare";
+import { evaluateCondition } from "@/features/executions/lib/compare";
+import type { RowMatchOperator } from "@/lib/row-match-operators";
 import { renderTemplate } from "@/lib/templating";
+
+export type { RowMatchOperator };
 
 /**
  * Shared row matcher for the Sheets `find_rows` and `color_rows` actions. Rows
@@ -12,15 +12,13 @@ import { renderTemplate } from "@/lib/templating";
  * The operator set is the branching nodes' 8 (delegated to `evaluateCondition`)
  * PLUS three selection-only additions — `older_than_days`, `within_days`,
  * `in_list` — scoped to row *selection* (v3 decision #6). The compare/switch
- * dialogs are intentionally NOT widened here.
+ * dialogs are intentionally NOT widened here. The operator type + labels live in
+ * the dependency-free `row-match-operators.ts` (single source; client-safe).
  */
-export type RowMatchOperator =
-  | CompareOperator
-  | "older_than_days"
-  | "within_days"
-  | "in_list";
 
 export type RowMatchCondition = {
+  /** Stable UI key for the conditions editor; ignored by the matcher. */
+  id?: string;
   column: string;
   operator: RowMatchOperator;
   /** Comparison value; rendered against the workflow context before compare. */
@@ -34,7 +32,10 @@ export type RowMatch = { index: number; row: Record<string, string> };
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Case-insensitive cell lookup within a header-keyed row; "" if the column is absent. */
-function getCell(row: Record<string, string>, column: string): string {
+export function getRowCell(
+  row: Record<string, string>,
+  column: string,
+): string {
   const target = column.trim().toLowerCase();
   for (const key of Object.keys(row)) {
     if (key.trim().toLowerCase() === target) return row[key] ?? "";
@@ -109,7 +110,7 @@ export function evaluateRowCondition(
   context: Record<string, unknown>,
   now: number = Date.now(),
 ): boolean {
-  const cell = getCell(row, condition.column);
+  const cell = getRowCell(row, condition.column);
   const rendered = renderTemplate(condition.value ?? "", context);
   switch (condition.operator) {
     case "older_than_days":

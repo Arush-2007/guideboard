@@ -29,11 +29,11 @@ import {
 } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
-import { formatDuration } from "@/features/executions/lib/format-duration";
 import {
   COMPARE_OPERATOR_LABELS,
   type CompareOperator,
 } from "@/features/executions/lib/compare";
+import { formatDuration } from "@/features/executions/lib/format-duration";
 import {
   ExecutionStatus,
   NodeExecutionStatus,
@@ -50,6 +50,11 @@ import {
 } from "@/lib/friendly-output";
 import { nodeSummaries } from "@/lib/node-output-summary";
 import { NON_REF_NODE_TYPES } from "@/lib/node-ref";
+import {
+  ROW_MATCH_OPERATOR_LABELS,
+  type RowMatchOperator,
+  VALUELESS_ROW_MATCH_OPERATORS,
+} from "@/lib/row-match-operators";
 import { cn } from "@/lib/utils";
 import { useTRPC } from "@/trpc/client";
 
@@ -213,6 +218,139 @@ const FieldTable = ({
     </table>
   </div>
 );
+
+// A multi-column grid for a find_rows result: selected columns × matching rows.
+// Scrolls horizontally; display capped at 50 rows (stored output is ≤100).
+const RowsGrid = ({
+  columns,
+  rows,
+}: {
+  columns: string[];
+  rows: Record<string, string>[];
+}) => {
+  const shown = rows.slice(0, 50);
+  return (
+    <div className="space-y-1">
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/60 text-xs text-muted-foreground">
+              {columns.map((col) => (
+                <th
+                  key={col}
+                  className="whitespace-nowrap px-2 py-1 text-left font-medium"
+                >
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((row, i) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: static read-only result rows, never reordered.
+              <tr key={i} className="border-b align-top last:border-b-0">
+                {columns.map((col) => (
+                  <td key={col} className="break-words px-2 py-1.5 text-xs">
+                    {row[col] ?? ""}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length > shown.length ? (
+        <p className="text-xs italic text-muted-foreground">
+          +{rows.length - shown.length} more — switch to Raw to see all.
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
+type DisplayCondition = {
+  id?: string;
+  column?: string;
+  operator?: string;
+  value?: string;
+  enabled?: boolean;
+};
+
+// The find_rows filter criteria as a Field | Operator | Value table. Green when
+// rows matched, red when nothing matched — so the user sees exactly what was
+// applied and why it returned (or didn't return) rows.
+const FindRowsConditions = ({
+  conditions,
+  input,
+  unmatched,
+}: {
+  conditions: DisplayCondition[];
+  input: unknown;
+  unmatched: boolean;
+}) => {
+  const active = conditions.filter(
+    (c) => c.enabled !== false && c.column?.trim(),
+  );
+  if (active.length === 0) return null;
+  const rowBorder = unmatched ? "border-red-200" : "border-green-200";
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-md border text-xs",
+        unmatched
+          ? "border-red-300 text-red-800"
+          : "border-green-300 text-green-800",
+      )}
+    >
+      <div
+        className={cn(
+          "px-2 py-1 font-medium",
+          unmatched ? "bg-red-50" : "bg-green-50",
+        )}
+      >
+        {unmatched
+          ? "No rows matched these conditions:"
+          : "Conditions applied — rows matched:"}
+      </div>
+      <table className="w-full table-fixed">
+        <thead>
+          <tr
+            className={cn(
+              "border-t text-left text-muted-foreground",
+              rowBorder,
+            )}
+          >
+            <th className="w-1/3 px-2 py-1 font-medium">Field</th>
+            <th className="w-1/4 px-2 py-1 font-medium">Operator</th>
+            <th className="px-2 py-1 font-medium">Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {active.map((c) => {
+            const op = c.operator as RowMatchOperator | undefined;
+            const opLabel = op ? (ROW_MATCH_OPERATOR_LABELS[op] ?? op) : "";
+            const valueless = op
+              ? VALUELESS_ROW_MATCH_OPERATORS.has(op)
+              : false;
+            const resolved = valueless ? "—" : renderReferences(c.value, input);
+            return (
+              <tr
+                key={c.id ?? `${c.column}-${c.operator}`}
+                className={cn("border-t align-top", rowBorder)}
+              >
+                <td className="break-words px-2 py-1 font-medium">
+                  {c.column}
+                </td>
+                <td className="px-2 py-1">{opLabel}</td>
+                <td className="break-words px-2 py-1">{resolved}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
 
 const EmptyFriendly = () => (
   <p className="rounded bg-muted p-2 text-xs italic text-muted-foreground">
@@ -483,6 +621,41 @@ const NodeRow = ({
           ) : null}
         </div>
       );
+    }
+
+    // find_rows renders a multi-column results grid — like CONDITION/SWITCH, its
+    // output can't be expressed as a Field | Value table.
+    if (node.nodeType === NodeType.GOOGLE_SHEETS_ACTION) {
+      const root = getNodeOutputRoot(node.nodeType, node.output);
+      if (root?.action === "find_rows") {
+        const columns = Array.isArray(root.columns)
+          ? (root.columns as string[])
+          : [];
+        const rows = Array.isArray(root.rows)
+          ? (root.rows as Record<string, string>[])
+          : [];
+        const count =
+          typeof root.matchCount === "number" ? root.matchCount : rows.length;
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              Found {count} matching row{count === 1 ? "" : "s"}.
+            </SummaryMessage>
+            <FindRowsConditions
+              conditions={
+                Array.isArray(config?.conditions)
+                  ? (config.conditions as DisplayCondition[])
+                  : []
+              }
+              input={node.input}
+              unmatched={count === 0}
+            />
+            {columns.length > 0 && rows.length > 0 ? (
+              <RowsGrid columns={columns} rows={rows} />
+            ) : null}
+          </div>
+        );
+      }
     }
 
     const message = nodeSummaries[

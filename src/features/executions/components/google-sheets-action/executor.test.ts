@@ -64,9 +64,14 @@ type SheetsResult = Record<
   string,
   {
     action: string;
-    appendedRows: number;
-    row: string[];
-    rowByHeader: Record<string, string>;
+    appendedRows?: number;
+    row?: string[];
+    rowByHeader?: Record<string, string>;
+    matchCount?: number;
+    columns?: string[];
+    rows?: Record<string, string>[];
+    columnValues?: Record<string, string>;
+    firstRow?: Record<string, string>;
   }
 >;
 
@@ -173,5 +178,124 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
       }),
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(publishedStatuses).toContain("error");
+  });
+});
+
+describe("googleSheetsActionExecutor — find_rows", () => {
+  it("returns only selected columns, full matchCount, and unique columnValues", async () => {
+    mockRead([
+      ["Name", "Buyer", "Pending"],
+      ["Ada", "Acme", "10"],
+      ["Bo", "Acme", "0"],
+      ["Cy", "Globex", "5"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
+      selectedColumns: ["Name", "Buyer"],
+    });
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(2); // Ada (10) and Cy (5)
+    expect(out.columns).toEqual(["Name", "Buyer"]);
+    expect(out.rows).toEqual([
+      { Name: "Ada", Buyer: "Acme" },
+      { Name: "Cy", Buyer: "Globex" },
+    ]);
+    expect(out.columnValues).toEqual({
+      Name: JSON.stringify(["Ada", "Cy"]),
+      Buyer: JSON.stringify(["Acme", "Globex"]),
+    });
+    // firstRow = the first matched row's selected columns (single values).
+    expect(out.firstRow).toEqual({ Name: "Ada", Buyer: "Acme" });
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("defaults to all columns when none selected; 0 matches still lists columns", async () => {
+    mockRead([
+      ["Name", "Pending"],
+      ["Ada", "0"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
+    });
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.columns).toEqual(["Name", "Pending"]);
+    expect(out.rows).toEqual([]);
+    expect(out.columnValues).toEqual({ Name: "[]", Pending: "[]" });
+    expect(out.firstRow).toEqual({});
+  });
+
+  it("fails when >1 row matches and onMultipleMatches is 'error'", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Cy", "Acme"],
+    ]);
+
+    await expect(
+      run({
+        action: "find_rows",
+        spreadsheetId: "s",
+        sheetName: "Ledger",
+        conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+        onMultipleMatches: "error",
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(publishedStatuses).toContain("error");
+  });
+
+  it("allows a single match under onMultipleMatches 'error'", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Cy", "Globex"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      selectedColumns: ["Name"],
+      onMultipleMatches: "error",
+    });
+    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
+  });
+
+  it("ANDs conditions and resolves in_list from a templated value", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Bo", "Globex"],
+      ["Cy", "Acme"],
+    ]);
+
+    const result = await run(
+      {
+        action: "find_rows",
+        spreadsheetId: "s",
+        sheetName: "Ledger",
+        conditions: [
+          { column: "Buyer", operator: "in_list", value: "@<ctx.buyers>@" },
+        ],
+        selectedColumns: ["Name"],
+      },
+      { ctx: { buyers: JSON.stringify(["Acme"]) } },
+    );
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(2);
+    expect(out.rows).toEqual([{ Name: "Ada" }, { Name: "Cy" }]);
   });
 });

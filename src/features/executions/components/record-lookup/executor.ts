@@ -7,7 +7,9 @@ import { CredentialType, NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { readSheetTable } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { getRowCell } from "@/lib/row-match";
 import { renderTemplate } from "@/lib/templating";
 
 /**
@@ -41,8 +43,6 @@ type LookupResult = {
 };
 
 const NOTION_VERSION = "2022-06-28";
-
-type SheetsReadResponse = { values?: string[][] };
 
 function normalizeNotionId(raw: string): string {
   const h = raw.replace(/[^a-fA-F0-9]/g, "");
@@ -80,35 +80,24 @@ async function lookupGoogleSheets(
   }
 
   const accessToken = await refreshGoogleTokenIfNeeded(userId);
-  const range = `${sheetName}!A:ZZ`;
-  const res = await ky
-    .get(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
-    )
-    .json<SheetsReadResponse>();
+  const table = await readSheetTable({ accessToken, spreadsheetId, sheetName });
 
-  const rows = res.values ?? [];
-  const header = (rows[0] ?? []).map((h) => h.trim());
-  const colIdx = header.findIndex(
-    (h) => h.toLowerCase() === column.toLowerCase(),
-  );
   // No such column yet (e.g. a brand-new, header-only sheet) -> nothing matches.
-  if (colIdx === -1) return { exists: false, matchCount: 0, matched: null };
+  const target = column.toLowerCase();
+  if (!table.headers.some((h) => h.toLowerCase() === target)) {
+    return { exists: false, matchCount: 0, matched: null };
+  }
 
+  // Case-insensitive, trimmed value match (record-lookup's own semantics — NOT
+  // the case-sensitive branching comparator, so it stays byte-compatible).
   const needle = value.toLowerCase();
   let matchCount = 0;
   let matched: unknown = null;
-  for (let i = 1; i < rows.length; i++) {
-    const row = rows[i] ?? [];
-    if ((row[colIdx] ?? "").trim().toLowerCase() === needle) {
+  for (const row of table.rowsByHeader) {
+    if (getRowCell(row, column).trim().toLowerCase() === needle) {
       matchCount++;
-      if (matched === null) {
-        // Return the whole row keyed by header, so downstream can read fields.
-        matched = Object.fromEntries(
-          header.map((h, idx) => [h || `col${idx + 1}`, row[idx] ?? ""]),
-        );
-      }
+      // First match: the whole header-keyed row (same shape as before).
+      if (matched === null) matched = row;
     }
   }
   return { exists: matchCount > 0, matchCount, matched };
@@ -207,10 +196,7 @@ export const recordLookupExecutor: NodeExecutor<RecordLookupData> = async ({
 
   let config: RecordLookupData;
   try {
-    config = parseNodeConfig(
-      NodeType.RECORD_LOOKUP,
-      data,
-    ) as RecordLookupData;
+    config = parseNodeConfig(NodeType.RECORD_LOOKUP, data) as RecordLookupData;
   } catch (error) {
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
@@ -226,7 +212,9 @@ export const recordLookupExecutor: NodeExecutor<RecordLookupData> = async ({
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
-    throw new NonRetriableError("Record Lookup: a value to search for is required");
+    throw new NonRetriableError(
+      "Record Lookup: a value to search for is required",
+    );
   }
 
   try {
