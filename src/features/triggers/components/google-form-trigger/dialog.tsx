@@ -185,6 +185,15 @@ export const GoogleFormTriggerDialog = ({
                   {fields.length} questions loaded — view
                 </button>
               ) : null}
+              <p className="text-xs text-muted-foreground">
+                The picker also offers{" "}
+                <span className="font-medium">Respondent email</span>, but
+                Google only sends it when your form's{" "}
+                <span className="font-medium">
+                  Settings → Collect email addresses
+                </span>{" "}
+                is on — otherwise it arrives empty.
+              </p>
             </div>
 
             <div className="space-y-2">

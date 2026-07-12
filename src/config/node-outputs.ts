@@ -125,6 +125,8 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     rootKind: "perNode",
     fields: [
       { path: "appendedRows", label: "Rows appended", example: "1" },
+      // find_rows only (absent on append runs ⇒ dropped by the friendly view).
+      { path: "matchCount", label: "Rows matched", example: "3" },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],
   },
@@ -347,7 +349,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     rootKind: "fixed",
     rootKey: "googleForm",
     fields: [
-      { path: "respondentEmail", label: "Respondent email" },
+      { path: "respondentEmail", label: "Respondent email (if collected)" },
       { path: "timestamp", label: "Submitted at" },
       { path: "formTitle", label: "Form title" },
       { path: "responses", label: "All responses (raw)" },
