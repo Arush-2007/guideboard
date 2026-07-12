@@ -1,6 +1,7 @@
 import type { Realtime } from "@inngest/realtime";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
+  isFanOut,
   isRouted,
   type StepTools,
   type WorkflowContext,
@@ -71,6 +72,23 @@ export interface NodeRecorder {
 }
 
 /**
+ * Optional sink for a node's fan-out. Implemented by `executeWorkflow` with an
+ * Inngest/blob-backed dispatcher that turns each item into a child
+ * sub-execution (a replay-from-node run of `nodeId` + descendants, seeded with
+ * the per-item payload); left undefined by tests that don't exercise fan-out.
+ * A node returning `fanOut(...)` with no dispatcher wired in is a wiring bug and
+ * the engine throws rather than silently dropping the items.
+ */
+export interface FanOutDispatcher {
+  dispatch(args: {
+    nodeId: string;
+    outputKey: string;
+    context: WorkflowContext;
+    items: unknown[];
+  }): Promise<void>;
+}
+
+/**
  * A node's output is the set of keys it *added* to the context — NOT a
  * reference/value comparison. Executors only ever add a namespaced
  * `<type>_<nodeId>` key and never mutate existing ones, so the new-key set is
@@ -138,7 +156,10 @@ function forwardReachableFrom(
  * rule: a non-branching node (returns a plain context) activates *all* its
  * outgoing connections — preserving the original linear behavior with no data
  * migration — while a branching node (returns `routed(context, outputs)`)
- * activates only the connections whose `fromOutput` is in `outputs`. Nodes that
+ * activates only the connections whose `fromOutput` is in `outputs`. A fan-out
+ * node (returns `fanOut(context, items)`) activates *no* outgoing connections
+ * in this run — the engine hands its items to the `fanOutDispatcher` to run as
+ * child sub-executions, so every downstream node is recorded SKIPPED. Nodes that
  * never become reachable are skipped (and recorded as SKIPPED).
  *
  * When a `recorder` is supplied, each node emits a settle (success/fail/skip)
@@ -163,6 +184,7 @@ export async function runWorkflowNodes({
   step,
   publish,
   recorder,
+  fanOutDispatcher,
   replayFromNodeId,
 }: {
   sortedNodes: ExecutableNode[];
@@ -174,6 +196,7 @@ export async function runWorkflowNodes({
   step: StepTools;
   publish: Realtime.PublishFn;
   recorder?: NodeRecorder;
+  fanOutDispatcher?: FanOutDispatcher;
   replayFromNodeId?: string;
 }): Promise<WorkflowContext> {
   let context: WorkflowContext = initialData || {};
@@ -242,6 +265,11 @@ export async function runWorkflowNodes({
 
     const executor = getExecutor(node.type as NodeType);
 
+    // The stable key this node writes its output under; passed to the executor
+    // and (on fan-out) to the dispatcher so the per-item seed overwrites the
+    // node's own summary output under the same key.
+    const outputKey = getOutputKeyForNode(node.type, node.id, node.ref);
+
     // Wall-clock around the executor: includes Inngest step/checkpoint and any
     // network overhead, so it's "elapsed time" rather than precise compute.
     const startedAt = Date.now();
@@ -249,13 +277,50 @@ export async function runWorkflowNodes({
       const result = await executor({
         data: node.data as Record<string, unknown>,
         nodeId: node.id,
-        outputKey: getOutputKeyForNode(node.type, node.id, node.ref),
+        outputKey,
         executionId,
         userId,
         context: before,
         step,
         publish,
       });
+
+      // Fan-out: dispatch one child sub-execution per item and activate no
+      // outgoing edge in this run — so every downstream node is recorded
+      // SKIPPED by the existing reachability logic. The node's own summary
+      // output already lives in `after`.
+      if (isFanOut(result)) {
+        const after = result.context;
+        activationByNode.set(node.id, { all: false, outputs: new Set() });
+
+        if (!fanOutDispatcher) {
+          throw new Error(
+            `Node ${node.id} (${node.type}) returned a fan-out result but no ` +
+              "fanOutDispatcher was wired into runWorkflowNodes — this is a bug.",
+          );
+        }
+
+        // Dispatch BEFORE recording SUCCESS so a dispatch failure is caught
+        // below and the node is recorded FAILED (and the run fails) instead of
+        // being falsely marked successful with its children never sent.
+        await fanOutDispatcher.dispatch({
+          nodeId: node.id,
+          outputKey,
+          context: after,
+          items: result.items,
+        });
+
+        await recorder?.record({
+          ...base,
+          status: "SUCCESS",
+          output: newKeysDiff(before, after),
+          durationMs: Date.now() - startedAt,
+        });
+
+        context = after;
+        sequence++;
+        continue;
+      }
 
       // Normalize the executor return into (next context, activated outputs).
       // Plain context => non-branching => activate all outgoing edges.

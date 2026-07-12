@@ -61,6 +61,42 @@ export function isRouted(value: unknown): value is NodeOutcome {
   );
 }
 
+/**
+ * Branded result for nodes that fan out: instead of activating any outgoing
+ * edge in *this* run, the engine dispatches one child sub-execution per entry
+ * in `items` (each a replay-from-node run of this node + its descendants,
+ * seeded with the per-item payload), then stops — no downstream node runs in
+ * the parent run, so every one is recorded SKIPPED.
+ *
+ * The fan-out node's own summary output already lives in `context` under its
+ * outputKey (e.g. `{ fannedOut: n, total: n }`); `items` are the raw values the
+ * engine's `FanOutDispatcher` turns into child seeds. Like `routed`, the symbol
+ * brand keeps `isFanOut` unambiguous against a plain context.
+ */
+const FAN_OUT: unique symbol = Symbol("fanOut");
+
+export interface FanOutOutcome {
+  [FAN_OUT]: true;
+  context: WorkflowContext;
+  /** One child sub-execution is dispatched per item; may be empty. */
+  items: unknown[];
+}
+
+export function fanOut(
+  context: WorkflowContext,
+  items: unknown[],
+): FanOutOutcome {
+  return { [FAN_OUT]: true, context, items };
+}
+
+export function isFanOut(value: unknown): value is FanOutOutcome {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[FAN_OUT] === true
+  );
+}
+
 export type NodeExecutor<TData = Record<string, unknown>> = (
   params: NodeExecutorParams<TData>,
-) => Promise<WorkflowContext | NodeOutcome>;
+) => Promise<WorkflowContext | NodeOutcome | FanOutOutcome>;

@@ -21,7 +21,12 @@ import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { logger } from "@/lib/logger";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
-import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
+import { planFanOutDispatches } from "./fan-out";
+import {
+  type FanOutDispatcher,
+  type NodeRecorder,
+  runWorkflowNodes,
+} from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
@@ -128,6 +133,77 @@ function createPrismaNodeRecorder({
           },
           select: { id: true },
         });
+      });
+    },
+  };
+}
+
+/**
+ * Inngest/blob-backed FanOutDispatcher: turns a fan-out node's items into one
+ * child sub-execution each — a replay-from-node run of the fan-out node +
+ * descendants, seeded with the per-item payload. All sends happen inside ONE
+ * `step.run` so a retried step re-emits every item; the children's own
+ * `check-idempotency` step then dedupes on the per-item `idempotencyKey`. Safe
+ * because same-workflow runs serialize under `executeWorkflow`'s concurrency
+ * limit, so no duplicate child can slip through concurrently.
+ */
+function createFanOutDispatcher({
+  step,
+  executionId,
+  workflowId,
+}: {
+  step: StepTools;
+  executionId: string;
+  workflowId: string;
+}): FanOutDispatcher {
+  return {
+    async dispatch({ nodeId, outputKey, context, items }) {
+      await step.run(`fan-out:${nodeId}`, async () => {
+        const plans = planFanOutDispatches({
+          items,
+          context,
+          outputKey,
+          executionId,
+          nodeId,
+        });
+
+        // Sequential so an oversized-but-unconfigured item throws before later
+        // sends fire, and so retries re-walk the same order deterministically.
+        for (const plan of plans) {
+          if (plan.oversized) {
+            if (!isBlobConfigured()) {
+              throw new NonRetriableError(
+                `Fan-out item ${plan.index} is too large to send inline and ` +
+                  "blob storage (R2) is not configured — set R2_ACCOUNT_ID, " +
+                  "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET so " +
+                  "oversized item contexts can be offloaded instead of " +
+                  "exceeding the Inngest event size limit.",
+              );
+            }
+            await putBlob({
+              key: plan.blobKey,
+              bytes: Buffer.from(JSON.stringify(plan.seeded)),
+              contentType: "application/json",
+            });
+            await sendWorkflowExecution({
+              workflowId,
+              initialDataBlobKey: plan.blobKey,
+              replayFromNodeId: nodeId,
+              replayOfExecutionId: executionId,
+              idempotencyKey: plan.idempotencyKey,
+            });
+          } else {
+            await sendWorkflowExecution({
+              workflowId,
+              initialData: plan.seeded,
+              replayFromNodeId: nodeId,
+              replayOfExecutionId: executionId,
+              idempotencyKey: plan.idempotencyKey,
+            });
+          }
+        }
+
+        return { dispatched: plans.length };
       });
     },
   };
@@ -365,6 +441,11 @@ export const executeWorkflow = inngest.createFunction(
       step,
       publish,
       recorder: createPrismaNodeRecorder({ step, executionId }),
+      fanOutDispatcher: createFanOutDispatcher({
+        step,
+        executionId,
+        workflowId,
+      }),
       replayFromNodeId,
     });
 
