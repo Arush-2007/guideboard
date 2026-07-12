@@ -5,7 +5,12 @@ import { PAGINATION } from "@/config/constants";
 import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
-import { nextNodeRef, nodeTypeHasRef } from "@/lib/node-ref";
+import {
+  legacyOutputKey,
+  nextNodeRef,
+  nodeTypeHasRef,
+  rewriteRefsInJson,
+} from "@/lib/node-ref";
 import {
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
@@ -236,22 +241,39 @@ export const workflowsRouter = createTRPCRouter({
         if (known) usedRefs.add(known);
       }
 
-      const nodeCreateData = nodes.map((node) => {
+      // First pass: resolve each node's final ref and map its legacy `<type>_<id>`
+      // output key to it.
+      const refByNodeId = new Map<string, string | null>();
+      const legacyKeyToRef = new Map<string, string>();
+      for (const node of nodes) {
         let ref = node.ref ?? refById.get(node.id) ?? null;
         if (!ref && node.type && nodeTypeHasRef(node.type)) {
           ref = nextNodeRef(node.type, usedRefs);
           usedRefs.add(ref);
         }
-        return {
-          id: node.id,
-          workflowId: id,
-          name: node.type || "unknown",
-          type: node.type as NodeType,
-          ref,
-          position: node.position,
-          data: node.data || {},
-        };
-      });
+        refByNodeId.set(node.id, ref);
+        if (ref && node.type) {
+          legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
+        }
+      }
+
+      // Second pass: rewrite any legacy `<type>_<id>` references in each node's
+      // data to the now-assigned refs. A downstream node that referenced this
+      // node before it had a ref (e.g. a picked `discoveredFields` path) stored
+      // the legacy key; at run time the producer writes under its ref, so without
+      // this rewrite the reference would resolve to nothing. (Mirrors the AI
+      // builder's `persistGeneratedWorkflow`.)
+      const nodeCreateData = nodes.map((node) => ({
+        id: node.id,
+        workflowId: id,
+        name: node.type || "unknown",
+        type: node.type as NodeType,
+        ref: refByNodeId.get(node.id) ?? null,
+        position: node.position,
+        data: JSON.parse(
+          rewriteRefsInJson(JSON.stringify(node.data ?? {}), legacyKeyToRef),
+        ),
+      }));
 
       // Transaction to ensure consistency
       await prisma.$transaction(async (tx) => {
