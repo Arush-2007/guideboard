@@ -329,6 +329,8 @@ export function EntityList<T>({
 interface EntityItemProps {
   href: string;
   title: string;
+  /** Optional badge(s) rendered inline after the title (e.g. run lineage). */
+  titleBadge?: React.ReactNode;
   subtitle?: React.ReactNode;
   image?: React.ReactNode;
   actions?: React.ReactNode;
@@ -340,6 +342,7 @@ interface EntityItemProps {
 export const EntityItem = ({
   href,
   title,
+  titleBadge,
   subtitle,
   image,
   actions,
@@ -373,9 +376,12 @@ export const EntityItem = ({
           <div className="flex min-w-0 items-center gap-3">
             {image}
             <div className="min-w-0">
-              <CardTitle className="truncate text-base font-medium">
-                {title}
-              </CardTitle>
+              <div className="flex min-w-0 items-center gap-2">
+                <CardTitle className="truncate text-base font-medium">
+                  {title}
+                </CardTitle>
+                {titleBadge}
+              </div>
               {!!subtitle && (
                 <CardDescription className="truncate text-xs">
                   {subtitle}
