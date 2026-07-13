@@ -219,14 +219,18 @@ const FieldTable = ({
   </div>
 );
 
-// A multi-column grid for a find_rows result: selected columns × matching rows.
+// A multi-column grid for a find_rows result: every column × matching rows.
 // Scrolls horizontally; display capped at 50 rows (stored output is ≤100).
+// `actedRowIndex` paints the row THIS run acted on green, so the user can tell
+// which of several matches this particular workflow run was for.
 const RowsGrid = ({
   columns,
   rows,
+  actedRowIndex = null,
 }: {
   columns: string[];
   rows: Record<string, string>[];
+  actedRowIndex?: number | null;
 }) => {
   const shown = rows.slice(0, 50);
   return (
@@ -247,8 +251,14 @@ const RowsGrid = ({
           </thead>
           <tbody>
             {shown.map((row, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: static read-only result rows, never reordered.
-              <tr key={i} className="border-b align-top last:border-b-0">
+              <tr
+                // biome-ignore lint/suspicious/noArrayIndexKey: static read-only result rows, never reordered.
+                key={i}
+                className={cn(
+                  "border-b align-top last:border-b-0",
+                  i === actedRowIndex && "bg-green-50 text-green-900",
+                )}
+              >
                 {columns.map((col) => (
                   <td key={col} className="break-words px-2 py-1.5 text-xs">
                     {row[col] ?? ""}
@@ -259,6 +269,11 @@ const RowsGrid = ({
           </tbody>
         </table>
       </div>
+      {actedRowIndex !== null && actedRowIndex < shown.length ? (
+        <p className="text-xs text-green-700">
+          The green row is the one this run acted on.
+        </p>
+      ) : null}
       {rows.length > shown.length ? (
         <p className="text-xs italic text-muted-foreground">
           +{rows.length - shown.length} more — switch to Raw to see all.
@@ -636,10 +651,27 @@ const NodeRow = ({
           : [];
         const count =
           typeof root.matchCount === "number" ? root.matchCount : rows.length;
+        // A parent that fanned out acted for NO single row (each match got its
+        // own run); a fan-out child's reshaped output carries its position
+        // marker and acts for its (only) row; "first"/"error" runs continue
+        // with the first match — ambiguous only when several matched.
+        const fannedOut =
+          typeof root.fannedOut === "number" ? root.fannedOut : null;
+        const childIndex = typeof root.index === "number" ? root.index : null;
+        const childTotal = typeof root.total === "number" ? root.total : null;
+        const isChildRun = root.__fanOut === true && childIndex !== null;
+        const actedRowIndex =
+          isChildRun || (fannedOut === null && count > 1) ? 0 : null;
         return (
           <div className="space-y-2">
             <SummaryMessage>
-              Found {count} matching row{count === 1 ? "" : "s"}.
+              {isChildRun && childTotal !== null
+                ? `This run handled row ${childIndex} of ${childTotal} matching rows.`
+                : fannedOut !== null
+                  ? fannedOut === 0
+                    ? "Found 0 matching rows — no runs started; the following steps were skipped."
+                    : `Found ${count} matching row${count === 1 ? "" : "s"} — started one run per row.`
+                  : `Found ${count} matching row${count === 1 ? "" : "s"}.`}
             </SummaryMessage>
             <FindRowsConditions
               conditions={
@@ -651,7 +683,11 @@ const NodeRow = ({
               unmatched={count === 0}
             />
             {columns.length > 0 && rows.length > 0 ? (
-              <RowsGrid columns={columns} rows={rows} />
+              <RowsGrid
+                columns={columns}
+                rows={rows}
+                actedRowIndex={actedRowIndex}
+              />
             ) : null}
           </div>
         );
