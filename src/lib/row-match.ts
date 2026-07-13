@@ -1,5 +1,8 @@
 import { evaluateCondition } from "@/features/executions/lib/compare";
-import type { RowMatchOperator } from "@/lib/row-match-operators";
+import {
+  isActiveRowCondition,
+  type RowMatchOperator,
+} from "@/lib/row-match-operators";
 import { renderTemplate } from "@/lib/templating";
 
 export type { RowMatchOperator };
@@ -127,7 +130,7 @@ export function evaluateRowCondition(
 function activeConditions(
   conditions: RowMatchCondition[],
 ): RowMatchCondition[] {
-  return conditions.filter((c) => c.enabled !== false && c.column?.trim());
+  return conditions.filter(isActiveRowCondition);
 }
 
 /**

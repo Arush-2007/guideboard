@@ -20,7 +20,7 @@ import { NodeType } from "@/generated/prisma";
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
-  action?: "append_row" | "find_rows";
+  action?: "append_row" | "find_rows" | "update_row";
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -68,7 +68,9 @@ export const GoogleSheetsActionNode = memo(
     const description = nodeData?.sheetName
       ? nodeData.action === "find_rows"
         ? `Find rows in ${nodeData.sheetName}`
-        : `Append to ${nodeData.sheetName}`
+        : nodeData.action === "update_row"
+          ? `Update a row in ${nodeData.sheetName}`
+          : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (

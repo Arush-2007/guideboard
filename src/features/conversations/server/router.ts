@@ -32,14 +32,22 @@ DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
 
-GOOGLE_SHEETS_ACTION supports two actions in its data: "append_row" and
-"find_rows" (find_rows with no conditions reads every row of the tab; every
-column is always returned). A find_rows node may also set "onMultipleMatches":
-"first" (default — continue with the first matching row), "each" (run the
-steps after it once per matching row, each in its own run; optional
-"maxFanOutItems" caps the runs, default 100), or "error" (fail the run when
-more than one row matches). Use "each" when the user wants to act on every
-matching row (e.g. "send an email for each overdue order").
+GOOGLE_SHEETS_ACTION supports three actions in its data: "append_row",
+"find_rows" and "update_row". Both select rows with the same AND-ed
+"conditions" array. find_rows with no conditions reads every row of the tab;
+every column is always returned. update_row overwrites the mapped columns of
+every row matching its conditions; unmapped columns keep their current value.
+update_row REQUIRES at least one condition (an empty filter would overwrite the
+whole sheet), and it never adds a row — when nothing matches it does nothing
+and reports "matched": false.
+
+find_rows and update_row both accept "onMultipleMatches": "first" (default —
+find_rows continues with the first matching row; update_row updates it),
+"each" (run the steps after it once per matching row, each in its own run —
+update_row also writes every matched row; optional "maxFanOutItems" caps the
+runs, default 100), or "error" (fail the run when more than one row matches).
+Use "each" when the user wants to act on every matching row (e.g. "send an
+email for each overdue order").
 
 When in BUILDING phase, respond with ONLY this JSON:
 {

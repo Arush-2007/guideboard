@@ -66,6 +66,8 @@ const isSheetsAppend = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "append_row";
 const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "find_rows";
+const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "update_row";
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
 // here simply contribute no mappable fields yet (the `raw`/templating escape
@@ -142,11 +144,21 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
   [NodeType.GOOGLE_SHEETS_ACTION]: {
     rootKind: "perNode",
     fields: [
-      // append_row (the historical default when `action` is unset).
+      // NOTE: field `path`s must stay UNIQUE per node type — `pickIf` scopes
+      // which fields the PICKER offers, but the execution page's friendly
+      // views look fields up by path alone (resolveFields / describePath in
+      // friendly-output.ts), so two entries sharing a path would render twice
+      // and mislabel each other. Actions that emit the same key therefore share
+      // ONE entry with a label that reads correctly for all of them.
+      //
+      // `rowByHeader` is "the row this run wrote", header-keyed — the appended
+      // row, the updated row, and in "each" (fan-out) mode the child run's own
+      // row. One reference survives a switch between append_row and update_row,
+      // and works per-row in every mode.
       {
         path: "rowByHeader",
-        label: "Appended row (JSON)",
-        pickIf: isSheetsAppend,
+        label: "Row written (JSON)",
+        pickIf: (data) => isSheetsAppend(data) || isSheetsUpdate(data),
       },
       {
         path: "appendedRows",
@@ -163,11 +175,26 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "Matching row (JSON)",
         pickIf: isSheetsFindRows,
       },
+      // How many rows the filter (find_rows) or the key (update_row) matched.
       {
         path: "matchCount",
         label: "Matches found",
         example: "3",
-        pickIf: isSheetsFindRows,
+        pickIf: (data) => isSheetsFindRows(data) || isSheetsUpdate(data),
+      },
+      // update_row only.
+      {
+        path: "previousRow",
+        label: "Row before the update (JSON)",
+        pickIf: isSheetsUpdate,
+      },
+      // False when nothing matched the key — the run updated no row at all.
+      // Branch on this to handle the "row isn't there yet" case.
+      {
+        path: "matched",
+        label: "A row was found",
+        example: "true",
+        pickIf: isSheetsUpdate,
       },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],

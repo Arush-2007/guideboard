@@ -1,9 +1,14 @@
 import { NonRetriableError } from "inngest";
 
 /**
- * Shared spreadsheet-cell numeric helpers, used by both the Excel action and the
- * Google Sheets action/upsert paths so the "coerce numbers but keep leading-zero
- * ids as text" and "add to existing" rules live in exactly one place.
+ * Shared spreadsheet-cell numeric helpers, so the "coerce numbers but keep
+ * leading-zero ids as text" rule lives in exactly one place.
+ *
+ * `coerceCellValue` is used by both the Excel and Google Sheets write paths.
+ * `toCellNumber` (accumulate-onto-existing) currently has ONE caller — the Excel
+ * action's `upsert_by_key`. The Sheets actions deliberately do no arithmetic:
+ * that belongs in a dedicated node upstream, not in a write action's column
+ * config. Kept here, parameterized by `errorPrefix`, for that node to reuse.
  */
 
 /**

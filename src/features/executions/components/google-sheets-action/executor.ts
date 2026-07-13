@@ -5,6 +5,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import {
   applyMultiMatchPolicy,
   assertFanOutCap,
+  assertNoForeignFanOut,
 } from "@/features/executions/lib/multi-match-policy";
 import type {
   FanOutOutcome,
@@ -14,15 +15,20 @@ import type {
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { FAN_OUT_MARKER } from "@/inngest/fan-out";
+import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import {
   readSheetTable,
+  sheetRange,
   sheetsAuthHeaders,
+  sheetsValuesBatchUpdateUrl,
   sheetsValuesUrl,
   toSheetsError,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { type MultiMatchMode, readFanOutSeed } from "@/lib/multi-match";
 import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
+import { hasActiveRowCondition } from "@/lib/row-match-operators";
+import { coerceCellValue } from "@/lib/sheet-cells";
 import { sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
   buildRowByHeader,
@@ -31,8 +37,10 @@ import {
 } from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
 
+type SheetsAction = "append_row" | "find_rows" | "update_row";
+
 type GoogleSheetsActionData = {
-  action?: "append_row" | "find_rows";
+  action?: SheetsAction;
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -41,27 +49,26 @@ type GoogleSheetsActionData = {
   columnMappings?: Record<string, string>;
   // Headers that may not be blank on append (accessory "may be blank" off).
   requiredColumns?: string[];
-  // find_rows: AND-ed filter conditions (every column is returned).
+  // AND-ed row filter, shared by find_rows (which returns the matches) and
+  // update_row (which writes them). update_row requires at least one.
   conditions?: RowMatchCondition[];
-  // find_rows multi-match policy (see src/lib/multi-match.ts).
+  // Multi-match policy for find_rows / update_row (see src/lib/multi-match.ts).
   onMultipleMatches?: MultiMatchMode;
   maxFanOutItems?: number;
 };
+
+const ERROR_PREFIX = "Google Sheets Action";
 
 function parseValuesJson(raw: string): string[][] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new NonRetriableError(
-      "Google Sheets Action: values must be valid JSON",
-    );
+    throw new NonRetriableError(`${ERROR_PREFIX}: values must be valid JSON`);
   }
 
   if (!Array.isArray(parsed)) {
-    throw new NonRetriableError(
-      "Google Sheets Action: values must be an array",
-    );
+    throw new NonRetriableError(`${ERROR_PREFIX}: values must be an array`);
   }
 
   if (parsed.length === 0) return [];
@@ -120,25 +127,53 @@ export const googleSheetsActionExecutor: NodeExecutor<
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
-      "Google Sheets Action: spreadsheetId and sheetName are required",
+      `${ERROR_PREFIX}: spreadsheetId and sheetName are required`,
     );
   }
 
   // Fan-out child run: the engine re-ran this node with a per-item seed under
-  // its own output key (this node fanned out in the parent run — find_rows,
-  // "each" mode). Reshape the seed into a normal single-match find_rows output
-  // instead of re-querying Sheets, so downstream references (`firstRow.<col>`,
-  // `rows`, `matchCount`) resolve identically in every mode.
+  // its own output key (this node fanned out in the parent run, "each" mode).
+  // Reshape the seed into the ACTION'S OWN single-match output shape instead of
+  // touching Sheets again, so downstream references resolve identically in
+  // every mode. The parent already did all the work — for update_row it already
+  // WROTE every matched row, so a child must not write again.
   const seed = readFanOutSeed(context, outputKey);
   if (seed) {
     const item = (seed.item ?? {}) as Record<string, unknown>;
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+    );
+
+    // Common to both: the marker must survive. A retry of this child run has to
+    // short-circuit again, and a later "each"-mode node in this run must see it
+    // (the nested-fan-out guard reads it).
+    const lineage = {
+      index: seed.index,
+      total: seed.total,
+      [FAN_OUT_MARKER]: true,
+    };
+
+    if (action === "update_row") {
+      return {
+        ...context,
+        [outputKey]: {
+          action,
+          spreadsheetId,
+          sheetName,
+          matched: true,
+          matchCount: 1,
+          // The item IS the row the parent wrote, header-keyed — the same
+          // `rowByHeader.<col>` reference works in "first" and "each" mode.
+          rowByHeader: item,
+          ...lineage,
+        },
+      };
+    }
+
     const columnValues: Record<string, string> = {};
     for (const [key, value] of Object.entries(item)) {
       columnValues[key] = JSON.stringify([value]);
     }
-    await publish(
-      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
-    );
     return {
       ...context,
       [outputKey]: {
@@ -150,11 +185,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         rows: [item],
         columnValues,
         firstRow: item,
-        index: seed.index,
-        total: seed.total,
-        // Keep the marker: a retry of this child run must still short-circuit,
-        // and a later "each"-mode node in this run must see it (nested guard).
-        [FAN_OUT_MARKER]: true,
+        ...lineage,
       },
     };
   }
@@ -166,7 +197,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
-      "Google Sheets Action: a column mapping or a range is required",
+      `${ERROR_PREFIX}: a column mapping or a range is required`,
     );
   }
 
@@ -190,7 +221,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
             });
             if (table.headers.length === 0) {
               throw new NonRetriableError(
-                "Google Sheets Action: the sheet has no header row (row 1) to map columns to",
+                `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
               );
             }
             const newRow = buildSheetRow({
@@ -214,12 +245,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
             );
             if (blankRequired.length > 0) {
               throw new NonRetriableError(
-                `Google Sheets Action: required column(s) may not be blank: ${blankRequired.join(", ")}`,
+                `${ERROR_PREFIX}: required column(s) may not be blank: ${blankRequired.join(", ")}`,
               );
             }
 
             await ky.post(
-              `${sheetsValuesUrl(spreadsheetId, `${sheetName}!A:ZZ`)}:append`,
+              `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
               {
                 headers: sheetsAuthHeaders(accessToken),
                 searchParams: { valueInputOption: "USER_ENTERED" },
@@ -252,7 +283,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
 
         // Legacy path: raw JSON values + explicit range.
-        const a1Range = `${sheetName}!${range}`;
+        const a1Range = sheetRange(sheetName, range);
         const renderedValues = decode(
           renderTemplate(config.values ?? "", context),
         ).trim();
@@ -361,23 +392,180 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       }
 
-      // Exhaustiveness: the schema only admits append_row / find_rows (the
-      // legacy read_rows action was removed — find_rows with no conditions
-      // reads every row).
+      if (action === "update_row") {
+        try {
+          // An empty filter makes matchRows vacuously true — it would select
+          // EVERY row and overwrite the whole sheet. The config schema rejects
+          // this too; re-checked here because the executor is what writes.
+          if (!hasActiveRowCondition(config.conditions)) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: updating rows needs at least one filter condition — ` +
+                `an empty filter would overwrite every row in "${sheetName}"`,
+            );
+          }
+
+          const table = await readSheetTable({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+          });
+          if (table.headers.length === 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
+            );
+          }
+
+          // Same row-matching as find_rows: one editor, one matcher.
+          const matchedIndexes = matchRows(
+            table.rowsByHeader,
+            config.conditions ?? [],
+            context,
+          ).map((m) => m.index);
+
+          // This action ONLY updates rows that already exist. Nothing matched ⇒
+          // nothing to write: a clean no-op that succeeds, so a Condition node
+          // can branch on `matched` and hand the "row isn't there yet" case to
+          // a row-adding action instead.
+          if (matchedIndexes.length === 0) {
+            return {
+              ...context,
+              [outputKey]: {
+                action,
+                spreadsheetId,
+                sheetName,
+                matched: false,
+                matchCount: 0,
+              },
+            };
+          }
+
+          // Matched. The policy decides WHICH rows the write lands on, and it
+          // must be settled BEFORE writing — unlike find_rows (a pure read),
+          // an update cannot be un-written once the request goes out, so the
+          // "error" check, the nested-fan-out guard and the cap all run here
+          // rather than in applyMultiMatchPolicy after the step.
+          const mode = config.onMultipleMatches ?? "first";
+          if (mode === "error" && matchedIndexes.length > 1) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: ${matchedIndexes.length} rows match the filter, but ` +
+                `this step is set to fail when more than one does. Switch it to ` +
+                `update every matching row, or narrow the filter.`,
+            );
+          }
+          if (mode === "each") {
+            assertNoForeignFanOut(context, outputKey);
+            assertFanOutCap(
+              matchedIndexes.length,
+              config.maxFanOutItems,
+              "row",
+            );
+          }
+
+          const targets =
+            mode === "each" ? matchedIndexes : [matchedIndexes[0]];
+
+          // The final value of every cell in each target row. Mapped columns are
+          // overwritten with the rendered value; everything else is `null`, which
+          // Sheets leaves untouched. Writing the full, final value (rather than a
+          // relative change) is what makes a retried write safe: it rewrites
+          // identical cells instead of applying an edit twice.
+          const writes = targets.map((rowIdx) => {
+            const existing = table.rows[rowIdx];
+            const finalRow = table.headers.map((rawHeader) => {
+              const header = rawHeader.trim();
+              const mapping = columnMappings[header];
+              // Unmapped ⇒ null ⇒ Sheets leaves the cell untouched.
+              if (!mapping?.trim()) return null;
+              // A serial is assigned once, at insert; updating a row must never
+              // reassign it (v4 decision #7).
+              if (
+                parseCustomFeatureToken(mapping)?.featureId === "serialNumber"
+              ) {
+                return null;
+              }
+              return coerceCellValue(renderTemplate(mapping, context));
+            });
+
+            // Sheet row number: +1 for the 1-based grid, +1 for the header row.
+            const sheetRow = rowIdx + 2;
+            // The row's resulting state — written cells where we wrote, the
+            // existing cell where we passed null — so `rowByHeader` reflects
+            // the whole row (W1's SWITCH reads unmapped columns off it too).
+            const mergedRow = table.headers.map((_h, col) => {
+              const written = finalRow[col];
+              return written === null ? (existing[col] ?? "") : String(written);
+            });
+
+            return {
+              rowIndex: sheetRow,
+              valueRange: {
+                range: sheetRange(sheetName, `A${sheetRow}:ZZ${sheetRow}`),
+                values: [finalRow],
+              },
+              // The row as it stood BEFORE this write — the execution page shows
+              // it next to the new state so a user can see what changed.
+              previousRow: buildRowByHeader(
+                table.headers,
+                existing,
+                columnMappings,
+              ),
+              rowByHeader: buildRowByHeader(
+                table.headers,
+                mergedRow,
+                columnMappings,
+              ),
+            };
+          });
+
+          // ONE request for every target row ("first" writes a single-element
+          // batch — one write path, no branching).
+          await ky.post(sheetsValuesBatchUpdateUrl(spreadsheetId), {
+            headers: sheetsAuthHeaders(accessToken),
+            json: {
+              valueInputOption: "USER_ENTERED",
+              data: writes.map((w) => w.valueRange),
+            },
+          });
+
+          return {
+            ...context,
+            [outputKey]: {
+              action,
+              spreadsheetId,
+              sheetName,
+              matched: true,
+              matchCount: matchedIndexes.length,
+              rowIndex: writes[0].rowIndex,
+              previousRow: writes[0].previousRow,
+              rowByHeader: writes[0].rowByHeader,
+              // "each" fans out on these below; harmless in the other modes.
+              updatedRows: writes.map((w) => w.rowByHeader),
+            },
+          };
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      }
+
+      // Exhaustiveness: the schema only admits append_row / find_rows /
+      // update_row (the legacy read_rows action was removed — find_rows with
+      // no conditions reads every row).
       throw new NonRetriableError(
-        `Google Sheets Action: unsupported action "${action}"`,
+        `${ERROR_PREFIX}: unsupported action "${action}"`,
       );
     });
 
-    // find_rows: apply the multi-match policy OUTSIDE the step — the branded
-    // fan-out outcome carries a symbol that would not survive the step's JSON
-    // checkpoint round-trip. `output.rows` respects the policy ("each" kept
-    // every matched row as fan-out items, cap enforced in-step; other modes
-    // store ≤ 100) — but the SUMMARY output recorded for the parent is capped
-    // back to 100 rows so a large fan-out can't bloat the run record; the full
-    // list still reaches the children via `items`.
+    // Apply the multi-match policy OUTSIDE the step — the branded fan-out
+    // outcome carries a symbol that would NOT survive the step's JSON
+    // checkpoint round-trip.
     let outcome: WorkflowContext | FanOutOutcome = result;
+
     if (action === "find_rows") {
+      // `output.rows` already respects the policy ("each" kept every matched
+      // row as a fan-out item, cap enforced in-step; other modes store ≤ 100).
+      // The SUMMARY recorded for the parent is capped back to 100 rows so a
+      // large fan-out can't bloat the run record — the full list still reaches
+      // the children via `items`.
       const output = result[outputKey] as Record<string, unknown>;
       const rows = Array.isArray(output.rows) ? output.rows : [];
       outcome = applyMultiMatchPolicy({
@@ -392,6 +580,33 @@ export const googleSheetsActionExecutor: NodeExecutor<
           rows.length > 100 ? { ...output, rows: rows.slice(0, 100) } : output,
         itemNoun: "row",
       });
+    } else if (action === "update_row") {
+      // The write already happened (and already obeyed the policy — the mode
+      // chose which rows it landed on). All that is left is the fan-out: in
+      // "each" mode, start one child run per row we updated. `updatedRows` is
+      // the internal carrier for those items; it is stripped from the recorded
+      // output, where `rowByHeader` + `matchCount` already tell the story.
+      const { updatedRows, ...output } = result[outputKey] as Record<
+        string,
+        unknown
+      >;
+      const items = Array.isArray(updatedRows) ? updatedRows : [];
+      // A no-match run wrote nothing, so it has nothing to fan out over — and
+      // fanning out ZERO children would make the engine skip the entire
+      // downstream sub-graph, which is exactly the branch that needs to run
+      // (it's what handles the missing row). So it threads through normally.
+      outcome =
+        items.length > 0
+          ? applyMultiMatchPolicy({
+              mode: config.onMultipleMatches,
+              maxItems: config.maxFanOutItems,
+              items,
+              context: result,
+              outputKey,
+              output,
+              itemNoun: "row",
+            })
+          : { ...result, [outputKey]: output };
     }
 
     await publish(

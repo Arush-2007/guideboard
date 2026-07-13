@@ -3,6 +3,7 @@ import { NodeType } from "@/generated/prisma";
 import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
 import { multiMatchConfigFields } from "@/lib/multi-match";
 import {
+  hasActiveRowCondition,
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
@@ -391,7 +392,7 @@ const googleSheetsActionSchema = z
     // that were never re-opened keep running instead of permafailing.
     action: z.preprocess(
       (v) => (v === "read_rows" ? "find_rows" : v),
-      z.enum(["append_row", "find_rows"]),
+      z.enum(["append_row", "find_rows", "update_row"]),
     ),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Sheet Name is required"),
@@ -401,21 +402,52 @@ const googleSheetsActionSchema = z
     // Headers that may NOT be blank on append (the accessory "may be blank"
     // toggle turned off). Enforced after the row is built.
     requiredColumns: z.array(z.string()).optional(),
-    // find_rows: AND-ed filter conditions. Every column is returned (an old
-    // saved `selectedColumns` key rides through harmlessly via .passthrough()).
+    // AND-ed filter conditions, selecting rows for BOTH find_rows and
+    // update_row (one row-matching mechanism, one editor, one `matchRows`).
+    // find_rows: no conditions reads every row (an old saved `selectedColumns`
+    // key rides through harmlessly via .passthrough()).
+    // update_row: at least one condition is REQUIRED — see the superRefine.
     conditions: z.array(rowConditionSchema).optional(),
-    // find_rows multi-match policy (shared fragment): "first" (default, use
-    // firstRow), "each" (fan out one child run per matched row, capped by
-    // maxFanOutItems), or "error" (fail the run when more than one matches).
+    // Multi-match policy (shared fragment) for the list-producing actions:
+    // "first" (default), "each" (fan out one child run per matched row, capped
+    // by maxFanOutItems), or "error" (fail when more than one matches).
+    // find_rows: which matched row downstream continues with.
+    // update_row: which matched row(s) the write lands on.
     ...multiMatchConfigFields,
   })
   .superRefine((data, ctx) => {
     // find_rows needs only spreadsheet + tab (already required above).
     if (data.action === "find_rows") return;
-    // append_row: need a column mapping (preferred) or a legacy values array.
+
+    // append_row: a column mapping (preferred) or a legacy values array.
+    // update_row: a column mapping is the only supported form.
     const hasMappings = data.columnMappings
       ? Object.values(data.columnMappings).some((v) => v.trim())
       : false;
+
+    if (data.action === "update_row") {
+      if (!hasMappings) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Map at least one column to update",
+          path: ["columnMappings"],
+        });
+      }
+      // An empty filter matches EVERY row (matchRows is vacuously true with no
+      // conditions). Harmless for find_rows — it just reads the tab — but on a
+      // write action it would overwrite the entire sheet. So a filter is
+      // mandatory here, and it is enforced in the executor too.
+      if (!hasActiveRowCondition(data.conditions)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Add at least one condition — an empty filter would overwrite every row",
+          path: ["conditions"],
+        });
+      }
+      return;
+    }
+
     if (!hasMappings && !data.values?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

@@ -76,6 +76,9 @@ type SheetsResult = Record<
     rows?: Record<string, string>[];
     columnValues?: Record<string, string>;
     firstRow?: Record<string, string>;
+    matched?: boolean;
+    rowIndex?: number;
+    previousRow?: Record<string, string>;
   }
 >;
 
@@ -490,5 +493,317 @@ describe("googleSheetsActionExecutor — find_rows multi-match fan-out", () => {
       ),
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(publishedStatuses).toContain("error");
+  });
+});
+
+describe("googleSheetsActionExecutor — update_row", () => {
+  // Ledger-shaped tab: one row per buyer, with running totals to accumulate.
+  const ledger = [
+    ["Service Buyer", "Estimated", "Pending", "Buyer Type"],
+    ["Acme", "100", "40", "Government"],
+    ["Globex", "50", "0", "Private"],
+  ];
+
+  // Rows are selected by the SAME conditions find_rows uses. What was once a
+  // key column + key value is now just an `equals` condition.
+  const matchAcme = [
+    { column: "Service Buyer", operator: "equals", value: "Acme" },
+  ];
+
+  const baseConfig = {
+    action: "update_row",
+    spreadsheetId: "s",
+    sheetName: "Ledger",
+    conditions: matchAcme,
+  };
+
+  /** The values:batchUpdate body the update write posted. */
+  function batchUpdateBody() {
+    const [url, options] = kyPostMock.mock.calls[0] as [
+      string,
+      { json: { valueInputOption: string; data: unknown[] } },
+    ];
+    return { url, ...options.json };
+  }
+
+  it("overwrites mapped cells and leaves unmapped ones untouched (null), recording the row's prior state", async () => {
+    mockRead(ledger);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { Estimated: "125", Pending: "65" },
+    });
+
+    const body = batchUpdateBody();
+    expect(body.url).toContain("/values:batchUpdate");
+    expect(body.valueInputOption).toBe("USER_ENTERED");
+    // Acme is data row 0 → sheet row 2. Service Buyer + Buyer Type are unmapped
+    // ⇒ null ⇒ Sheets keeps their current values. The write carries each cell's
+    // FINAL value, so an Inngest retry rewrites identical cells.
+    expect(body.data).toEqual([
+      { range: "'Ledger'!A2:ZZ2", values: [[null, 125, 65, null]] },
+    ]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.matched).toBe(true);
+    expect(out.matchCount).toBe(1);
+    expect(out.rowIndex).toBe(2);
+    // rowByHeader is the row's RESULTING state — written cells where we wrote,
+    // existing cells where we passed null (W1's SWITCH reads both off it).
+    expect(out.rowByHeader).toEqual({
+      "Service Buyer": "Acme",
+      Estimated: "125",
+      Pending: "65",
+      "Buyer Type": "Government",
+    });
+    // …and previousRow is the state it replaced, so the execution page can show
+    // before/after and highlight exactly which cells moved.
+    expect(out.previousRow).toEqual({
+      "Service Buyer": "Acme",
+      Estimated: "100",
+      Pending: "40",
+      "Buyer Type": "Government",
+    });
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("writes an empty mapped value as a cell-clearing empty string, not null", async () => {
+    mockRead(ledger);
+
+    await run({
+      ...baseConfig,
+      // A mapped column whose template renders empty CLEARS the cell; only an
+      // UNMAPPED column (null) is left alone. Pinning the distinction.
+      columnMappings: { Pending: "@<nothing.here>@" },
+    });
+
+    expect(batchUpdateBody().data).toEqual([
+      { range: "'Ledger'!A2:ZZ2", values: [[null, null, "", null]] },
+    ]);
+  });
+
+  it("does NOTHING when no row matches the key — it never adds one", async () => {
+    mockRead(ledger);
+
+    const result = await run({
+      ...baseConfig,
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Initech" },
+      ],
+      columnMappings: { Estimated: "80", Pending: "80" },
+    });
+
+    // This action only overwrites rows that already exist. Adding the missing
+    // row is a different action's job.
+    expect(kyPostMock).not.toHaveBeenCalled();
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.matched).toBe(false);
+    expect(out.matchCount).toBe(0);
+    // No row was touched, so there is nothing to show as before/after either.
+    expect(out.rowByHeader).toBeUndefined();
+    expect(out.previousRow).toBeUndefined();
+    // It is a SUCCESS, not a failure — a Condition node downstream branches on
+    // `matched` to handle the missing row.
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("REFUSES to run with an empty filter (it would overwrite every row)", async () => {
+    mockRead(ledger);
+
+    // matchRows is vacuously true with no active conditions — fine for a read
+    // (find_rows just returns the tab), catastrophic for a write.
+    for (const conditions of [
+      undefined,
+      [],
+      // Present but inert: disabled, or naming no column.
+      [
+        {
+          column: "Service Buyer",
+          operator: "equals",
+          value: "Acme",
+          enabled: false,
+        },
+      ],
+      [{ column: "", operator: "equals", value: "Acme" }],
+    ]) {
+      vi.clearAllMocks();
+      publishedStatuses = [];
+      refreshTokenMock.mockResolvedValue("token-123");
+      kyPostMock.mockResolvedValue({});
+      mockRead(ledger);
+
+      await expect(
+        run({
+          ...baseConfig,
+          conditions,
+          columnMappings: { Pending: "0" },
+        }),
+      ).rejects.toBeInstanceOf(NonRetriableError);
+      expect(kyPostMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("never reassigns a Serial Number on a matched row", async () => {
+    mockRead([
+      ["Job No", "Service Buyer"],
+      ["0001", "Acme"],
+    ]);
+
+    await run({
+      ...baseConfig,
+      columnMappings: { "Job No": serialToken, "Service Buyer": "Acme" },
+    });
+
+    // A serial belongs to the row for its lifetime: the token maps to null, so
+    // the cell is left exactly as it was.
+    expect(batchUpdateBody().data).toEqual([
+      { range: "'Ledger'!A2:ZZ2", values: [[null, "Acme"]] },
+    ]);
+  });
+
+  it("'error' mode fails on a duplicate key WITHOUT writing anything", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Acme", "40"],
+      ["Acme", "10"],
+    ]);
+
+    await expect(
+      run({
+        ...baseConfig,
+        columnMappings: { Pending: "5" },
+        onMultipleMatches: "error",
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    // The whole point of settling the policy BEFORE the write: a duplicate key
+    // must not leave a half-applied update behind.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(publishedStatuses).toContain("error");
+  });
+
+  it("'first' mode (the default) updates only the first matching row", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Acme", "40"],
+      ["Acme", "10"],
+    ]);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { Pending: "5" },
+    });
+
+    // Only row 2 is written — the second Acme (sheet row 3) is left alone.
+    expect(batchUpdateBody().data).toEqual([
+      { range: "'Ledger'!A2:ZZ2", values: [[null, 5]] },
+    ]);
+    // matchCount still reports the truth, so a workflow can branch on it.
+    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
+  });
+
+  it("'each' mode writes EVERY matched row in one request and fans out one child run per row", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Acme", "40"],
+      ["Globex", "0"],
+      ["Acme", "10"],
+    ]);
+
+    const outcome = (await run({
+      ...baseConfig,
+      columnMappings: { Pending: "5" },
+      onMultipleMatches: "each",
+    })) as unknown as FanOutOutcome;
+
+    // ONE values:batchUpdate carrying a ValueRange per matched row — not N calls.
+    // Globex (sheet row 3) is skipped: only the KEY's matches are written.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    expect(batchUpdateBody().data).toEqual([
+      { range: "'Ledger'!A2:ZZ2", values: [[null, 5]] },
+      { range: "'Ledger'!A4:ZZ4", values: [[null, 5]] },
+    ]);
+
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toEqual([
+      { "Service Buyer": "Acme", Pending: "5" },
+      { "Service Buyer": "Acme", Pending: "5" },
+    ]);
+    const summary = outcome.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(2);
+    expect(summary.matchCount).toBe(2);
+    // `updatedRows` is only the internal carrier for the items — it must not
+    // bloat the recorded run output.
+    expect(summary.updatedRows).toBeUndefined();
+  });
+
+  it("'each' beyond the cap fails before writing", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Acme", "1"],
+      ["Acme", "2"],
+      ["Acme", "3"],
+    ]);
+
+    await expect(
+      run({
+        ...baseConfig,
+        columnMappings: { Pending: "5" },
+        onMultipleMatches: "each",
+        maxFanOutItems: 2,
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("a no-match run never fans out (zero items would SKIP the whole downstream sub-graph)", async () => {
+    mockRead(ledger);
+
+    const outcome = await run({
+      ...baseConfig,
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Initech" },
+      ],
+      columnMappings: { Estimated: "80" },
+      onMultipleMatches: "each",
+    });
+
+    // Fanning out zero children would skip everything downstream — which is
+    // precisely the branch that has to run to handle the missing row.
+    expect(isFanOut(outcome as unknown as FanOutOutcome)).toBe(false);
+    expect(outcome.GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
+  });
+
+  it("a fan-out CHILD run reshapes its seed and touches Sheets not at all (the parent already wrote every row)", async () => {
+    const result = await run(
+      {
+        ...baseConfig,
+        columnMappings: { Pending: "5" },
+        onMultipleMatches: "each",
+      },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          item: { "Service Buyer": "Acme", Pending: "45" },
+          index: 1,
+          total: 2,
+          __fanOut: true,
+        },
+      },
+    );
+
+    // No read, no write — the parent already wrote every matched row.
+    expect(kyGetMock).not.toHaveBeenCalled();
+    expect(kyPostMock).not.toHaveBeenCalled();
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.action).toBe("update_row");
+    expect(out.matched).toBe(true);
+    expect(out.matchCount).toBe(1);
+    // The same `rowByHeader.<col>` reference resolves in "first" and "each".
+    expect(out.rowByHeader).toEqual({ "Service Buyer": "Acme", Pending: "45" });
+    expect(publishedStatuses).toContain("success");
   });
 });

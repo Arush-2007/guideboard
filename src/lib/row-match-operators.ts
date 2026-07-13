@@ -39,3 +39,30 @@ export const ROW_MATCH_OPERATORS = Object.keys(
 /** Operators that take no comparison value (the value input is hidden). */
 export const VALUELESS_ROW_MATCH_OPERATORS: ReadonlySet<RowMatchOperator> =
   new Set<RowMatchOperator>(["is_empty", "is_not_empty"]);
+
+/** The shape both `RowMatchCondition` and the dialog's form condition satisfy. */
+type ConditionLike = { column?: string; enabled?: boolean };
+
+/**
+ * A condition only filters anything if it is enabled AND names a column.
+ * Defined HERE, not in `row-match.ts`, because `row-match.ts` imports Handlebars
+ * (via templating) and must never reach the editor's client bundle — while the
+ * config schema and the dialog both need this rule. Structurally typed for the
+ * same reason: no import of `RowMatchCondition` needed.
+ */
+export function isActiveRowCondition(condition: ConditionLike): boolean {
+  return condition.enabled !== false && Boolean(condition.column?.trim());
+}
+
+/**
+ * Whether a saved condition list actually filters anything. This is the rule
+ * behind "an empty filter matches EVERY row": `matchRows` is vacuously true when
+ * nothing is active — harmless for a read (find_rows just returns the tab), but
+ * on a WRITE action (update_row) it would hit every row in the sheet, so those
+ * actions require this to be true.
+ */
+export function hasActiveRowCondition(
+  conditions: ReadonlyArray<ConditionLike> | undefined,
+): boolean {
+  return (conditions ?? []).some(isActiveRowCondition);
+}

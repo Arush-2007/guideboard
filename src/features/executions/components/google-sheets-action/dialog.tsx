@@ -43,6 +43,7 @@ import { NodeType } from "@/generated/prisma";
 import { MAX_FAN_OUT_ITEMS_LIMIT, MULTI_MATCH_MODES } from "@/lib/multi-match";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 import {
+  hasActiveRowCondition,
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
@@ -63,7 +64,7 @@ const rowConditionFormSchema = z.object({
 
 const formSchema = z
   .object({
-    action: z.enum(["append_row", "find_rows"]),
+    action: z.enum(["append_row", "find_rows", "update_row"]),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Tab name is required"),
     columnMappings: z.record(z.string(), z.string()).optional(),
@@ -82,14 +83,31 @@ const formSchema = z
   .superRefine((data, ctx) => {
     // find_rows needs only a spreadsheet + tab (already required).
     if (data.action === "find_rows") return;
+
     const hasMappings = data.columnMappings
       ? Object.values(data.columnMappings).some((v) => v.trim())
       : false;
     if (!hasMappings) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Map at least one column to append a row",
+        message:
+          data.action === "update_row"
+            ? "Map at least one column to update"
+            : "Map at least one column to append a row",
         path: ["columnMappings"],
+      });
+    }
+
+    // A write action with no filter would hit every row in the sheet.
+    if (
+      data.action === "update_row" &&
+      !hasActiveRowCondition(data.conditions)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Add at least one condition — an empty filter would overwrite every row",
+        path: ["conditions"],
       });
     }
   });
@@ -118,8 +136,8 @@ interface Props {
 }
 
 /**
- * Shared loading / error / no-headers notice for the append + find_rows column
- * UIs. Returns null once headers are available, so the caller renders its own
+ * Shared loading / error / no-headers notice for every action's column UI.
+ * Returns null once headers are available, so the caller renders its own
  * "ready" content (the mapping or filter summary).
  */
 function ColumnsNotice({
@@ -212,7 +230,12 @@ export const GoogleSheetsActionDialog = ({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: buildDefaults reads props/defaultValues, re-run only on open/defaults change.
   useEffect(() => {
-    if (open) form.reset(buildDefaults());
+    if (!open) return;
+    form.reset(buildDefaults());
+    // The nested overlays are separate Dialogs whose open state would otherwise
+    // outlive this dialog — reopening the node would pop one straight back up.
+    setMappingOpen(false);
+    setFilterOpen(false);
   }, [open, defaultValues, form]);
 
   // Live header row of the chosen spreadsheet/tab → mapping targets / filter columns.
@@ -272,6 +295,9 @@ export const GoogleSheetsActionDialog = ({
         });
       }
     } else if (headers.length > 0) {
+      // append_row + update_row both emit `rowByHeader` — the row this run
+      // wrote. Same paths, so a node switched between them keeps its
+      // references working.
       payload.discoveredFields = headers.map((h) => ({
         path: `${outputKey}.rowByHeader.${sanitizeHeaderKey(h)}`,
         label: h,
@@ -313,6 +339,7 @@ export const GoogleSheetsActionDialog = ({
                     <SelectContent>
                       <SelectItem value="append_row">Append row</SelectItem>
                       <SelectItem value="find_rows">Find rows</SelectItem>
+                      <SelectItem value="update_row">Update row</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -509,6 +536,139 @@ export const GoogleSheetsActionDialog = ({
                       Done
                     </Button>
                   </div>
+                </WideOverlayPanel>
+              </div>
+            ) : action === "update_row" ? (
+              <div className="space-y-2">
+                <Label>Filter rows</Label>
+                <ColumnsNotice
+                  isLoading={columnsQuery.isLoading}
+                  isError={columnsQuery.isError}
+                  hasSpreadsheet={Boolean(spreadsheetId)}
+                  headerCount={headers.length}
+                />
+                {headers.length > 0 ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      {conditions.length} condition
+                      {conditions.length === 1 ? "" : "s"} · {mappedCount} of{" "}
+                      {headers.length} columns written
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFilterOpen(true)}
+                    >
+                      Configure filter
+                    </Button>
+                  </div>
+                ) : null}
+                {form.formState.errors.conditions?.message ? (
+                  <p className="text-sm text-destructive">
+                    {String(form.formState.errors.conditions.message)}
+                  </p>
+                ) : null}
+                {form.formState.errors.columnMappings?.message ? (
+                  <p className="text-sm text-destructive">
+                    {String(form.formState.errors.columnMappings.message)}
+                  </p>
+                ) : null}
+
+                <WideOverlayPanel
+                  open={filterOpen}
+                  onOpenChange={setFilterOpen}
+                  title="Filter rows"
+                  description="Overwrite the columns you map, on every row matching all enabled conditions. Rows that don't match are left alone."
+                >
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <Label>Match rows where…</Label>
+                      <RowMatchConditions
+                        value={conditions}
+                        onChange={(next) => form.setValue("conditions", next)}
+                        currentNodeId={currentNodeId}
+                        workflowId={workflowId}
+                        columnOptions={headers}
+                        anchorClassName="ml-96"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        At least one condition is required — an empty filter
+                        would overwrite every row.
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <MultiMatchSelect
+                        itemNoun="row"
+                        mode={form.watch("onMultipleMatches")}
+                        onModeChange={(m) =>
+                          form.setValue("onMultipleMatches", m)
+                        }
+                        maxItems={form.watch("maxFanOutItems")}
+                        onMaxItemsChange={(n) =>
+                          form.setValue("maxFanOutItems", n)
+                        }
+                      />
+                      {form.watch("onMultipleMatches") === "each" ? (
+                        <p className="text-xs text-muted-foreground">
+                          Every matching row is written, not just the first.
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Columns to write</Label>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm text-muted-foreground">
+                          {mappedCount} of {headers.length} mapped
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setMappingOpen(true)}
+                        >
+                          Configure columns
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex justify-end">
+                    <Button type="button" onClick={() => setFilterOpen(false)}>
+                      Done
+                    </Button>
+                  </div>
+
+                  {/* Layered ON TOP of the filter overlay, same width. */}
+                  <WideOverlayPanel
+                    open={mappingOpen}
+                    onOpenChange={setMappingOpen}
+                    title="Columns to write"
+                    description="A mapped column is overwritten with the value below, on every matching row. Unmapped columns keep whatever they already hold."
+                  >
+                    <FieldMapping
+                      targets={headers.map((h) => ({ key: h, label: h }))}
+                      value={columnMappings}
+                      onChange={(next) =>
+                        form.setValue("columnMappings", next, {
+                          shouldValidate: true,
+                        })
+                      }
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      anchorClassName="ml-96"
+                    />
+                    <div className="mt-6 flex justify-end">
+                      <Button
+                        type="button"
+                        onClick={() => setMappingOpen(false)}
+                      >
+                        Done
+                      </Button>
+                    </div>
+                  </WideOverlayPanel>
                 </WideOverlayPanel>
               </div>
             ) : null}

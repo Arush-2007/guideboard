@@ -33,6 +33,26 @@ export function assertFanOutCap(
 }
 
 /**
+ * Throws when this run is already one item of ANOTHER node's fan-out (nesting
+ * would multiply children combinatorially). Exposed separately so a node that
+ * WRITES can check before its write lands — `applyMultiMatchPolicy` runs after
+ * the executor's step, which is too late to un-write.
+ */
+export function assertNoForeignFanOut(
+  context: WorkflowContext,
+  outputKey: string,
+): void {
+  for (const [key, value] of Object.entries(context)) {
+    if (key !== outputKey && isFanOutItem(value)) {
+      throw new NonRetriableError(
+        "Nested fan-out is not supported — this run is already processing " +
+          "one item of another step's fan-out.",
+      );
+    }
+  }
+}
+
+/**
  * Applies the node's multi-match policy to its matched `items` and returns
  * what the executor should return. `output` is the node's normal, full output
  * object (it is what downstream sees in "first"/"error" mode, and what the
@@ -84,17 +104,7 @@ export function applyMultiMatchPolicy({
   }
 
   if (resolvedMode === "each") {
-    // Nested fan-out guard: another node's per-item seed in the context means
-    // this run is already one item of a different fan-out.
-    for (const [key, value] of Object.entries(context)) {
-      if (key !== outputKey && isFanOutItem(value)) {
-        throw new NonRetriableError(
-          "Nested fan-out is not supported — this run is already processing " +
-            "one item of another step's fan-out.",
-        );
-      }
-    }
-
+    assertNoForeignFanOut(context, outputKey);
     assertFanOutCap(items.length, maxItems, itemNoun);
 
     // Zero items fans out zero children — the engine activates no outgoing

@@ -283,6 +283,89 @@ const RowsGrid = ({
   );
 };
 
+// An update_row result as a spreadsheet would show it: the sheet's columns
+// across the top, the row BEFORE the write and the row AFTER it stacked
+// underneath, with every cell the write actually changed highlighted.
+const RowChangeGrid = ({
+  columns,
+  before,
+  after,
+  singleRowLabel = null,
+}: {
+  columns: string[];
+  before: Record<string, string>;
+  after: Record<string, string>;
+  /**
+   * When set, there is no prior state to diff against (a fan-out child, whose
+   * reshaped output carries only the row it handled) — `after` renders alone
+   * under this label.
+   */
+  singleRowLabel?: string | null;
+}) => {
+  const rows = singleRowLabel
+    ? [{ label: singleRowLabel, cells: after, diff: false }]
+    : [
+        { label: "Before", cells: before, diff: false },
+        { label: "After", cells: after, diff: true },
+      ];
+
+  return (
+    <div className="space-y-1">
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b bg-muted/60 text-xs text-muted-foreground">
+              <th className="w-16 px-2 py-1 text-left font-medium" />
+              {columns.map((col) => (
+                <th
+                  key={col}
+                  className="whitespace-nowrap px-2 py-1 text-left font-medium"
+                >
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.label}
+                className="border-b align-top last:border-b-0"
+              >
+                <td className="whitespace-nowrap px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                  {row.label}
+                </td>
+                {columns.map((col) => {
+                  // Only cells whose value actually moved are highlighted — an
+                  // unmapped column is written as null (left untouched), so it
+                  // must not look like the run changed it.
+                  const isChanged = row.diff && before[col] !== after[col];
+                  return (
+                    <td
+                      key={col}
+                      className={cn(
+                        "break-words px-2 py-1.5 text-xs",
+                        isChanged && "bg-green-50 font-medium text-green-900",
+                      )}
+                    >
+                      {row.cells[col] ?? ""}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {!singleRowLabel ? (
+        <p className="text-xs text-green-700">
+          Green cells are the ones this run changed.
+        </p>
+      ) : null}
+    </div>
+  );
+};
+
 type DisplayCondition = {
   id?: string;
   column?: string;
@@ -291,10 +374,11 @@ type DisplayCondition = {
   enabled?: boolean;
 };
 
-// The find_rows filter criteria as a Field | Operator | Value table. Green when
-// rows matched, red when nothing matched — so the user sees exactly what was
-// applied and why it returned (or didn't return) rows.
-const FindRowsConditions = ({
+// The row filter as a Field | Operator | Value table — shared by find_rows and
+// update_row, which select rows the same way. Green when rows matched, red when
+// nothing matched, so the user sees exactly what was applied and why it did (or
+// didn't) hit any rows.
+const RowConditionsTable = ({
   conditions,
   input,
   unmatched,
@@ -673,7 +757,7 @@ const NodeRow = ({
                     : `Found ${count} matching row${count === 1 ? "" : "s"} — started one run per row.`
                   : `Found ${count} matching row${count === 1 ? "" : "s"}.`}
             </SummaryMessage>
-            <FindRowsConditions
+            <RowConditionsTable
               conditions={
                 Array.isArray(config?.conditions)
                   ? (config.conditions as DisplayCondition[])
@@ -687,6 +771,61 @@ const NodeRow = ({
                 columns={columns}
                 rows={rows}
                 actedRowIndex={actedRowIndex}
+              />
+            ) : null}
+          </div>
+        );
+      }
+
+      // update_row shows the row as a spreadsheet would — before and after the
+      // write — rather than a JSON blob in a Field | Value table.
+      if (root?.action === "update_row") {
+        const after = (root.rowByHeader ?? {}) as Record<string, string>;
+        const before = (root.previousRow ?? {}) as Record<string, string>;
+        // Nothing matched ⇒ nothing was written, and there is no row to show.
+        const matched = root.matched === true;
+        // Column order comes from the row itself (the executor keys it by the
+        // sheet's header row, in sheet order).
+        const columns = Object.keys({ ...before, ...after });
+
+        const count =
+          typeof root.matchCount === "number" ? root.matchCount : null;
+        const fannedOut =
+          typeof root.fannedOut === "number" ? root.fannedOut : null;
+        const childIndex = typeof root.index === "number" ? root.index : null;
+        const childTotal = typeof root.total === "number" ? root.total : null;
+        const isChildRun = root.__fanOut === true && childIndex !== null;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {!matched
+                ? "No row matched — nothing was updated."
+                : isChildRun && childTotal !== null
+                  ? `This run handled row ${childIndex} of ${childTotal} updated rows.`
+                  : fannedOut !== null
+                    ? `Updated ${fannedOut} matching row${fannedOut === 1 ? "" : "s"} — started one run per row.`
+                    : count !== null && count > 1
+                      ? `${count} rows matched — updated the first one.`
+                      : "Updated the matching row."}
+            </SummaryMessage>
+            <RowConditionsTable
+              conditions={
+                Array.isArray(config?.conditions)
+                  ? (config.conditions as DisplayCondition[])
+                  : []
+              }
+              input={node.input}
+              unmatched={!matched}
+            />
+            {matched && columns.length > 0 ? (
+              <RowChangeGrid
+                columns={columns}
+                before={before}
+                after={after}
+                // A fan-out child's reshaped output carries only the row it
+                // handled, with no prior state to diff against.
+                singleRowLabel={isChildRun ? "Updated" : null}
               />
             ) : null}
           </div>

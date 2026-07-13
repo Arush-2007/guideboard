@@ -102,13 +102,24 @@ describe("getUpstreamFields", () => {
     expect(findLabels).toContain("Matching row (JSON)");
     expect(findLabels).toContain("Matches found");
     expect(findLabels).not.toContain("Rows appended");
-    expect(findLabels).not.toContain("Appended row (JSON)");
+    expect(findLabels).not.toContain("A row was found");
 
     // append_row is the default when action is unset.
     const appendLabels = labelsFor({});
-    expect(appendLabels).toContain("Appended row (JSON)");
+    expect(appendLabels).toContain("Row written (JSON)");
     expect(appendLabels).toContain("Rows appended");
     expect(appendLabels).not.toContain("Matching row (JSON)");
     expect(appendLabels).not.toContain("Matches found");
+
+    // update_row shares `rowByHeader` with append (one entry, so the friendly
+    // views can't render it twice) and `matchCount` with find_rows, and adds
+    // `matched` + `previousRow` of its own. It must NOT offer append's counter.
+    const updateLabels = labelsFor({ action: "update_row" });
+    expect(updateLabels).toContain("Row written (JSON)");
+    expect(updateLabels).toContain("Matches found");
+    expect(updateLabels).toContain("A row was found");
+    expect(updateLabels).toContain("Row before the update (JSON)");
+    expect(updateLabels).not.toContain("Rows appended");
+    expect(updateLabels).not.toContain("Matching row (JSON)");
   });
 });

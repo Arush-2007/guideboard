@@ -75,8 +75,11 @@ export const nodeSummaries: Partial<Record<NodeType, NodeSummary>> = {
       : "Telegram message sent.",
   [NodeType.NOTION_ACTION]: () => "Created a Notion page.",
   [NodeType.GOOGLE_SHEETS_ACTION]: ({ output }) => {
-    // find_rows renders its own grid + summary in the execution view.
-    if (output?.action === "find_rows") return null;
+    // find_rows (results grid) and update_row (before/after row view) each
+    // render their own summary + table in the execution view.
+    if (output?.action === "find_rows" || output?.action === "update_row") {
+      return null;
+    }
     return output?.appendedRows != null
       ? `Appended ${str(output.appendedRows)} row(s) to the sheet.`
       : "Updated the sheet.";
