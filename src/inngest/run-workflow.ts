@@ -7,6 +7,7 @@ import {
   type WorkflowContext,
 } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
+import { isFanOutItem } from "@/inngest/fan-out";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
@@ -96,6 +97,14 @@ export interface FanOutDispatcher {
  * node returns `context` through `step.run(...)`, and Inngest serializes step
  * output into a fresh deep copy, making every top-level reference differ even
  * though it added nothing.
+ *
+ * One deliberate exception: in a fan-out CHILD run the fanned-out node's own
+ * key already exists (the dispatcher seeded it with the per-item payload) and
+ * its executor rewrites that key in place with its per-item output. A key
+ * whose before-value is a per-item seed is therefore compared BY VALUE, so the
+ * rewrite is recorded as the node's output while downstream nodes — which only
+ * carry the (value-identical) rewrite through their own step round-trips —
+ * still record nothing for it.
  */
 function newKeysDiff(
   before: WorkflowContext,
@@ -103,9 +112,25 @@ function newKeysDiff(
 ): WorkflowContext {
   const diff: WorkflowContext = {};
   for (const key of Object.keys(after)) {
-    if (!(key in before)) diff[key] = after[key];
+    if (!(key in before)) {
+      diff[key] = after[key];
+    } else if (
+      isFanOutItem(before[key]) &&
+      !sameJson(before[key], after[key])
+    ) {
+      diff[key] = after[key];
+    }
   }
   return diff;
+}
+
+function sameJson(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b);
+  } catch {
+    // Unserializable — assume unchanged rather than over-record.
+    return true;
+  }
 }
 
 /**

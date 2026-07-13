@@ -6,11 +6,15 @@ import {
   routed,
   type WorkflowContext,
 } from "@/features/executions/types";
+import { getOutputKeyForNode } from "@/lib/node-ref";
 
 // Fake executor registry: each node's behavior is driven by its `data`.
 // - `data.route` (string[]) => a branching node that activates those outputs.
 // - `data.fanOut` (unknown[]) => a fan-out node that returns those items (and
 //   writes its own summary output under `<nodeId>` first).
+// - `data.rewriteSeed` => a fan-out CHILD run's node: it overwrites its own
+//   already-seeded key with its per-item output (keeping the marker, like the
+//   Sheets find_rows child short-circuit does).
 // - otherwise => a non-branching node that adds a `<nodeId>: true` marker key.
 vi.mock("@/features/executions/lib/executor-registry", () => ({
   getExecutor:
@@ -37,6 +41,12 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
           { ...context, [outputKey]: { fannedOut: items.length } },
           items,
         );
+      }
+      if (data?.rewriteSeed) {
+        return {
+          ...context,
+          [outputKey]: { rewritten: true, __fanOut: true },
+        };
       }
       return { ...context, [nodeId]: true };
     },
@@ -298,6 +308,44 @@ describe("runWorkflowNodes fan-out", () => {
 
     expect(ran).toEqual(["fan"]);
     expect(skipped).toEqual(["child"]);
+  });
+});
+
+describe("fan-out child output recording", () => {
+  it("records a node's rewrite of its own seed key, not downstream pass-through", async () => {
+    const outputs = new Map<string, unknown>();
+    const recorder = {
+      record: async (r: {
+        nodeId: string;
+        status: string;
+        output?: unknown;
+      }) => {
+        if (r.status !== "SKIPPED") outputs.set(r.nodeId, r.output);
+      },
+    };
+    // The engine keys node "a" (type AI_TEXT, no ref) by its legacy output key.
+    const key = getOutputKeyForNode("AI_TEXT", "a", null);
+    const seed = { item: { x: 1 }, index: 1, total: 2, __fanOut: true };
+
+    await runWorkflowNodes({
+      sortedNodes: [node("a", { rewriteSeed: true }), node("b")],
+      connections: [edge("a", "b")],
+      initialData: { [key]: seed },
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+
+    // The rewrite of the pre-seeded key IS node a's output (value-diffed
+    // against the seed) …
+    expect(outputs.get("a")).toEqual({
+      [key]: { rewritten: true, __fanOut: true },
+    });
+    // … while node b, which only carries the rewritten value through, records
+    // nothing for that key.
+    expect(outputs.get("b")).toEqual({ b: true });
   });
 });
 
