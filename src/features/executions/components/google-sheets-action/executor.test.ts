@@ -42,7 +42,11 @@ vi.mock("@/inngest/channels/node-status", () => ({
   nodeStatusChannel: () => ({ status: (payload: unknown) => payload }),
 }));
 
-import type { NodeExecutorParams } from "@/features/executions/types";
+import {
+  type FanOutOutcome,
+  isFanOut,
+  type NodeExecutorParams,
+} from "@/features/executions/types";
 import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
 import { googleSheetsActionExecutor } from "./executor";
 
@@ -182,7 +186,7 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
 });
 
 describe("googleSheetsActionExecutor — find_rows", () => {
-  it("returns only selected columns, full matchCount, and unique columnValues", async () => {
+  it("returns every column, full matchCount, and unique columnValues", async () => {
     mockRead([
       ["Name", "Buyer", "Pending"],
       ["Ada", "Acme", "10"],
@@ -195,23 +199,48 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       spreadsheetId: "s",
       sheetName: "Ledger",
       conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
-      selectedColumns: ["Name", "Buyer"],
     });
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(2); // Ada (10) and Cy (5)
-    expect(out.columns).toEqual(["Name", "Buyer"]);
+    expect(out.columns).toEqual(["Name", "Buyer", "Pending"]);
     expect(out.rows).toEqual([
-      { Name: "Ada", Buyer: "Acme" },
-      { Name: "Cy", Buyer: "Globex" },
+      { Name: "Ada", Buyer: "Acme", Pending: "10" },
+      { Name: "Cy", Buyer: "Globex", Pending: "5" },
     ]);
     expect(out.columnValues).toEqual({
       Name: JSON.stringify(["Ada", "Cy"]),
       Buyer: JSON.stringify(["Acme", "Globex"]),
+      Pending: JSON.stringify(["10", "5"]),
     });
-    // firstRow = the first matched row's selected columns (single values).
-    expect(out.firstRow).toEqual({ Name: "Ada", Buyer: "Acme" });
+    // firstRow = the first matched row (every column, single values).
+    expect(out.firstRow).toEqual({ Name: "Ada", Buyer: "Acme", Pending: "10" });
     expect(kyPostMock).not.toHaveBeenCalled();
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("coerces a legacy saved read_rows node to find_rows (reads every row)", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Cy", "Globex"],
+    ]);
+
+    const result = await run({
+      action: "read_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      range: "A1:B2",
+    });
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.action).toBe("find_rows");
+    // No conditions ⇒ every row matches — the closest surviving equivalent.
+    expect(out.matchCount).toBe(2);
+    expect(out.rows).toEqual([
+      { Name: "Ada", Buyer: "Acme" },
+      { Name: "Cy", Buyer: "Globex" },
+    ]);
     expect(publishedStatuses).toContain("success");
   });
 
@@ -267,7 +296,6 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       spreadsheetId: "s",
       sheetName: "Ledger",
       conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
-      selectedColumns: ["Name"],
       onMultipleMatches: "error",
     });
     expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
@@ -289,13 +317,178 @@ describe("googleSheetsActionExecutor — find_rows", () => {
         conditions: [
           { column: "Buyer", operator: "in_list", value: "@<ctx.buyers>@" },
         ],
-        selectedColumns: ["Name"],
       },
       { ctx: { buyers: JSON.stringify(["Acme"]) } },
     );
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(2);
-    expect(out.rows).toEqual([{ Name: "Ada" }, { Name: "Cy" }]);
+    expect(out.rows).toEqual([
+      { Name: "Ada", Buyer: "Acme" },
+      { Name: "Cy", Buyer: "Acme" },
+    ]);
+  });
+});
+
+describe("googleSheetsActionExecutor — find_rows multi-match fan-out", () => {
+  it("'each' returns a fan-out outcome with one item per matched row", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Bo", "Acme"],
+      ["Cy", "Globex"],
+    ]);
+
+    const outcome = (await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "each",
+    })) as unknown as FanOutOutcome;
+
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toEqual([
+      { Name: "Ada", Buyer: "Acme" },
+      { Name: "Bo", Buyer: "Acme" },
+    ]);
+    const summary = outcome.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(2);
+    expect(summary.matchCount).toBe(2);
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("'each' keeps every matched row as an item beyond the 100-row storage cap", async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => [`P${i}`, "Acme"]);
+    mockRead([["Name", "Buyer"], ...rows]);
+
+    const outcome = (await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "each",
+      maxFanOutItems: 200,
+    })) as unknown as FanOutOutcome;
+
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toHaveLength(120);
+    // The parent's recorded summary stays capped at 100 rows (run-record
+    // bloat guard); the full list reaches the children via `items` only.
+    const summary = outcome.context.GOOGLE_SHEETS_ACTION_1 as {
+      rows: unknown[];
+      matchCount: number;
+      fannedOut: number;
+    };
+    expect(summary.rows).toHaveLength(100);
+    expect(summary.matchCount).toBe(120);
+    expect(summary.fannedOut).toBe(120);
+  });
+
+  it("'each' fails (not truncates) when matches exceed maxFanOutItems", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Bo", "Acme"],
+      ["Cy", "Acme"],
+    ]);
+
+    await expect(
+      run({
+        action: "find_rows",
+        spreadsheetId: "s",
+        sheetName: "Ledger",
+        conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+        onMultipleMatches: "each",
+        maxFanOutItems: 2,
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(publishedStatuses).toContain("error");
+  });
+
+  it("'each' with zero matches fans out zero children", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Globex"],
+    ]);
+
+    const outcome = (await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "each",
+    })) as unknown as FanOutOutcome;
+
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toEqual([]);
+  });
+
+  it("child run short-circuits on its seed: no Sheets call, first-match-shaped output", async () => {
+    const result = await run(
+      {
+        action: "find_rows",
+        spreadsheetId: "s",
+        sheetName: "Ledger",
+        conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+        onMultipleMatches: "each",
+      },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          item: { Name: "Bo", Buyer: "Acme" },
+          index: 2,
+          total: 3,
+          __fanOut: true,
+        },
+      },
+    );
+
+    expect(kyGetMock).not.toHaveBeenCalled();
+    expect(refreshTokenMock).not.toHaveBeenCalled();
+    const out = result.GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>;
+    // Same reference shape as a single "first"-mode match — plus the kept
+    // marker so retries still short-circuit and nested guards still trip.
+    expect(out.firstRow).toEqual({ Name: "Bo", Buyer: "Acme" });
+    expect(out.rows).toEqual([{ Name: "Bo", Buyer: "Acme" }]);
+    expect(out.matchCount).toBe(1);
+    expect(out.columnValues).toEqual({
+      Name: JSON.stringify(["Bo"]),
+      Buyer: JSON.stringify(["Acme"]),
+    });
+    expect(out.index).toBe(2);
+    expect(out.total).toBe(3);
+    expect(out.__fanOut).toBe(true);
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("'each' inside another node's fan-out child is rejected (nested guard)", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+    ]);
+
+    await expect(
+      run(
+        {
+          action: "find_rows",
+          spreadsheetId: "s",
+          sheetName: "Ledger",
+          conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+          onMultipleMatches: "each",
+        },
+        {
+          OTHER_SHEETS_1: {
+            item: { x: 1 },
+            index: 1,
+            total: 2,
+            __fanOut: true,
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(publishedStatuses).toContain("error");
   });
 });

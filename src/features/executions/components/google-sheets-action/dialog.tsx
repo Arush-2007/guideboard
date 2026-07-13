@@ -8,9 +8,9 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
 import { FieldMapping } from "@/components/field-mapping";
+import { MultiMatchSelect } from "@/components/multi-match-select";
 import { RowMatchConditions } from "@/components/row-match-conditions";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -38,9 +38,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { VariableInput } from "@/components/variable-input";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
+import { MAX_FAN_OUT_ITEMS_LIMIT, MULTI_MATCH_MODES } from "@/lib/multi-match";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 import {
   ROW_MATCH_OPERATORS,
@@ -63,27 +63,23 @@ const rowConditionFormSchema = z.object({
 
 const formSchema = z
   .object({
-    action: z.enum(["append_row", "read_rows", "find_rows"]),
+    action: z.enum(["append_row", "find_rows"]),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Tab name is required"),
-    range: z.string().optional(),
     columnMappings: z.record(z.string(), z.string()).optional(),
     requiredColumns: z.array(z.string()).optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
-    selectedColumns: z.array(z.string()).optional(),
-    onMultipleMatches: z.enum(["first", "error"]).optional(),
+    // Multi-match fields, built from the shared constants (see the NOTE on
+    // multiMatchConfigFields for why the fragment itself can't be spread here).
+    onMultipleMatches: z.enum(MULTI_MATCH_MODES).optional(),
+    maxFanOutItems: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_FAN_OUT_ITEMS_LIMIT)
+      .optional(),
   })
   .superRefine((data, ctx) => {
-    if (data.action === "read_rows") {
-      if (!data.range?.trim()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Range is required to read rows",
-          path: ["range"],
-        });
-      }
-      return;
-    }
     // find_rows needs only a spreadsheet + tab (already required).
     if (data.action === "find_rows") return;
     const hasMappings = data.columnMappings
@@ -181,10 +177,14 @@ export const GoogleSheetsActionDialog = ({
   );
 
   const buildDefaults = (): GoogleSheetsActionFormValues => ({
-    action: defaultValues.action ?? "append_row",
+    // Legacy read_rows nodes open as find_rows — with no conditions it reads
+    // every row of the tab, which is the closest surviving equivalent.
+    action:
+      (defaultValues.action as string) === "read_rows"
+        ? "find_rows"
+        : (defaultValues.action ?? "append_row"),
     spreadsheetId: defaultValues.spreadsheetId ?? "",
     sheetName: defaultValues.sheetName ?? "Sheet1",
-    range: defaultValues.range ?? "",
     columnMappings: defaultValues.columnMappings ?? {},
     requiredColumns: defaultValues.requiredColumns ?? [],
     // Backfill a stable UI id on saved conditions (older saves lacked one).
@@ -192,8 +192,10 @@ export const GoogleSheetsActionDialog = ({
       ...c,
       id: c.id ?? createId(),
     })),
-    selectedColumns: defaultValues.selectedColumns ?? [],
     onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
+    // Left undefined when unset — the control shows the default as a
+    // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
+    maxFanOutItems: defaultValues.maxFanOutItems,
   });
 
   const form = useForm<GoogleSheetsActionFormValues>({
@@ -207,7 +209,6 @@ export const GoogleSheetsActionDialog = ({
   const columnMappings = form.watch("columnMappings") ?? {};
   const requiredColumns = form.watch("requiredColumns") ?? [];
   const conditions = form.watch("conditions") ?? [];
-  const selectedColumns = form.watch("selectedColumns") ?? [];
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: buildDefaults reads props/defaultValues, re-run only on open/defaults change.
   useEffect(() => {
@@ -220,29 +221,13 @@ export const GoogleSheetsActionDialog = ({
       spreadsheetId,
       sheetName,
     }),
-    enabled:
-      (action === "append_row" || action === "find_rows") &&
-      Boolean(spreadsheetId) &&
-      Boolean(sheetName),
+    enabled: Boolean(spreadsheetId) && Boolean(sheetName),
   });
   const headers = columnsQuery.data?.headers ?? [];
 
   const mappedCount = Object.values(columnMappings).filter(
     (v) => typeof v === "string" && v.trim(),
   ).length;
-
-  // find_rows column selection: an empty list means "all columns".
-  const isColumnSelected = (h: string) =>
-    selectedColumns.length === 0 || selectedColumns.includes(h);
-  const selectedCount =
-    selectedColumns.length === 0 ? headers.length : selectedColumns.length;
-  const toggleColumn = (h: string, checked: boolean) => {
-    const current = selectedColumns.length === 0 ? headers : selectedColumns;
-    const next = checked
-      ? [...new Set([...current, h])]
-      : current.filter((c) => c !== h);
-    form.setValue("selectedColumns", next);
-  };
 
   // A column is "required" when its "may be blank" toggle is off.
   const setRequired = (header: string, required: boolean) => {
@@ -267,21 +252,17 @@ export const GoogleSheetsActionDialog = ({
     );
 
     const payload: GoogleSheetsActionSubmitValues = { ...values };
-    if (values.action === "read_rows") {
-      payload.discoveredFields = [];
-    } else if (values.action === "find_rows") {
-      // Each returned column exposes two pickable fields: a single value from the
-      // first matched row, and the unique-values list (for downstream in_list).
-      const cols = values.selectedColumns?.length
-        ? values.selectedColumns
-        : headers;
-      if (cols.length > 0) {
-        payload.discoveredFields = cols.flatMap((h) => {
+    if (values.action === "find_rows") {
+      // Every column exposes two pickable fields: the value from the matched
+      // row (the first match — or, in "each" mode, the current child run's
+      // row), and the unique-values list (for downstream in_list).
+      if (headers.length > 0) {
+        payload.discoveredFields = headers.flatMap((h) => {
           const key = sanitizeHeaderKey(h);
           return [
             {
               path: `${outputKey}.firstRow.${key}`,
-              label: `${h} (first match)`,
+              label: `${h} (matched row)`,
             },
             {
               path: `${outputKey}.columnValues.${key}`,
@@ -309,7 +290,7 @@ export const GoogleSheetsActionDialog = ({
         <DialogHeader>
           <DialogTitle>Google Sheets</DialogTitle>
           <DialogDescription>
-            Append a row or read rows from a connected spreadsheet.
+            Append a row or find rows in a connected spreadsheet.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -332,7 +313,6 @@ export const GoogleSheetsActionDialog = ({
                     <SelectContent>
                       <SelectItem value="append_row">Append row</SelectItem>
                       <SelectItem value="find_rows">Find rows</SelectItem>
-                      <SelectItem value="read_rows">Read rows</SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -480,8 +460,8 @@ export const GoogleSheetsActionDialog = ({
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm text-muted-foreground">
                       {conditions.length} condition
-                      {conditions.length === 1 ? "" : "s"} · {selectedCount} of{" "}
-                      {headers.length} columns
+                      {conditions.length === 1 ? "" : "s"} · all{" "}
+                      {headers.length} columns returned
                     </p>
                     <Button
                       type="button"
@@ -498,7 +478,7 @@ export const GoogleSheetsActionDialog = ({
                   open={filterOpen}
                   onOpenChange={setFilterOpen}
                   title="Filter rows"
-                  description="Return the rows matching all enabled conditions, limited to the columns you pick."
+                  description="Return every column of the rows matching all enabled conditions. No conditions returns every row."
                 >
                   <div className="space-y-6">
                     <div className="space-y-2">
@@ -512,56 +492,17 @@ export const GoogleSheetsActionDialog = ({
                         anchorClassName="ml-96"
                       />
                     </div>
-                    <div className="space-y-2">
-                      <Label>Columns to return</Label>
-                      <p className="text-xs text-muted-foreground">
-                        Uncheck a column to leave it out of the results.
-                      </p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {headers.map((h) => (
-                          <span
-                            key={h}
-                            className="flex items-center gap-2 text-sm"
-                          >
-                            <Checkbox
-                              aria-label={h}
-                              checked={isColumnSelected(h)}
-                              onCheckedChange={(c) =>
-                                toggleColumn(h, c === true)
-                              }
-                            />
-                            <span className="truncate" title={h}>
-                              {h}
-                            </span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>When multiple rows match</Label>
-                      <Select
-                        value={form.watch("onMultipleMatches") ?? "first"}
-                        onValueChange={(v) =>
-                          form.setValue(
-                            "onMultipleMatches",
-                            v as "first" | "error",
-                          )
-                        }
-                      >
-                        <SelectTrigger className="w-full">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="first">Use first row</SelectItem>
-                          <SelectItem value="error">Fail the run</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <p className="text-xs text-muted-foreground">
-                        “Use first row” lets you reference one value via the
-                        “(first match)” fields; “Fail the run” stops the
-                        workflow if more than one row matches.
-                      </p>
-                    </div>
+                    <MultiMatchSelect
+                      itemNoun="row"
+                      mode={form.watch("onMultipleMatches")}
+                      onModeChange={(m) =>
+                        form.setValue("onMultipleMatches", m)
+                      }
+                      maxItems={form.watch("maxFanOutItems")}
+                      onMaxItemsChange={(n) =>
+                        form.setValue("maxFanOutItems", n)
+                      }
+                    />
                   </div>
                   <div className="mt-6 flex justify-end">
                     <Button type="button" onClick={() => setFilterOpen(false)}>
@@ -570,29 +511,7 @@ export const GoogleSheetsActionDialog = ({
                   </div>
                 </WideOverlayPanel>
               </div>
-            ) : (
-              <FormField
-                control={form.control}
-                name="range"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Range</FormLabel>
-                    <FormControl>
-                      <VariableInput
-                        placeholder="A1:D100"
-                        currentNodeId={currentNodeId}
-                        workflowId={workflowId}
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormDescription>
-                      The A1 range to read, e.g. A1:D100.
-                    </FormDescription>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            )}
+            ) : null}
 
             <DialogFooter>
               <Button type="submit">Save</Button>

@@ -1,6 +1,7 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
+import { multiMatchConfigFields } from "@/lib/multi-match";
 import {
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
@@ -384,7 +385,14 @@ const rowConditionSchema = z.object({
 
 const googleSheetsActionSchema = z
   .object({
-    action: z.enum(["append_row", "read_rows", "find_rows"]),
+    // read_rows (raw A1-range grid) was removed — find_rows with no conditions
+    // reads every row of the tab, header-keyed. Saved read_rows nodes are
+    // coerced here (not just in the dialog) so scheduled/triggered workflows
+    // that were never re-opened keep running instead of permafailing.
+    action: z.preprocess(
+      (v) => (v === "read_rows" ? "find_rows" : v),
+      z.enum(["append_row", "find_rows"]),
+    ),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Sheet Name is required"),
     range: z.string().optional(),
@@ -393,24 +401,15 @@ const googleSheetsActionSchema = z
     // Headers that may NOT be blank on append (the accessory "may be blank"
     // toggle turned off). Enforced after the row is built.
     requiredColumns: z.array(z.string()).optional(),
-    // find_rows: AND-ed filter conditions + which columns to return.
+    // find_rows: AND-ed filter conditions. Every column is returned (an old
+    // saved `selectedColumns` key rides through harmlessly via .passthrough()).
     conditions: z.array(rowConditionSchema).optional(),
-    selectedColumns: z.array(z.string()).optional(),
-    // find_rows behavior when >1 row matches: "first" (default, use firstRow) or
-    // "error" (fail the run).
-    onMultipleMatches: z.enum(["first", "error"]).optional(),
+    // find_rows multi-match policy (shared fragment): "first" (default, use
+    // firstRow), "each" (fan out one child run per matched row, capped by
+    // maxFanOutItems), or "error" (fail the run when more than one matches).
+    ...multiMatchConfigFields,
   })
   .superRefine((data, ctx) => {
-    if (data.action === "read_rows") {
-      if (!data.range?.trim()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Range is required to read rows",
-          path: ["range"],
-        });
-      }
-      return;
-    }
     // find_rows needs only spreadsheet + tab (already required above).
     if (data.action === "find_rows") return;
     // append_row: need a column mapping (preferred) or a legacy values array.

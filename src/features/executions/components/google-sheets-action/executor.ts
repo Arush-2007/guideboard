@@ -2,9 +2,18 @@ import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
 import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
-import type { NodeExecutor } from "@/features/executions/types";
+import {
+  applyMultiMatchPolicy,
+  assertFanOutCap,
+} from "@/features/executions/lib/multi-match-policy";
+import type {
+  FanOutOutcome,
+  NodeExecutor,
+  WorkflowContext,
+} from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
+import { FAN_OUT_MARKER } from "@/inngest/fan-out";
 import {
   readSheetTable,
   sheetsAuthHeaders,
@@ -12,6 +21,7 @@ import {
   toSheetsError,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { type MultiMatchMode, readFanOutSeed } from "@/lib/multi-match";
 import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
 import { sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
@@ -22,7 +32,7 @@ import {
 import { renderTemplate } from "@/lib/templating";
 
 type GoogleSheetsActionData = {
-  action?: "append_row" | "read_rows" | "find_rows";
+  action?: "append_row" | "find_rows";
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -31,16 +41,11 @@ type GoogleSheetsActionData = {
   columnMappings?: Record<string, string>;
   // Headers that may not be blank on append (accessory "may be blank" off).
   requiredColumns?: string[];
-  // find_rows: AND-ed filter conditions + which columns to return.
+  // find_rows: AND-ed filter conditions (every column is returned).
   conditions?: RowMatchCondition[];
-  selectedColumns?: string[];
-  onMultipleMatches?: "first" | "error";
-};
-
-type GoogleSheetsReadResponse = {
-  range?: string;
-  majorDimension?: string;
-  values?: string[][];
+  // find_rows multi-match policy (see src/lib/multi-match.ts).
+  onMultipleMatches?: MultiMatchMode;
+  maxFanOutItems?: number;
 };
 
 function parseValuesJson(raw: string): string[][] {
@@ -119,7 +124,42 @@ export const googleSheetsActionExecutor: NodeExecutor<
     );
   }
 
-  // Range is only needed for read_rows or the legacy values-based append.
+  // Fan-out child run: the engine re-ran this node with a per-item seed under
+  // its own output key (this node fanned out in the parent run — find_rows,
+  // "each" mode). Reshape the seed into a normal single-match find_rows output
+  // instead of re-querying Sheets, so downstream references (`firstRow.<col>`,
+  // `rows`, `matchCount`) resolve identically in every mode.
+  const seed = readFanOutSeed(context, outputKey);
+  if (seed) {
+    const item = (seed.item ?? {}) as Record<string, unknown>;
+    const columnValues: Record<string, string> = {};
+    for (const [key, value] of Object.entries(item)) {
+      columnValues[key] = JSON.stringify([value]);
+    }
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+    );
+    return {
+      ...context,
+      [outputKey]: {
+        action: "find_rows",
+        spreadsheetId,
+        sheetName,
+        matchCount: 1,
+        columns: Object.keys(item),
+        rows: [item],
+        columnValues,
+        firstRow: item,
+        index: seed.index,
+        total: seed.total,
+        // Keep the marker: a retry of this child run must still short-circuit,
+        // and a later "each"-mode node in this run must see it (nested guard).
+        [FAN_OUT_MARKER]: true,
+      },
+    };
+  }
+
+  // Range is only needed for the legacy values-based append.
   // find_rows reads the whole tab and needs neither a mapping nor a range.
   if (action !== "find_rows" && !hasMappings && !range) {
     await publish(
@@ -247,12 +287,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
             sheetName,
           });
 
-          // Columns to return (default: all headers). Trim-tolerant; blanks dropped.
-          const wanted = config.selectedColumns?.length
-            ? config.selectedColumns
-            : table.headers;
-          // Each column paired with its sanitized output key, computed once.
-          const keyed = wanted
+          // Every column is returned ("columns to return" was removed), each
+          // paired with its sanitized output key, computed once. Trim-tolerant;
+          // blanks dropped.
+          const keyed = table.headers
             .map((c) => c.trim())
             .filter((c) => c.length > 0)
             .map((col) => [col, sanitizeHeaderKey(col)] as const);
@@ -263,17 +301,22 @@ export const googleSheetsActionExecutor: NodeExecutor<
             context,
           );
 
-          // Optional strictness: fail when more than one row matched.
-          if (config.onMultipleMatches === "error" && matches.length > 1) {
-            throw new NonRetriableError(
-              `Google Sheets Action: find_rows matched ${matches.length} rows, but the node is set to fail on multiple matches`,
-            );
+          // Multi-match policy ("first"/"each"/"error") is applied OUTSIDE
+          // this step (see below) — but "each" needs every matched row as a
+          // fan-out item, so its cap is enforced HERE on the true match count
+          // (silently truncating children would be worse than failing) before
+          // hauling the rows across the step checkpoint.
+          const mode = config.onMultipleMatches ?? "first";
+          if (mode === "each") {
+            assertFanOutCap(matches.length, config.maxFanOutItems, "row");
           }
 
-          // Stored rows are capped; the per-column value lists below are computed
-          // over ALL matches so a downstream `in_list` is complete. Cells are
-          // trimmed so `firstRow`/`rows` agree with `columnValues`.
-          const rows = matches.slice(0, 100).map((m) => {
+          // Stored rows are capped ("each" keeps them all — the cap above
+          // already bounds the count); the per-column value lists below are
+          // computed over ALL matches so a downstream `in_list` is complete.
+          // Cells are trimmed so `firstRow`/`rows` agree with `columnValues`.
+          const rowLimit = mode === "each" ? matches.length : 100;
+          const rows = matches.slice(0, rowLimit).map((m) => {
             const out: Record<string, string> = {};
             for (const [col, key] of keyed) {
               out[key] = getRowCell(m.row, col).trim();
@@ -302,14 +345,14 @@ export const googleSheetsActionExecutor: NodeExecutor<
               spreadsheetId,
               sheetName,
               matchCount: matches.length,
-              // Sanitized selected headers — stored so the execution grid can
+              // Every column's sanitized key — stored so the execution grid can
               // render column headers even when zero rows matched.
               columns: keyed.map(([, key]) => key),
               rows,
               columnValues,
-              // The first matched row (selected columns, sanitized keys), or {}
-              // when nothing matched. Lets a downstream node reference a SINGLE
-              // value (e.g. `firstRow.Job No`) instead of the columnValues list.
+              // The first matched row (sanitized keys), or {} when nothing
+              // matched. Lets a downstream node reference a SINGLE value
+              // (e.g. `firstRow.Job No`) instead of the columnValues list.
               firstRow: rows[0] ?? {},
             },
           };
@@ -318,26 +361,38 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       }
 
-      // read_rows
-      const a1Range = `${sheetName}!${range}`;
-      const readResult = await ky
-        .get(
-          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
-          { headers: { Authorization: `Bearer ${accessToken}` } },
-        )
-        .json<GoogleSheetsReadResponse>();
-
-      return {
-        ...context,
-        [outputKey]: {
-          action,
-          spreadsheetId,
-          sheetName,
-          range,
-          rows: readResult.values ?? [],
-        },
-      };
+      // Exhaustiveness: the schema only admits append_row / find_rows (the
+      // legacy read_rows action was removed — find_rows with no conditions
+      // reads every row).
+      throw new NonRetriableError(
+        `Google Sheets Action: unsupported action "${action}"`,
+      );
     });
+
+    // find_rows: apply the multi-match policy OUTSIDE the step — the branded
+    // fan-out outcome carries a symbol that would not survive the step's JSON
+    // checkpoint round-trip. `output.rows` respects the policy ("each" kept
+    // every matched row as fan-out items, cap enforced in-step; other modes
+    // store ≤ 100) — but the SUMMARY output recorded for the parent is capped
+    // back to 100 rows so a large fan-out can't bloat the run record; the full
+    // list still reaches the children via `items`.
+    let outcome: WorkflowContext | FanOutOutcome = result;
+    if (action === "find_rows") {
+      const output = result[outputKey] as Record<string, unknown>;
+      const rows = Array.isArray(output.rows) ? output.rows : [];
+      outcome = applyMultiMatchPolicy({
+        mode: config.onMultipleMatches,
+        maxItems: config.maxFanOutItems,
+        items: rows,
+        totalCount:
+          typeof output.matchCount === "number" ? output.matchCount : undefined,
+        context: result,
+        outputKey,
+        output:
+          rows.length > 100 ? { ...output, rows: rows.slice(0, 100) } : output,
+        itemNoun: "row",
+      });
+    }
 
     await publish(
       nodeStatusChannel(userId).status({
@@ -345,7 +400,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         status: "success",
       }),
     );
-    return result;
+    return outcome;
   } catch (error) {
     await publish(
       nodeStatusChannel(userId).status({

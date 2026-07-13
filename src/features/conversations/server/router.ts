@@ -1,13 +1,13 @@
-import prisma from "@/lib/db";
-import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
 import type { Prisma } from "@/generated/prisma";
+import prisma from "@/lib/db";
 import {
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
   validateGeneratedWorkflowGraph,
 } from "@/lib/workflow-persistence";
+import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 
 const ANTHROPIC_CONVERSATION_SYSTEM_PROMPT = `You are Guideboard AI, a conversational workflow automation builder.
 Your job is to help users build automations through natural conversation.
@@ -31,6 +31,15 @@ SCHEDULE_TRIGGER, TELEGRAM_TRIGGER, HTTP_REQUEST, AI_TEXT, AI_REPLY_GENERATOR,
 DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
+
+GOOGLE_SHEETS_ACTION supports two actions in its data: "append_row" and
+"find_rows" (find_rows with no conditions reads every row of the tab; every
+column is always returned). A find_rows node may also set "onMultipleMatches":
+"first" (default — continue with the first matching row), "each" (run the
+steps after it once per matching row, each in its own run; optional
+"maxFanOutItems" caps the runs, default 100), or "error" (fail the run when
+more than one row matches). Use "each" when the user wants to act on every
+matching row (e.g. "send an email for each overdue order").
 
 When in BUILDING phase, respond with ONLY this JSON:
 {
@@ -67,7 +76,7 @@ const conversationalResponseSchema = z.object({
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
 function stripMarkdownCodeFences(text: string): string {
-  let t = text.trim();
+  const t = text.trim();
   if (!t.startsWith("```")) {
     return t;
   }
