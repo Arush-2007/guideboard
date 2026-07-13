@@ -42,12 +42,30 @@ export type NodeOutputField = {
    * picker for power users). Human-readable, actionable fields omit the flag.
    */
   developer?: boolean;
+  /**
+   * Optional VARIABLE-PICKER visibility predicate, for nodes whose output shape
+   * depends on their saved config (e.g. a Sheets node only emits `matchCount`
+   * when its action is find_rows). Receives the placed node's saved `data`; a
+   * field without a predicate is always offered. The friendly execution view
+   * ignores this — it is already absence-driven (fields missing from a run's
+   * recorded output are dropped).
+   */
+  pickIf?: (data: Record<string, unknown> | null | undefined) => boolean;
 };
 
 export type NodeOutputDescriptor =
   | { rootKind: "fixed"; rootKey: string; fields: NodeOutputField[] }
   | { rootKind: "perNode"; fields: NodeOutputField[] }
   | { rootKind: "topLevel"; fields: NodeOutputField[] };
+
+// The Sheets action's pickable fields depend on the node's selected `action`
+// (append_row is the historical default when unset).
+const sheetsAction = (data: Record<string, unknown> | null | undefined) =>
+  (data?.action as string | undefined) ?? "append_row";
+const isSheetsAppend = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "append_row";
+const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "find_rows";
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
 // here simply contribute no mappable fields yet (the `raw`/templating escape
@@ -124,9 +142,33 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
   [NodeType.GOOGLE_SHEETS_ACTION]: {
     rootKind: "perNode",
     fields: [
-      { path: "appendedRows", label: "Rows appended", example: "1" },
-      // find_rows only (absent on append runs ⇒ dropped by the friendly view).
-      { path: "matchCount", label: "Rows matched", example: "3" },
+      // append_row (the historical default when `action` is unset).
+      {
+        path: "rowByHeader",
+        label: "Appended row (JSON)",
+        pickIf: isSheetsAppend,
+      },
+      {
+        path: "appendedRows",
+        label: "Rows appended",
+        example: "1",
+        pickIf: isSheetsAppend,
+      },
+      // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
+      // the first match in "first"/"error" mode, and — in "each" (fan-out)
+      // mode — the child run's own row (each child carries a reshaped output
+      // where firstRow IS its row), so one reference works per-row everywhere.
+      {
+        path: "firstRow",
+        label: "Matching row (JSON)",
+        pickIf: isSheetsFindRows,
+      },
+      {
+        path: "matchCount",
+        label: "Matches found",
+        example: "3",
+        pickIf: isSheetsFindRows,
+      },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],
   },

@@ -85,4 +85,30 @@ describe("getUpstreamFields", () => {
       }),
     );
   });
+
+  it("filters config-dependent fields by the node's saved data (pickIf)", () => {
+    const edges2 = [{ source: "g1", target: "c2" }];
+    const labelsFor = (data: Record<string, unknown>) =>
+      getUpstreamFields(
+        "c2",
+        [
+          { id: "g1", type: NodeType.GOOGLE_SHEETS_ACTION, data },
+          { id: "c2", type: NodeType.DISCORD },
+        ],
+        edges2,
+      ).map((r) => r.fieldLabel);
+
+    const findLabels = labelsFor({ action: "find_rows" });
+    expect(findLabels).toContain("Matching row (JSON)");
+    expect(findLabels).toContain("Matches found");
+    expect(findLabels).not.toContain("Rows appended");
+    expect(findLabels).not.toContain("Appended row (JSON)");
+
+    // append_row is the default when action is unset.
+    const appendLabels = labelsFor({});
+    expect(appendLabels).toContain("Appended row (JSON)");
+    expect(appendLabels).toContain("Rows appended");
+    expect(appendLabels).not.toContain("Matching row (JSON)");
+    expect(appendLabels).not.toContain("Matches found");
+  });
 });
