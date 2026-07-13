@@ -35,6 +35,7 @@ import {
   getSheetIdByName,
   hexToRgb,
   readSheetTable,
+  sheetRange,
   toSheetsError,
 } from "./google-sheets";
 
@@ -45,7 +46,39 @@ beforeEach(() => {
   kyGetMock.mockReset();
 });
 
+describe("sheetRange", () => {
+  it("quotes the tab name so names with spaces parse (the whole point)", () => {
+    // Unquoted, Sheets rejects this with 400 "Unable to parse range".
+    expect(sheetRange("Job Cards", "A:ZZ")).toBe("'Job Cards'!A:ZZ");
+  });
+
+  it("quotes unconditionally — a plain name is valid quoted too", () => {
+    expect(sheetRange("Ledger", "A2:ZZ2")).toBe("'Ledger'!A2:ZZ2");
+  });
+
+  it("escapes an apostrophe in the tab name by doubling it", () => {
+    expect(sheetRange("Bob's Jobs", "1:1")).toBe("'Bob''s Jobs'!1:1");
+  });
+
+  it("trims surrounding whitespace off the tab name", () => {
+    expect(sheetRange("  Ledger  ", "A:ZZ")).toBe("'Ledger'!A:ZZ");
+  });
+});
+
 describe("readSheetTable", () => {
+  it("requests a QUOTED range, so a tab name with a space is readable", async () => {
+    kyGetMock.mockReturnValue(res({ values: [["A"]] }));
+
+    await readSheetTable({
+      accessToken: "t",
+      spreadsheetId: "s",
+      sheetName: "Job Cards",
+    });
+
+    const [url] = kyGetMock.mock.calls[0] as [string];
+    expect(decodeURIComponent(url)).toContain("'Job Cards'!A:ZZ");
+  });
+
   it("trims headers, aligns rows to header width, and keys rowsByHeader", async () => {
     kyGetMock.mockReturnValue(
       res({

@@ -4,7 +4,7 @@ import ky, { HTTPError } from "ky";
 /**
  * Shared Google Sheets v4 REST plumbing — the Sheets counterpart of
  * `src/lib/ms-graph.ts`. Every Sheets executor branch (append, find_rows,
- * upsert, insert-adjacent, color) reads/writes through these helpers so URL,
+ * update, insert-adjacent, color) reads/writes through these helpers so URL,
  * auth-header, table-parsing and error-mapping logic lives in exactly one place.
  */
 
@@ -26,9 +26,37 @@ export function sheetsValuesUrl(
   return `${SHEETS_BASE}/${spreadsheetId}/values/${encodeURIComponent(a1Range)}`;
 }
 
+/**
+ * A1 notation for a range on a named tab, with the tab name QUOTED.
+ *
+ * Sheets requires quotes as soon as a tab name contains a space or other
+ * non-alphanumeric character — `Job Cards!A:ZZ` is rejected with a 400
+ * "Unable to parse range", which surfaces as a NonRetriableError and simply
+ * breaks the node. Quoting is ALWAYS valid (`'Sheet1'!A1` == `Sheet1!A1`), so
+ * quote unconditionally rather than trying to guess when it is needed.
+ *
+ * An apostrophe inside the name is escaped by doubling it, per A1 notation:
+ * a tab called `Bob's Jobs` becomes `'Bob''s Jobs'`.
+ *
+ * EVERY range this app sends to Sheets must be built here.
+ */
+export function sheetRange(sheetName: string, range: string): string {
+  return `'${sheetName.trim().replace(/'/g, "''")}'!${range}`;
+}
+
 /** URL for spreadsheets.batchUpdate (structural + formatting edits). */
 export function sheetsBatchUpdateUrl(spreadsheetId: string): string {
   return `${SHEETS_BASE}/${spreadsheetId}:batchUpdate`;
+}
+
+/**
+ * URL for spreadsheets.values.batchUpdate — writes N ValueRanges in ONE call.
+ * Distinct from `sheetsBatchUpdateUrl` (which carries structural/format
+ * requests). Used by update_row to write every matched row in one request,
+ * and by the single-match path too, so there is one write code path.
+ */
+export function sheetsValuesBatchUpdateUrl(spreadsheetId: string): string {
+  return `${SHEETS_BASE}/${spreadsheetId}/values:batchUpdate`;
 }
 
 type SheetsValuesResponse = { values?: unknown[][] };
@@ -59,9 +87,8 @@ export async function readSheetTable({
   sheetName: string;
   range?: string;
 }): Promise<SheetTable> {
-  const a1Range = `${sheetName}!${range}`;
   const res = await ky
-    .get(sheetsValuesUrl(spreadsheetId, a1Range), {
+    .get(sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, range)), {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
     .json<SheetsValuesResponse>();

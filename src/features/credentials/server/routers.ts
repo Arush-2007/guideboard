@@ -4,6 +4,7 @@ import { PAGINATION } from "@/config/constants";
 import { CredentialType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
+import { sheetRange } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { refreshMicrosoftTokenIfNeeded } from "@/lib/microsoft-token";
 import {
@@ -610,7 +611,7 @@ export const credentialsRouter = createTRPCRouter({
       type SheetValuesResponse = { values?: string[][] };
 
       const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
-      const a1Range = `${input.sheetName}!1:1`;
+      const a1Range = sheetRange(input.sheetName, "1:1");
 
       const data = await ky
         .get(
@@ -659,9 +660,7 @@ export const credentialsRouter = createTRPCRouter({
         value?: Array<{ id?: string; name?: string; position?: number }>;
       };
 
-      const accessToken = await refreshMicrosoftTokenIfNeeded(
-        ctx.auth.user.id,
-      );
+      const accessToken = await refreshMicrosoftTokenIfNeeded(ctx.auth.user.id);
       const data = await ky
         .get(`${workbookUrl(input.workbookId)}/worksheets`, {
           searchParams: { $select: "id,name,position" },
@@ -689,9 +688,7 @@ export const credentialsRouter = createTRPCRouter({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const accessToken = await refreshMicrosoftTokenIfNeeded(
-        ctx.auth.user.id,
-      );
+      const accessToken = await refreshMicrosoftTokenIfNeeded(ctx.auth.user.id);
       const table = await getFirstTableOnWorksheet({
         accessToken,
         workbookId: input.workbookId,

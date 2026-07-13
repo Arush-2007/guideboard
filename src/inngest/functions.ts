@@ -17,6 +17,7 @@ import {
 import { clampJson, isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
+import { sheetRange } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { logger } from "@/lib/logger";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
@@ -761,7 +762,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         return;
       }
 
-      const a1Range = `${poll.sheetName}!A:ZZ`;
+      const a1Range = sheetRange(poll.sheetName, "A:ZZ");
       const valuesResult = await ky
         .get(
           `https://sheets.googleapis.com/v4/spreadsheets/${poll.spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
