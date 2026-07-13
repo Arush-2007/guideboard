@@ -354,6 +354,7 @@ enum NodeType {
   RESUME_PARSER
   CANDIDATE_SCORING
   ATS_ACTION
+  FOR_EACH
 }
 
 model Node {
