@@ -68,6 +68,9 @@ const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "find_rows";
 const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "update_row";
+const isSheetsInsertAdjacent = (
+  data: Record<string, unknown> | null | undefined,
+) => sheetsAction(data) === "insert_row_adjacent";
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
 // here simply contribute no mappable fields yet (the `raw`/templating escape
@@ -152,13 +155,16 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       // ONE entry with a label that reads correctly for all of them.
       //
       // `rowByHeader` is "the row this run wrote", header-keyed — the appended
-      // row, the updated row, and in "each" (fan-out) mode the child run's own
-      // row. One reference survives a switch between append_row and update_row,
-      // and works per-row in every mode.
+      // row, the updated row, the row inserted into a group, and in "each"
+      // (fan-out) mode the child run's own row. One reference survives a switch
+      // between the row-writing actions, and works per-row in every mode.
       {
         path: "rowByHeader",
         label: "The row this step wrote (all columns)",
-        pickIf: (data) => isSheetsAppend(data) || isSheetsUpdate(data),
+        pickIf: (data) =>
+          isSheetsAppend(data) ||
+          isSheetsUpdate(data) ||
+          isSheetsInsertAdjacent(data),
       },
       {
         path: "appendedRows",
@@ -175,11 +181,16 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "The row this run matched (all columns)",
         pickIf: isSheetsFindRows,
       },
+      // find_rows: rows returned. update_row: rows overwritten. insert_row_adjacent:
+      // the size of the group the new row joined (0 ⇒ it started a new one).
       {
         path: "matchCount",
         label: "How many rows matched the filter",
         example: "3",
-        pickIf: (data) => isSheetsFindRows(data) || isSheetsUpdate(data),
+        pickIf: (data) =>
+          isSheetsFindRows(data) ||
+          isSheetsUpdate(data) ||
+          isSheetsInsertAdjacent(data),
       },
       // update_row only.
       {
@@ -194,6 +205,30 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "Whether a row was found to update (true/false)",
         example: "true",
         pickIf: isSheetsUpdate,
+      },
+      // insert_row_adjacent only. False ⇒ nothing matched, so the row started a
+      // new group at the bottom instead of joining one.
+      {
+        path: "insertedUnderGroup",
+        label: "Whether the row joined an existing group (true/false)",
+        example: "true",
+        pickIf: isSheetsInsertAdjacent,
+      },
+      // The row the new one was attached to: the group's last row, or — in
+      // "below every match" mode — the specific row this one sits under (each
+      // fan-out child carries its own). Empty when nothing matched.
+      {
+        path: "anchorRow",
+        label: "The row the new row was placed under (all columns)",
+        pickIf: isSheetsInsertAdjacent,
+      },
+      // Where the row landed. update_row emits this too (the row it overwrote),
+      // so the label reads correctly for both — one entry, one path.
+      {
+        path: "rowIndex",
+        label: "The sheet row number this step wrote",
+        example: "7",
+        pickIf: (data) => isSheetsInsertAdjacent(data) || isSheetsUpdate(data),
       },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],

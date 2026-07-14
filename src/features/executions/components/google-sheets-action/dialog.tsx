@@ -8,7 +8,10 @@ import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
 import { FieldMapping } from "@/components/field-mapping";
-import { MultiMatchSelect } from "@/components/multi-match-select";
+import {
+  FanOutCapInput,
+  MultiMatchSelect,
+} from "@/components/multi-match-select";
 import { RowMatchConditions } from "@/components/row-match-conditions";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +41,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import type { PickerExtraGroup } from "@/components/variable-picker";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
 import { MAX_FAN_OUT_ITEMS_LIMIT, MULTI_MATCH_MODES } from "@/lib/multi-match";
@@ -47,7 +51,7 @@ import {
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
-import { sanitizeHeaderKey } from "@/lib/sheet-headers";
+import { anchorRowPath, sanitizeHeaderKey } from "@/lib/sheet-headers";
 import { useTRPC } from "@/trpc/client";
 
 // Conditions editor value shape. Operator reuses the single ROW_MATCH_OPERATORS
@@ -64,12 +68,20 @@ const rowConditionFormSchema = z.object({
 
 const formSchema = z
   .object({
-    action: z.enum(["append_row", "find_rows", "update_row"]),
+    action: z.enum([
+      "append_row",
+      "find_rows",
+      "update_row",
+      "insert_row_adjacent",
+    ]),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Tab name is required"),
     columnMappings: z.record(z.string(), z.string()).optional(),
     requiredColumns: z.array(z.string()).optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
+    // insert_row_adjacent only.
+    blankSeparators: z.boolean().optional(),
+    insertUnder: z.enum(["group", "each_row"]).optional(),
     // Multi-match fields, built from the shared constants (see the NOTE on
     // multiMatchConfigFields for why the fragment itself can't be spread here).
     onMultipleMatches: z.enum(MULTI_MATCH_MODES).optional(),
@@ -93,20 +105,26 @@ const formSchema = z
         message:
           data.action === "update_row"
             ? "Map at least one column to update"
-            : "Map at least one column to append a row",
+            : data.action === "insert_row_adjacent"
+              ? "Map at least one column to fill the new row"
+              : "Map at least one column to append a row",
         path: ["columnMappings"],
       });
     }
 
-    // A write action with no filter would hit every row in the sheet.
+    // Both write actions need a real filter: with none, every row "matches" —
+    // update_row would overwrite the whole sheet, and insert_row_adjacent would
+    // have no meaningful group to join. Mirrors the config schema's rule.
     if (
-      data.action === "update_row" &&
+      (data.action === "update_row" || data.action === "insert_row_adjacent") &&
       !hasActiveRowCondition(data.conditions)
     ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "Add at least one condition — an empty filter would overwrite every row",
+          data.action === "update_row"
+            ? "Add at least one condition — an empty filter would overwrite every row"
+            : "Add at least one condition — it picks the group the new row joins",
         path: ["conditions"],
       });
     }
@@ -175,6 +193,89 @@ function ColumnsNotice({
   return null;
 }
 
+/**
+ * The "match the columns" overlay, shared by every action that writes columns.
+ * append_row and insert_row_adjacent CREATE a row, so they also get the "may be
+ * blank" toggle and the Serial Number hint (pass `requiredColumns` +
+ * `onRequiredChange`); update_row overwrites an existing row, where neither
+ * applies — an unmapped column there simply keeps its value.
+ */
+function ColumnMappingPanel({
+  open,
+  onOpenChange,
+  title,
+  description,
+  headers,
+  value,
+  onChange,
+  currentNodeId,
+  workflowId,
+  requiredColumns,
+  onRequiredChange,
+  extraGroups,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  headers: string[];
+  value: Record<string, string>;
+  onChange: (next: Record<string, string>) => void;
+  currentNodeId: string;
+  workflowId?: string;
+  requiredColumns?: string[];
+  onRequiredChange?: (header: string, required: boolean) => void;
+  /** Fields this node offers itself (the insert action's anchor row). */
+  extraGroups?: PickerExtraGroup[];
+}) {
+  const creatingRow = Boolean(requiredColumns && onRequiredChange);
+  return (
+    <WideOverlayPanel
+      open={open}
+      onOpenChange={onOpenChange}
+      title={title}
+      description={description}
+    >
+      <FieldMapping
+        targets={headers.map((h) => ({ key: h, label: h }))}
+        value={value}
+        onChange={onChange}
+        currentNodeId={currentNodeId}
+        workflowId={workflowId}
+        extraGroups={extraGroups}
+        anchorClassName="ml-96"
+        renderAccessory={
+          creatingRow
+            ? (target) => (
+                <span className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
+                  <Switch
+                    aria-label={`${target.label} may be blank`}
+                    checked={!requiredColumns?.includes(target.key)}
+                    onCheckedChange={(mayBeBlank) =>
+                      onRequiredChange?.(target.key, !mayBeBlank)
+                    }
+                  />
+                  May be blank
+                </span>
+              )
+            : undefined
+        }
+      />
+      {creatingRow ? (
+        <p className="mt-4 text-xs text-muted-foreground">
+          To auto-number a column, map it to the “Serial Number” field (the
+          picker’s “Custom” group).
+        </p>
+      ) : null}
+      <div className="mt-6 flex justify-end">
+        <Button type="button" onClick={() => onOpenChange(false)}>
+          Done
+        </Button>
+      </div>
+    </WideOverlayPanel>
+  );
+}
+
 export const GoogleSheetsActionDialog = ({
   open,
   onOpenChange,
@@ -210,6 +311,12 @@ export const GoogleSheetsActionDialog = ({
       ...c,
       id: c.id ?? createId(),
     })),
+    // Off by default: a blank separator row changes the SHAPE of the sheet, so
+    // it is opted into, never assumed.
+    blankSeparators: defaultValues.blankSeparators ?? false,
+    // One row below the whole group — the conservative default: it writes one
+    // row, exactly as it did before "each_row" existed.
+    insertUnder: defaultValues.insertUnder ?? "group",
     onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
     // Left undefined when unset — the control shows the default as a
     // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
@@ -227,6 +334,7 @@ export const GoogleSheetsActionDialog = ({
   const columnMappings = form.watch("columnMappings") ?? {};
   const requiredColumns = form.watch("requiredColumns") ?? [];
   const conditions = form.watch("conditions") ?? [];
+  const insertUnder = form.watch("insertUnder") ?? "group";
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: buildDefaults reads props/defaultValues, re-run only on open/defaults change.
   useEffect(() => {
@@ -251,6 +359,23 @@ export const GoogleSheetsActionDialog = ({
   const mappedCount = Object.values(columnMappings).filter(
     (v) => typeof v === "string" && v.trim(),
   ).length;
+
+  // insert_row_adjacent offers the row a new row is placed under as its OWN
+  // picker group, so a column can be filled from the row above it. It is not an
+  // upstream node's output, so it can't come from getUpstreamFields — hence the
+  // picker's `extraGroups` seam.
+  const anchorGroups: PickerExtraGroup[] =
+    headers.length > 0
+      ? [
+          {
+            label: "The row it is placed under",
+            fields: headers.map((h) => ({
+              fieldLabel: `${h} (row above)`,
+              insertText: `@<${anchorRowPath(h)}>@`,
+            })),
+          },
+        ]
+      : [];
 
   // A column is "required" when its "may be blank" toggle is off.
   const setRequired = (header: string, required: boolean) => {
@@ -316,7 +441,7 @@ export const GoogleSheetsActionDialog = ({
         <DialogHeader>
           <DialogTitle>Google Sheets</DialogTitle>
           <DialogDescription>
-            Append a row or find rows in a connected spreadsheet.
+            Add, find or update rows in a connected spreadsheet.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -340,6 +465,9 @@ export const GoogleSheetsActionDialog = ({
                       <SelectItem value="append_row">Append row</SelectItem>
                       <SelectItem value="find_rows">Find rows</SelectItem>
                       <SelectItem value="update_row">Update row</SelectItem>
+                      <SelectItem value="insert_row_adjacent">
+                        Insert row under matching rows
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                   <FormMessage />
@@ -433,46 +561,23 @@ export const GoogleSheetsActionDialog = ({
                   </p>
                 ) : null}
 
-                <WideOverlayPanel
+                <ColumnMappingPanel
                   open={mappingOpen}
                   onOpenChange={setMappingOpen}
                   title="Match the columns"
                   description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
-                >
-                  <FieldMapping
-                    targets={headers.map((h) => ({ key: h, label: h }))}
-                    value={columnMappings}
-                    onChange={(next) =>
-                      form.setValue("columnMappings", next, {
-                        shouldValidate: true,
-                      })
-                    }
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    anchorClassName="ml-96"
-                    renderAccessory={(target) => (
-                      <span className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
-                        <Switch
-                          aria-label={`${target.label} may be blank`}
-                          checked={!requiredColumns.includes(target.key)}
-                          onCheckedChange={(mayBeBlank) =>
-                            setRequired(target.key, !mayBeBlank)
-                          }
-                        />
-                        May be blank
-                      </span>
-                    )}
-                  />
-                  <p className="mt-4 text-xs text-muted-foreground">
-                    To auto-number a column, map it to the “Serial Number” field
-                    (the picker’s “Custom” group).
-                  </p>
-                  <div className="mt-6 flex justify-end">
-                    <Button type="button" onClick={() => setMappingOpen(false)}>
-                      Done
-                    </Button>
-                  </div>
-                </WideOverlayPanel>
+                  headers={headers}
+                  value={columnMappings}
+                  onChange={(next) =>
+                    form.setValue("columnMappings", next, {
+                      shouldValidate: true,
+                    })
+                  }
+                  currentNodeId={currentNodeId}
+                  workflowId={workflowId}
+                  requiredColumns={requiredColumns}
+                  onRequiredChange={setRequired}
+                />
               </div>
             ) : action === "find_rows" ? (
               <div className="space-y-2">
@@ -642,33 +747,199 @@ export const GoogleSheetsActionDialog = ({
                   </div>
 
                   {/* Layered ON TOP of the filter overlay, same width. */}
-                  <WideOverlayPanel
+                  <ColumnMappingPanel
                     open={mappingOpen}
                     onOpenChange={setMappingOpen}
                     title="Columns to write"
                     description="A mapped column is overwritten with the value below, on every matching row. Unmapped columns keep whatever they already hold."
-                  >
-                    <FieldMapping
-                      targets={headers.map((h) => ({ key: h, label: h }))}
-                      value={columnMappings}
-                      onChange={(next) =>
-                        form.setValue("columnMappings", next, {
-                          shouldValidate: true,
-                        })
-                      }
-                      currentNodeId={currentNodeId}
-                      workflowId={workflowId}
-                      anchorClassName="ml-96"
-                    />
-                    <div className="mt-6 flex justify-end">
-                      <Button
-                        type="button"
-                        onClick={() => setMappingOpen(false)}
-                      >
-                        Done
-                      </Button>
+                    headers={headers}
+                    value={columnMappings}
+                    onChange={(next) =>
+                      form.setValue("columnMappings", next, {
+                        shouldValidate: true,
+                      })
+                    }
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
+                  />
+                </WideOverlayPanel>
+              </div>
+            ) : action === "insert_row_adjacent" ? (
+              <div className="space-y-2">
+                <Label>Find the group</Label>
+                <ColumnsNotice
+                  isLoading={columnsQuery.isLoading}
+                  isError={columnsQuery.isError}
+                  hasSpreadsheet={Boolean(spreadsheetId)}
+                  headerCount={headers.length}
+                />
+                {headers.length > 0 ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      {conditions.length} condition
+                      {conditions.length === 1 ? "" : "s"} ·{" "}
+                      {insertUnder === "each_row"
+                        ? "one row per match"
+                        : "one row below the group"}{" "}
+                      · {mappedCount} of {headers.length} columns filled
+                    </p>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFilterOpen(true)}
+                    >
+                      Configure filter
+                    </Button>
+                  </div>
+                ) : null}
+                {form.formState.errors.conditions?.message ? (
+                  <p className="text-sm text-destructive">
+                    {String(form.formState.errors.conditions.message)}
+                  </p>
+                ) : null}
+                {form.formState.errors.columnMappings?.message ? (
+                  <p className="text-sm text-destructive">
+                    {String(form.formState.errors.columnMappings.message)}
+                  </p>
+                ) : null}
+
+                <WideOverlayPanel
+                  open={filterOpen}
+                  onOpenChange={setFilterOpen}
+                  title="Find the group"
+                  description="The matching rows are the group. A new row is placed under it — below the group as a whole, or below every matching row."
+                >
+                  <div className="space-y-6">
+                    <div className="space-y-2">
+                      <Label>Match rows where…</Label>
+                      <RowMatchConditions
+                        value={conditions}
+                        onChange={(next) => form.setValue("conditions", next)}
+                        currentNodeId={currentNodeId}
+                        workflowId={workflowId}
+                        columnOptions={headers}
+                        anchorClassName="ml-96"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        At least one condition is required — it is what picks
+                        the group. If no row matches, the new row starts a new
+                        group at the bottom of the tab.
+                      </p>
                     </div>
-                  </WideOverlayPanel>
+
+                    <FormField
+                      control={form.control}
+                      name="insertUnder"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Where the new row goes</FormLabel>
+                          <Select
+                            onValueChange={field.onChange}
+                            value={field.value ?? "group"}
+                          >
+                            <FormControl>
+                              <SelectTrigger className="w-full">
+                                <SelectValue />
+                              </SelectTrigger>
+                            </FormControl>
+                            <SelectContent>
+                              <SelectItem value="group">
+                                Below the group (one new row)
+                              </SelectItem>
+                              <SelectItem value="each_row">
+                                Below every matching row (one new row each)
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <FormDescription>
+                            {insertUnder === "each_row"
+                              ? "One new row under each matching row. The steps after this one then run once per inserted row."
+                              : "One new row, directly under the last matching row — so it joins the bottom of the group."}
+                          </FormDescription>
+                        </FormItem>
+                      )}
+                    />
+
+                    {insertUnder === "each_row" ? (
+                      <FanOutCapInput
+                        itemNoun="row"
+                        maxItems={form.watch("maxFanOutItems")}
+                        onMaxItemsChange={(n) =>
+                          form.setValue("maxFanOutItems", n)
+                        }
+                      />
+                    ) : null}
+
+                    <FormField
+                      control={form.control}
+                      name="blankSeparators"
+                      render={({ field }) => (
+                        <FormItem className="flex items-center justify-between gap-4 rounded-md border p-3">
+                          <div className="space-y-0.5">
+                            <FormLabel>Separate new groups</FormLabel>
+                            <FormDescription>
+                              Leave one blank row above a group that is starting
+                              for the first time. Rows joining an existing group
+                              are never separated.
+                            </FormDescription>
+                          </div>
+                          <FormControl>
+                            <Switch
+                              checked={field.value ?? false}
+                              onCheckedChange={field.onChange}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+
+                    <div className="space-y-2">
+                      <Label>Columns to fill</Label>
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm text-muted-foreground">
+                          {mappedCount} of {headers.length} mapped
+                          {requiredColumns.length > 0
+                            ? ` · ${requiredColumns.length} required`
+                            : ""}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setMappingOpen(true)}
+                        >
+                          Configure columns
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex justify-end">
+                    <Button type="button" onClick={() => setFilterOpen(false)}>
+                      Done
+                    </Button>
+                  </div>
+
+                  {/* Layered ON TOP of the filter overlay, same width. */}
+                  <ColumnMappingPanel
+                    open={mappingOpen}
+                    onOpenChange={setMappingOpen}
+                    title="Columns to fill"
+                    description="Map each column of the new row to a value, an upstream field, or a cell of the row it is placed under. Turn off “May be blank” to require a column."
+                    headers={headers}
+                    value={columnMappings}
+                    onChange={(next) =>
+                      form.setValue("columnMappings", next, {
+                        shouldValidate: true,
+                      })
+                    }
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
+                    requiredColumns={requiredColumns}
+                    onRequiredChange={setRequired}
+                    extraGroups={anchorGroups}
+                  />
                 </WideOverlayPanel>
               </div>
             ) : null}

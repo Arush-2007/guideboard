@@ -50,8 +50,16 @@ import {
 import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
 import { googleSheetsActionExecutor } from "./executor";
 
+// Records the step names the executor checkpoints under. Which work lands in
+// WHICH step is a correctness property here (insert_row_adjacent splits its
+// insert from its write so an Inngest retry of the write replays the memoized
+// insert instead of opening a second row), so the tests can assert on it.
+let stepNames: string[];
 const step = {
-  run: async (_name: string, fn: () => unknown) => fn(),
+  run: async (name: string, fn: () => unknown) => {
+    stepNames.push(name);
+    return fn();
+  },
 } as unknown as NodeExecutorParams["step"];
 
 let publishedStatuses: string[];
@@ -62,6 +70,54 @@ const publish = (async (msg: { status: string }) => {
 // readSheetTable does `ky.get(url).json<T>()` — return the values payload.
 function mockRead(values: unknown[][]) {
   kyGetMock.mockReturnValue({ json: async () => ({ values }) });
+}
+
+// As mockRead, but also answers getSheetGrid's metadata GET (same ky.get, a
+// different URL). insert_row_adjacent needs both: the tab's numeric sheetId to
+// address it in a structural batchUpdate, and its grid HEIGHT to know whether
+// the row it wants to insert into even exists yet.
+function mockReadWithGrid(
+  values: unknown[][],
+  {
+    sheetId = 77,
+    rowCount = 1000,
+  }: { sheetId?: number; rowCount?: number } = {},
+) {
+  kyGetMock.mockImplementation((url: string) => ({
+    json: async () =>
+      url.includes("/values/")
+        ? { values }
+        : {
+            sheets: [
+              {
+                properties: {
+                  sheetId,
+                  title: "Grouped",
+                  gridProperties: { rowCount },
+                },
+              },
+            ],
+          },
+  }));
+}
+
+/**
+ * The body of the Nth ky.post, with its URL. The Sheets actions post to four
+ * different endpoints (:append, values:batchUpdate, structural batchUpdate), so
+ * every payload key any of them carries is optional here.
+ */
+type PostJson = {
+  requests?: unknown[];
+  valueInputOption?: string;
+  data?: unknown[];
+  values?: unknown[];
+};
+function postBody(index: number) {
+  const [url, options] = kyPostMock.mock.calls[index] as [
+    string,
+    { json: PostJson; searchParams?: Record<string, string> },
+  ];
+  return { url, searchParams: options.searchParams, ...options.json };
 }
 
 type SheetsResult = Record<
@@ -79,6 +135,10 @@ type SheetsResult = Record<
     matched?: boolean;
     rowIndex?: number;
     previousRow?: Record<string, string>;
+    insertedUnderGroup?: boolean;
+    blankSeparatorAdded?: boolean;
+    anchorRow?: Record<string, string>;
+    insertedRows?: Record<string, string>[];
   }
 >;
 
@@ -104,6 +164,7 @@ const serialToken = encodeCustomFeatureToken("serialNumber", {
 beforeEach(() => {
   vi.clearAllMocks();
   publishedStatuses = [];
+  stepNames = [];
   refreshTokenMock.mockResolvedValue("token-123");
   kyPostMock.mockResolvedValue({});
 });
@@ -805,5 +866,444 @@ describe("googleSheetsActionExecutor — update_row", () => {
     // The same `rowByHeader.<col>` reference resolves in "first" and "each".
     expect(out.rowByHeader).toEqual({ "Service Buyer": "Acme", Pending: "45" });
     expect(publishedStatuses).toContain("success");
+  });
+});
+
+describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
+  // A "Grouped"-style tab: rows kept together by buyer, so a new job card has to
+  // land INSIDE its buyer's block rather than at the bottom of the sheet.
+  const grouped = [
+    ["Service Buyer", "Job No", "Status"],
+    ["Acme", "0001", "Open"], // data row 0 → sheet row 2
+    ["Acme", "0002", "Closed"], // data row 1 → sheet row 3
+    ["Globex", "0003", "Open"], // data row 2 → sheet row 4
+  ];
+
+  const baseConfig = {
+    action: "insert_row_adjacent",
+    spreadsheetId: "s",
+    sheetName: "Grouped",
+    columnMappings: { "Service Buyer": "Acme", Status: "Open" },
+  };
+
+  const matchAcme = [
+    { column: "Service Buyer", operator: "equals", value: "Acme" },
+  ];
+
+  it("inserts a row directly under the LAST row of the matching group, then fills it", async () => {
+    mockReadWithGrid(grouped);
+
+    const result = await run({ ...baseConfig, conditions: matchAcme });
+
+    // Acme's block is data rows 0-1 (sheet rows 2-3), with Globex below it — so
+    // room has to be MADE at grid row 3 (0-based, header at 0), which is sheet
+    // row 4. inheritFromBefore carries the block's formatting down onto it.
+    const insert = postBody(0);
+    expect(insert.url).toContain("/s:batchUpdate");
+    expect(insert.requests).toEqual([
+      {
+        insertDimension: {
+          range: {
+            sheetId: 77,
+            dimension: "ROWS",
+            startIndex: 3,
+            endIndex: 4,
+          },
+          inheritFromBefore: true,
+        },
+      },
+    ]);
+
+    // …then the blank row it opened is filled, USER_ENTERED so numbers and dates
+    // are parsed exactly as on every other Sheets write.
+    const write = postBody(1);
+    expect(write.url).toContain("/values:batchUpdate");
+    expect(write.valueInputOption).toBe("USER_ENTERED");
+    expect(write.data).toEqual([
+      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "", "Open"]] },
+    ]);
+
+    // The insert and the write are SEPARATE Inngest steps: on a retry of the
+    // write, the memoized insert is replayed rather than re-run, so a failed
+    // write can never leave a second blank row behind.
+    expect(stepNames).toEqual([
+      "google-sheets-insert-adjacent",
+      "google-sheets-insert-adjacent-write",
+    ]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.insertedUnderGroup).toBe(true);
+    expect(out.matchCount).toBe(2); // the group's size, not a dilemma
+    expect(out.rowIndex).toBe(4);
+    expect(out.rowByHeader).toEqual({
+      "Service Buyer": "Acme",
+      "Job No": "",
+      Status: "Open",
+    });
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("appends when the matching group already ends at the bottom (no insert needed)", async () => {
+    mockReadWithGrid(grouped);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { "Service Buyer": "Globex", Status: "Open" },
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Globex" },
+      ],
+    });
+
+    // Globex's block ends at the last data row, so appending IS inserting under
+    // it: ONE request, and no blank row ever exists on its own to be orphaned.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const append = postBody(0);
+    expect(append.url).toContain("/values/");
+    expect(append.url).toContain(":append");
+    expect(append.searchParams).toEqual({ valueInputOption: "USER_ENTERED" });
+    expect(append.values).toEqual([["Globex", "", "Open"]]);
+    expect(stepNames).toEqual(["google-sheets-insert-adjacent"]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.insertedUnderGroup).toBe(true);
+    expect(out.rowIndex).toBe(5); // 3 data rows + header + 1
+    expect(out.blankSeparatorAdded).toBe(false);
+  });
+
+  it("starts a new group at the bottom when nothing matches, separated by a blank row", async () => {
+    mockReadWithGrid(grouped);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { "Service Buyer": "Initech", Status: "Open" },
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Initech" },
+      ],
+      blankSeparators: true,
+    });
+
+    // A brand-new buyer: no group to join, so one blank separator row then the
+    // row itself — both in the SAME append, so the separator can never be left
+    // behind on its own.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    expect(postBody(0).values).toEqual([[""], ["Initech", "", "Open"]]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // Matching nothing is a normal outcome here — a row is still written.
+    expect(out.insertedUnderGroup).toBe(false);
+    expect(out.matchCount).toBe(0);
+    expect(out.blankSeparatorAdded).toBe(true);
+    expect(out.rowIndex).toBe(6); // 3 data rows + header + separator + 1
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("adds no separator to a tab that has only a header row (nothing to separate from)", async () => {
+    mockReadWithGrid([["Service Buyer", "Job No", "Status"]]);
+
+    const result = await run({
+      ...baseConfig,
+      conditions: matchAcme,
+      blankSeparators: true,
+    });
+
+    expect(postBody(0).values).toEqual([["Acme", "", "Open"]]);
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.blankSeparatorAdded).toBe(false);
+    expect(out.rowIndex).toBe(2);
+  });
+
+  it("REFUSES to run with an empty filter (it picks the group — without it there is none)", async () => {
+    for (const conditions of [
+      undefined,
+      [],
+      // Present but inert: disabled, or naming no column.
+      [
+        {
+          column: "Service Buyer",
+          operator: "equals",
+          value: "Acme",
+          enabled: false,
+        },
+      ],
+      [{ column: "", operator: "equals", value: "Acme" }],
+    ]) {
+      vi.clearAllMocks();
+      publishedStatuses = [];
+      stepNames = [];
+      refreshTokenMock.mockResolvedValue("token-123");
+      kyPostMock.mockResolvedValue({});
+      mockReadWithGrid(grouped);
+
+      await expect(run({ ...baseConfig, conditions })).rejects.toBeInstanceOf(
+        NonRetriableError,
+      );
+      expect(kyPostMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("numbers a Serial column from the whole tab, not just the group", async () => {
+    mockReadWithGrid(grouped);
+
+    await run({
+      ...baseConfig,
+      columnMappings: {
+        "Service Buyer": "Acme",
+        "Job No": serialToken,
+        Status: "Open",
+      },
+      conditions: matchAcme,
+    });
+
+    // Acme's own rows stop at 0002, but the sheet's max is Globex's 0003 — a job
+    // number has to be unique across the TAB, so the next one is 0004 (written
+    // as text so USER_ENTERED keeps the leading zeros).
+    expect(postBody(1).data).toEqual([
+      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "'0004", "Open"]] },
+    ]);
+  });
+
+  it("throws NonRetriableError naming a blank required column, before touching the sheet", async () => {
+    mockReadWithGrid(grouped);
+
+    await expect(
+      run({
+        ...baseConfig,
+        conditions: matchAcme,
+        requiredColumns: ["Job No"],
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+
+    // Nothing was inserted — the row is validated before any room is made for it.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(publishedStatuses).toContain("error");
+  });
+
+  it("fills a column from the row it is placed under (@<anchorRow.…>@)", async () => {
+    mockReadWithGrid(grouped);
+
+    await run({
+      ...baseConfig,
+      // The anchor is the LAST row of the group (Acme / 0002 / Closed), so the
+      // new row carries THAT row's Job No — not the first match's.
+      columnMappings: {
+        "Service Buyer": "@<anchorRow.Service Buyer>@",
+        "Job No": "@<anchorRow.Job No>@",
+        Status: "Follow-up",
+      },
+      conditions: matchAcme,
+    });
+
+    expect(postBody(1).data).toEqual([
+      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "0002", "Follow-up"]] },
+    ]);
+  });
+});
+
+describe("googleSheetsActionExecutor — insert_row_adjacent, one row per match", () => {
+  // Acme's rows are NOT contiguous here, so each match anchors its own new row
+  // at a different depth — which is what makes the bottom-up insert order and
+  // the row-number shifting load-bearing.
+  const grouped = [
+    ["Service Buyer", "Job No", "Status"],
+    ["Acme", "0001", "Open"], // data row 0 → sheet row 2  ← match
+    ["Globex", "0002", "Open"], // data row 1 → sheet row 3
+    ["Acme", "0003", "Open"], // data row 2 → sheet row 4  ← match
+    ["Initech", "0004", "Open"], // data row 3 → sheet row 5
+  ];
+
+  const eachRow = {
+    action: "insert_row_adjacent",
+    spreadsheetId: "s",
+    sheetName: "Grouped",
+    insertUnder: "each_row",
+    conditions: [
+      { column: "Service Buyer", operator: "equals", value: "Acme" },
+    ],
+    columnMappings: {
+      "Service Buyer": "@<anchorRow.Service Buyer>@",
+      "Job No": serialToken,
+      Status: "Follow-up",
+    },
+  };
+
+  it("inserts one row under EVERY match, bottom-up, in a single batchUpdate", async () => {
+    mockReadWithGrid(grouped);
+
+    const outcome = (await run(eachRow)) as unknown as FanOutOutcome;
+
+    // ONE structural request carrying both inserts — not one call per match.
+    // They are ordered BOTTOM-UP (grid row 4 before grid row 2): inserting a row
+    // shifts everything below it down, so doing the deepest one first leaves the
+    // higher index exactly where it was computed.
+    const insert = postBody(0);
+    expect(insert.url).toContain("/s:batchUpdate");
+    expect(insert.requests).toEqual([
+      {
+        insertDimension: {
+          range: { sheetId: 77, dimension: "ROWS", startIndex: 4, endIndex: 5 },
+          inheritFromBefore: true,
+        },
+      },
+      {
+        insertDimension: {
+          range: { sheetId: 77, dimension: "ROWS", startIndex: 2, endIndex: 3 },
+          inheritFromBefore: true,
+        },
+      },
+    ]);
+
+    // …and ONE values write for both rows. Row 3 is under Acme/0001; row 6 is
+    // under Acme/0003 — pushed one further down by the row inserted above it.
+    // Each row copies ITS OWN anchor, and the serial keeps counting up across
+    // the rows this run adds (0005, then 0006 — not 0005 twice).
+    expect(postBody(1).data).toEqual([
+      { range: "'Grouped'!A3:ZZ3", values: [["Acme", "'0005", "Follow-up"]] },
+      { range: "'Grouped'!A6:ZZ6", values: [["Acme", "'0006", "Follow-up"]] },
+    ]);
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+
+    // One child run per inserted row, each carrying its own row, where it
+    // landed, and the row it sits under — so siblings are distinguishable.
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toEqual([
+      {
+        row: { "Service Buyer": "Acme", "Job No": "0005", Status: "Follow-up" },
+        rowIndex: 3,
+        anchorRow: {
+          "Service Buyer": "Acme",
+          "Job No": "0001",
+          Status: "Open",
+        },
+      },
+      {
+        row: { "Service Buyer": "Acme", "Job No": "0006", Status: "Follow-up" },
+        rowIndex: 6,
+        anchorRow: {
+          "Service Buyer": "Acme",
+          "Job No": "0003",
+          Status: "Open",
+        },
+      },
+    ]);
+
+    const summary = outcome.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(2);
+    expect(summary.matchCount).toBe(2);
+    // Recorded for the run view: the rows written, and WHERE each one landed.
+    expect(summary.insertedRows).toHaveLength(2);
+    expect(summary.insertedRowIndexes).toEqual([3, 6]);
+  });
+
+  it("grows the grid first when the deepest insert would fall outside it", async () => {
+    // A tab trimmed to exactly its data (header + 4 rows = 5 grid rows), with
+    // the LAST data row among the matches. A single match at the bottom would
+    // just append; several matches must INSERT under each — and the deepest of
+    // those inserts addresses a grid row that does not exist yet.
+    mockReadWithGrid(grouped, { rowCount: 5 });
+
+    await run({
+      ...eachRow,
+      // Job No 0003 (data row 2) and 0004 (data row 3, the last one).
+      conditions: [
+        { column: "Job No", operator: "in_list", value: "0003,0004" },
+      ],
+    });
+
+    expect(postBody(0).requests).toEqual([
+      // Room for the deepest insert (grid row 5) — in the SAME batch, so it is
+      // still one request and the grid is never left grown-but-unused.
+      { appendDimension: { sheetId: 77, dimension: "ROWS", length: 1 } },
+      {
+        insertDimension: {
+          range: { sheetId: 77, dimension: "ROWS", startIndex: 5, endIndex: 6 },
+          inheritFromBefore: true,
+        },
+      },
+      {
+        insertDimension: {
+          range: { sheetId: 77, dimension: "ROWS", startIndex: 4, endIndex: 5 },
+          inheritFromBefore: true,
+        },
+      },
+    ]);
+  });
+
+  it("fails BEFORE writing when the matches exceed the fan-out cap", async () => {
+    mockReadWithGrid(grouped);
+
+    await expect(run({ ...eachRow, maxFanOutItems: 1 })).rejects.toBeInstanceOf(
+      NonRetriableError,
+    );
+
+    // The cap must be enforced ahead of the insert — failing afterwards would
+    // leave rows in the sheet that the user asked not to be written.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(publishedStatuses).toContain("error");
+  });
+
+  it("does not fan out when nothing matched (it wrote one row, starting a new group)", async () => {
+    mockReadWithGrid(grouped);
+
+    const outcome = await run({
+      ...eachRow,
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Umbrella" },
+      ],
+    });
+
+    // One row was written (a new group at the bottom) — there is no set of
+    // matched rows to fan out over, and fanning out ZERO children would mark
+    // everything downstream SKIPPED.
+    expect(isFanOut(outcome as unknown as FanOutOutcome)).toBe(false);
+    const out = outcome.GOOGLE_SHEETS_ACTION_1;
+    expect(out.insertedUnderGroup).toBe(false);
+    expect(out.matchCount).toBe(0);
+    expect(out.rowIndex).toBe(6); // 4 data rows + header + 1
+  });
+
+  it("a fan-out CHILD reshapes its seed and touches Sheets not at all", async () => {
+    const result = await run(eachRow, {
+      GOOGLE_SHEETS_ACTION_1: {
+        item: {
+          row: { "Service Buyer": "Acme", "Job No": "0006" },
+          rowIndex: 6,
+          anchorRow: { "Service Buyer": "Acme", "Job No": "0003" },
+        },
+        index: 2,
+        total: 2,
+        __fanOut: true,
+      },
+    });
+
+    // The parent already inserted every row — a child must never insert again.
+    expect(kyGetMock).not.toHaveBeenCalled();
+    expect(kyPostMock).not.toHaveBeenCalled();
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.rowByHeader).toEqual({
+      "Service Buyer": "Acme",
+      "Job No": "0006",
+    });
+    expect(out.rowIndex).toBe(6);
+    expect(out.anchorRow).toEqual({
+      "Service Buyer": "Acme",
+      "Job No": "0003",
+    });
+    expect(out.matchCount).toBe(1);
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("rejects 'one row per match' inside another node's fan-out child (nested guard)", async () => {
+    mockReadWithGrid(grouped);
+
+    await expect(
+      run(eachRow, {
+        OTHER_SHEETS_1: { item: { x: 1 }, index: 1, total: 2, __fanOut: true },
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
   });
 });

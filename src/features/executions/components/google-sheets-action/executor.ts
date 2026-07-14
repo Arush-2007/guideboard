@@ -17,9 +17,11 @@ import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { FAN_OUT_MARKER } from "@/inngest/fan-out";
 import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import {
+  getSheetGrid,
   readSheetTable,
   sheetRange,
   sheetsAuthHeaders,
+  sheetsBatchUpdateUrl,
   sheetsValuesBatchUpdateUrl,
   sheetsValuesUrl,
   toSheetsError,
@@ -29,7 +31,7 @@ import { type MultiMatchMode, readFanOutSeed } from "@/lib/multi-match";
 import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
 import { hasActiveRowCondition } from "@/lib/row-match-operators";
 import { coerceCellValue } from "@/lib/sheet-cells";
-import { sanitizeHeaderKey } from "@/lib/sheet-headers";
+import { ANCHOR_ROW_KEY, sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
   buildRowByHeader,
   buildSheetRow,
@@ -37,7 +39,11 @@ import {
 } from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
 
-type SheetsAction = "append_row" | "find_rows" | "update_row";
+type SheetsAction =
+  | "append_row"
+  | "find_rows"
+  | "update_row"
+  | "insert_row_adjacent";
 
 type GoogleSheetsActionData = {
   action?: SheetsAction;
@@ -47,14 +53,26 @@ type GoogleSheetsActionData = {
   values?: string;
   // "match the columns" mapping: column header -> template string.
   columnMappings?: Record<string, string>;
-  // Headers that may not be blank on append (accessory "may be blank" off).
+  // Headers that may not be blank on the row-creating actions (accessory "may
+  // be blank" off).
   requiredColumns?: string[];
-  // AND-ed row filter, shared by find_rows (which returns the matches) and
-  // update_row (which writes them). update_row requires at least one.
+  // AND-ed row filter, shared by find_rows (which returns the matches),
+  // update_row (which writes them) and insert_row_adjacent (for which they are
+  // the GROUP the new row joins). Both write actions require at least one.
   conditions?: RowMatchCondition[];
   // Multi-match policy for find_rows / update_row (see src/lib/multi-match.ts).
+  // insert_row_adjacent has none — for it, several matches are a GROUP, not
+  // candidates to choose between, so `insertUnder` decides where the row lands
+  // instead. It still honours the fan-out cap in "each_row" mode.
   onMultipleMatches?: MultiMatchMode;
   maxFanOutItems?: number;
+  // insert_row_adjacent: separate a brand-new group from the one above it with
+  // a blank row (only on the no-match path, and only if the tab has data).
+  blankSeparators?: boolean;
+  // insert_row_adjacent: ONE row below the whole group ("group", the default),
+  // or one row below EVERY matching row ("each_row", which then fans out one
+  // child run per inserted row, capped by maxFanOutItems).
+  insertUnder?: "group" | "each_row";
 };
 
 const ERROR_PREFIX = "Google Sheets Action";
@@ -170,6 +188,28 @@ export const googleSheetsActionExecutor: NodeExecutor<
       };
     }
 
+    if (action === "insert_row_adjacent") {
+      // The parent already inserted every row (one per matched row) — a child
+      // must not insert again. Its item carries the row it handled, where that
+      // row landed, and the row it was placed under, so siblings are
+      // distinguishable even when their contents are identical.
+      return {
+        ...context,
+        [outputKey]: {
+          action,
+          spreadsheetId,
+          sheetName,
+          matchCount: 1,
+          insertedUnderGroup: true,
+          blankSeparatorAdded: false,
+          rowIndex: item.rowIndex,
+          rowByHeader: item.row ?? {},
+          anchorRow: item.anchorRow ?? {},
+          ...lineage,
+        },
+      };
+    }
+
     const columnValues: Record<string, string> = {};
     for (const [key, value] of Object.entries(item)) {
       columnValues[key] = JSON.stringify([value]);
@@ -208,6 +248,319 @@ export const googleSheetsActionExecutor: NodeExecutor<
   };
 
   try {
+    // insert_row_adjacent lives OUTSIDE the single-step switch below because it
+    // is the one action that cannot be done in a single request: a row must be
+    // created before it can be filled, and Inngest steps are what make that
+    // pair safe (see the two `step.run`s).
+    if (action === "insert_row_adjacent") {
+      // The filter is what picks the group. With none active, matchRows is
+      // vacuously true — every row "matches", so the group is the whole tab and
+      // the insert degenerates into an append. The schema rejects that; this is
+      // the executor's own check, because the executor is what writes.
+      if (!hasActiveRowCondition(config.conditions)) {
+        throw new NonRetriableError(
+          `${ERROR_PREFIX}: inserting a row needs at least one filter condition — ` +
+            `it selects the group the new row joins in "${sheetName}"`,
+        );
+      }
+
+      const insertUnder = config.insertUnder ?? "group";
+
+      // "each_row" fans out afterwards, and a write cannot be un-written — so
+      // the nested-fan-out guard runs BEFORE anything is written, not inside
+      // applyMultiMatchPolicy (which only runs once the write is done).
+      if (insertUnder === "each_row") {
+        assertNoForeignFanOut(context, outputKey);
+      }
+
+      // STEP 1 — read the tab, build the row(s), and make room: append at the
+      // bottom (nothing matched, or the group already ends there), or insert a
+      // blank row under each anchor. Checkpointed on its own so a retry of step
+      // 2 replays this result instead of inserting a SECOND set of rows.
+      const placed = await step.run(
+        "google-sheets-insert-adjacent",
+        async () => {
+          try {
+            const table = await readSheetTable({
+              accessToken,
+              spreadsheetId,
+              sheetName,
+            });
+            if (table.headers.length === 0) {
+              throw new NonRetriableError(
+                `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
+              );
+            }
+
+            const matches = matchRows(
+              table.rowsByHeader,
+              config.conditions ?? [],
+              context,
+            );
+            // "each_row" starts one child run per inserted row. Enforce the cap
+            // HERE, before the write — failing after N rows have landed would
+            // leave the sheet changed by a run the user asked to be capped.
+            if (insertUnder === "each_row") {
+              assertFanOutCap(matches.length, config.maxFanOutItems, "row");
+            }
+
+            // The ANCHORS: the rows a new row is attached to. In "group" mode
+            // there is exactly one — the group's LAST row, so the new row lands
+            // below the whole group. In "each_row" mode every match is an
+            // anchor. Nothing matched ⇒ no anchor: the row starts a new group at
+            // the bottom (`null` is that "no anchor" case, and it still writes).
+            const anchorIndexes: Array<number | null> =
+              matches.length === 0
+                ? [null]
+                : insertUnder === "each_row"
+                  ? matches.map((m) => m.index)
+                  : [matches[matches.length - 1].index];
+
+            // Serial Numbers keep counting UP across the rows THIS run inserts,
+            // so each row is built against the rows written so far, not just the
+            // ones already in the tab. A padded serial is force-text ("'0004")
+            // and `parseInt` chokes on the apostrophe, so the copy fed back for
+            // the max() computation has it stripped.
+            const seenRows = [...table.rows];
+            const built = anchorIndexes.map((anchorIdx) => {
+              // Empty mappings ⇒ pure sanitized header keys, no serial-quote
+              // stripping: this is an EXISTING row, read as-is.
+              const anchorRow =
+                anchorIdx === null
+                  ? {}
+                  : buildRowByHeader(table.headers, table.rows[anchorIdx], {});
+
+              const row = buildSheetRow({
+                headers: table.headers,
+                mappings: columnMappings,
+                // The anchor is in scope for THIS row only, so a column can be
+                // filled from the row it sits under (`@<anchorRow.Job No>@`).
+                // It is never merged into the workflow context, so it cannot
+                // leak downstream.
+                context: { ...context, [ANCHOR_ROW_KEY]: anchorRow },
+                rows: seenRows,
+                serialAsText: true,
+              });
+
+              const blankRequired = findBlankRequired(
+                table.headers,
+                row,
+                config.requiredColumns,
+              );
+              if (blankRequired.length > 0) {
+                throw new NonRetriableError(
+                  `${ERROR_PREFIX}: required column(s) may not be blank: ${blankRequired.join(", ")}`,
+                );
+              }
+
+              seenRows.push(
+                row.map((cell) =>
+                  cell.startsWith("'") ? cell.slice(1) : cell,
+                ),
+              );
+              return {
+                anchorIdx,
+                row,
+                anchorRow,
+                rowByHeader: buildRowByHeader(
+                  table.headers,
+                  row,
+                  columnMappings,
+                ),
+              };
+            });
+
+            const base = {
+              matchCount: matches.length,
+              insertedUnderGroup: matches.length > 0,
+            };
+
+            // Bottom of the data — nothing matched (a NEW group starts here), or
+            // the single anchor already IS the last row, in which case appending
+            // is inserting under it. One request, and no blank row ever exists on
+            // its own, so a dead run leaves nothing to clean up.
+            const only = built[0];
+            if (
+              built.length === 1 &&
+              (only.anchorIdx === null ||
+                only.anchorIdx === table.rows.length - 1)
+            ) {
+              const separator =
+                only.anchorIdx === null &&
+                config.blankSeparators === true &&
+                table.rows.length > 0;
+              await ky.post(
+                `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
+                {
+                  headers: sheetsAuthHeaders(accessToken),
+                  searchParams: { valueInputOption: "USER_ENTERED" },
+                  json: { values: separator ? [[""], only.row] : [only.row] },
+                },
+              );
+              return {
+                ...base,
+                written: true,
+                blankSeparatorAdded: separator,
+                rows: [
+                  {
+                    ...only,
+                    // Sheet row = header + data rows + 1, past the separator if
+                    // one was written.
+                    rowIndex: table.rows.length + 2 + (separator ? 1 : 0),
+                  },
+                ],
+              };
+            }
+
+            // Room has to be MADE. Grid rows are 0-based with the header at 0, so
+            // data row i sits at grid row i + 1 and the slot under it is i + 2.
+            const anchors = built.map((b) => b.anchorIdx as number);
+            const startIndexes = anchors.map((i) => i + 2);
+            const grid = await getSheetGrid({
+              accessToken,
+              spreadsheetId,
+              sheetName,
+            });
+
+            const requests: unknown[] = [];
+            // insertDimension can only address rows the GRID has. Inserting under
+            // the very last data row of a sheet trimmed to its data would be out
+            // of bounds, so grow the grid first — in the same batch, so it is
+            // still one request.
+            const shortfall = Math.max(...startIndexes) + 1 - grid.rowCount;
+            if (shortfall > 0) {
+              requests.push({
+                appendDimension: {
+                  sheetId: grid.sheetId,
+                  dimension: "ROWS",
+                  length: shortfall,
+                },
+              });
+            }
+            // BOTTOM-UP: inserting a row shifts every row below it down, so doing
+            // the deepest insert first leaves the remaining (higher) indexes
+            // exactly where they were computed.
+            for (const startIndex of [...startIndexes].sort((a, b) => b - a)) {
+              requests.push({
+                insertDimension: {
+                  range: {
+                    sheetId: grid.sheetId,
+                    dimension: "ROWS",
+                    startIndex,
+                    endIndex: startIndex + 1,
+                  },
+                  // Take the group's formatting (banding, borders, number
+                  // formats) from the row above — the row it joins.
+                  inheritFromBefore: true,
+                },
+              });
+            }
+            await ky.post(sheetsBatchUpdateUrl(spreadsheetId), {
+              headers: sheetsAuthHeaders(accessToken),
+              json: { requests },
+            });
+
+            return {
+              ...base,
+              written: false,
+              blankSeparatorAdded: false,
+              rows: built.map((b, k) => ({
+                ...b,
+                // Sheet row = the anchor's row + 1, pushed down one more for each
+                // row inserted ABOVE this one in this same batch.
+                rowIndex: (b.anchorIdx as number) + 3 + k,
+              })),
+            };
+          } catch (error) {
+            throw await toSheetsError(error);
+          }
+        },
+      );
+
+      // STEP 2 — fill the rows the insert opened up, all in ONE request. The
+      // append path already wrote its row (values.append carries the data), so it
+      // skips this. USER_ENTERED (not a batchUpdate `updateCells`) so numbers and
+      // dates are parsed exactly as on every other Sheets write in the app.
+      if (!placed.written) {
+        await step.run("google-sheets-insert-adjacent-write", async () => {
+          try {
+            await ky.post(sheetsValuesBatchUpdateUrl(spreadsheetId), {
+              headers: sheetsAuthHeaders(accessToken),
+              json: {
+                valueInputOption: "USER_ENTERED",
+                data: placed.rows.map((r) => ({
+                  range: sheetRange(
+                    sheetName,
+                    `A${r.rowIndex}:ZZ${r.rowIndex}`,
+                  ),
+                  values: [r.row],
+                })),
+              },
+            });
+            return null;
+          } catch (error) {
+            throw await toSheetsError(error);
+          }
+        });
+      }
+
+      const first = placed.rows[0];
+      // One item per inserted row: the row itself, where it landed, and the row
+      // it was placed under — so a fan-out child can tell its row from its
+      // siblings' (they may otherwise be identical).
+      // `placed.rows[].row` (the raw write array, carrying the serial's
+      // text-forcing apostrophe) stays internal — `rowByHeader` is that same row
+      // cleaned up, and recording both would be two answers to one question.
+      const items = placed.rows.map((r) => ({
+        row: r.rowByHeader,
+        rowIndex: r.rowIndex,
+        anchorRow: r.anchorRow,
+      }));
+      const output: Record<string, unknown> = {
+        action,
+        spreadsheetId,
+        sheetName,
+        matchCount: placed.matchCount,
+        insertedUnderGroup: placed.insertedUnderGroup,
+        blankSeparatorAdded: placed.blankSeparatorAdded,
+        rowIndex: first.rowIndex,
+        rowByHeader: first.rowByHeader,
+        anchorRow: first.anchorRow,
+      };
+      // Only "each_row" writes more than one row, and only then is the list
+      // worth recording (in "group" mode `rowByHeader` already IS the one row).
+      // Capped like find_rows' `rows`, so a large fan-out can't bloat the run
+      // record — children still get the full list via `items`.
+      // The row numbers ride alongside so the run view can say WHERE each added
+      // row landed, which is the whole question this action answers.
+      if (insertUnder === "each_row") {
+        output.insertedRows = items.slice(0, 100).map((i) => i.row);
+        output.insertedRowIndexes = items.slice(0, 100).map((i) => i.rowIndex);
+      }
+
+      // Fan out one child per inserted row — but ONLY when rows were actually
+      // inserted under matches. A no-match run wrote exactly one row (a new group
+      // at the bottom); fanning out over it would be a lie, and fanning out zero
+      // children would mark the whole downstream sub-graph SKIPPED.
+      const outcome =
+        insertUnder === "each_row" && placed.matchCount > 0
+          ? applyMultiMatchPolicy({
+              mode: "each",
+              maxItems: config.maxFanOutItems,
+              items,
+              context,
+              outputKey,
+              output,
+              itemNoun: "row",
+            })
+          : { ...context, [outputKey]: output };
+
+      await publish(
+        nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+      );
+      return outcome;
+    }
+
     const result = await step.run("google-sheets-action", async () => {
       if (action === "append_row") {
         // Preferred path: map upstream data onto the sheet's live columns. All
