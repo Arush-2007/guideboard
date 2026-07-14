@@ -32,7 +32,7 @@ vi.mock("ky", () => ({
 }));
 
 import {
-  getSheetIdByName,
+  getSheetGrid,
   hexToRgb,
   readSheetTable,
   sheetRange,
@@ -141,22 +141,48 @@ describe("readSheetTable", () => {
   });
 });
 
-describe("getSheetIdByName", () => {
-  it("resolves the numeric sheetId with a case-insensitive title match", async () => {
+describe("getSheetGrid", () => {
+  it("resolves the sheetId + grid height with a case-insensitive title match", async () => {
     kyGetMock.mockReturnValue(
       res({
         sheets: [
-          { properties: { sheetId: 0, title: "Master" } },
-          { properties: { sheetId: 42, title: "Grouped" } },
+          {
+            properties: {
+              sheetId: 0,
+              title: "Master",
+              gridProperties: { rowCount: 1000 },
+            },
+          },
+          {
+            properties: {
+              sheetId: 42,
+              title: "Grouped",
+              gridProperties: { rowCount: 12 },
+            },
+          },
         ],
       }),
     );
-    const id = await getSheetIdByName({
+    const grid = await getSheetGrid({
       accessToken: "t",
       spreadsheetId: "s",
       sheetName: "grouped",
     });
-    expect(id).toBe(42);
+    // rowCount is how many rows the GRID has, not how many hold data — an
+    // insert can only address rows that exist.
+    expect(grid).toEqual({ sheetId: 42, rowCount: 12 });
+  });
+
+  it("reports rowCount 0 when the tab has no gridProperties", async () => {
+    kyGetMock.mockReturnValue(
+      res({ sheets: [{ properties: { sheetId: 7, title: "Grouped" } }] }),
+    );
+    const grid = await getSheetGrid({
+      accessToken: "t",
+      spreadsheetId: "s",
+      sheetName: "Grouped",
+    });
+    expect(grid).toEqual({ sheetId: 7, rowCount: 0 });
   });
 
   it("throws NonRetriableError when the tab is absent", async () => {
@@ -164,7 +190,7 @@ describe("getSheetIdByName", () => {
       res({ sheets: [{ properties: { sheetId: 0, title: "Master" } }] }),
     );
     await expect(
-      getSheetIdByName({
+      getSheetGrid({
         accessToken: "t",
         spreadsheetId: "s",
         sheetName: "Ledger",

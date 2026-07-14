@@ -109,14 +109,31 @@ export async function readSheetTable({
 }
 
 type SheetsMetaResponse = {
-  sheets?: Array<{ properties?: { sheetId?: number; title?: string } }>;
+  sheets?: Array<{
+    properties?: {
+      sheetId?: number;
+      title?: string;
+      gridProperties?: { rowCount?: number };
+    };
+  }>;
+};
+
+export type SheetGrid = {
+  /** batchUpdate addresses sheets by id, not name. */
+  sheetId: number;
+  /**
+   * How many rows the GRID has — not how many hold data. `insertDimension` can
+   * only address rows that exist, so a caller inserting near the bottom of a
+   * trimmed sheet must grow the grid (`appendDimension`) first.
+   */
+  rowCount: number;
 };
 
 /**
- * Resolves a tab's numeric `sheetId` (batchUpdate addresses sheets by id, not
- * name). Case-insensitive title match. Throws NonRetriableError if absent.
+ * Resolves a tab's `sheetId` + grid height. Case-insensitive title match.
+ * Throws NonRetriableError if the tab is absent (a config error, not transient).
  */
-export async function getSheetIdByName({
+export async function getSheetGrid({
   accessToken,
   spreadsheetId,
   sheetName,
@@ -124,11 +141,13 @@ export async function getSheetIdByName({
   accessToken: string;
   spreadsheetId: string;
   sheetName: string;
-}): Promise<number> {
+}): Promise<SheetGrid> {
   const meta = await ky
     .get(`${SHEETS_BASE}/${spreadsheetId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
-      searchParams: { fields: "sheets.properties(sheetId,title)" },
+      searchParams: {
+        fields: "sheets.properties(sheetId,title,gridProperties.rowCount)",
+      },
     })
     .json<SheetsMetaResponse>();
 
@@ -141,7 +160,10 @@ export async function getSheetIdByName({
       `Google Sheets: tab "${sheetName}" was not found in the spreadsheet`,
     );
   }
-  return found.properties.sheetId;
+  return {
+    sheetId: found.properties.sheetId,
+    rowCount: found.properties.gridProperties?.rowCount ?? 0,
+  };
 }
 
 type SheetsErrorBody = {
