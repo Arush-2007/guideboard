@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { VariableInput } from "@/components/variable-input";
+import type { PickerExtraGroup } from "@/components/variable-picker";
 import { getUpstreamFields } from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,13 @@ export type FieldMappingProps = {
    * grid gains a third `auto` column; when omitted the layout is unchanged.
    */
   renderAccessory?: (target: FieldMappingTarget) => ReactNode;
+  /**
+   * Fields the node offers about ITSELF (not inherited from upstream), shown as
+   * their own picker group — e.g. the Sheets insert action's "the row this one
+   * is attached to". Deliberately excluded from "Auto-map by name": auto-filling
+   * every column from the anchor row would silently duplicate it.
+   */
+  extraGroups?: PickerExtraGroup[];
   /**
    * Override for the variable picker's popover anchor. Defaults to `ml-72`
    * (half the standard config dialog); pass `ml-96` when rendered inside a
@@ -50,6 +58,7 @@ export function FieldMapping({
   currentNodeId,
   workflowId,
   renderAccessory,
+  extraGroups,
   anchorClassName,
 }: FieldMappingProps) {
   const nodes = useNodes();
@@ -118,6 +127,7 @@ export function FieldMapping({
               placeholder="Type a value or insert a field"
               currentNodeId={currentNodeId}
               workflowId={workflowId}
+              extraGroups={extraGroups}
               anchorClassName={anchorClassName}
             />
             {renderAccessory ? renderAccessory(target) : null}

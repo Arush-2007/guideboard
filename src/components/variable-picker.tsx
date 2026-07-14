@@ -18,6 +18,17 @@ import {
 } from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
 
+/**
+ * A group of fields the CURRENT node offers about itself, rather than fields
+ * inherited from an upstream node — the Sheets insert action's "row it is
+ * attached to" is the first of these. Listed above the upstream groups, since
+ * they belong to the step the user is configuring.
+ */
+export type PickerExtraGroup = {
+  label: string;
+  fields: { insertText: string; fieldLabel: string }[];
+};
+
 export type VariablePickerProps = {
   currentNodeId: string;
   /** Kept for API compatibility; the picker now reads the live canvas. */
@@ -27,6 +38,8 @@ export type VariablePickerProps = {
   className?: string;
   /** The field's current value — lets a custom feature pre-fill from its token. */
   currentValue?: string;
+  /** Fields the current node supplies itself (see PickerExtraGroup). */
+  extraGroups?: PickerExtraGroup[];
   /**
    * Insert the bare dotted context path (e.g. `ai_text_abc.output`) instead of
    * the `@<path>@` template form. Used by inputs that consume a raw path rather
@@ -46,6 +59,50 @@ function toBarePath(insertText: string): string {
   return insertText.replace(/^@<\s*/, "").replace(/\s*>@$/, "");
 }
 
+/**
+ * One labelled section of the picker: an upstream node's fields, or a group the
+ * current node supplies itself. Both render identically — the only difference is
+ * where the fields came from.
+ */
+const PickerGroup = ({
+  label,
+  fields,
+  bare,
+  onPick,
+}: {
+  label: string;
+  fields: { insertText: string; fieldLabel: string }[];
+  bare?: boolean;
+  onPick: (inserted: string) => void;
+}) => (
+  <div className="mb-1">
+    <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      {label}
+    </div>
+    <ul>
+      {fields.map((field) => {
+        const inserted = bare ? toBarePath(field.insertText) : field.insertText;
+        return (
+          <li key={field.insertText}>
+            <button
+              type="button"
+              className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => onPick(inserted)}
+            >
+              <span className="font-medium text-foreground">
+                {field.fieldLabel}
+              </span>
+              <span className="w-full break-all font-mono text-xs text-muted-foreground">
+                {inserted}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  </div>
+);
+
 export function VariablePicker({
   currentNodeId,
   onSelect,
@@ -53,6 +110,7 @@ export function VariablePicker({
   className,
   bare,
   currentValue,
+  extraGroups = [],
   anchorClassName = "ml-72",
 }: VariablePickerProps) {
   const [open, setOpen] = useState(false);
@@ -85,6 +143,11 @@ export function VariablePicker({
     return getCustomFeatures(node?.type);
   }, [nodes, currentNodeId]);
   const showCustom = !bare && customFeatures.length > 0;
+
+  const pick = (inserted: string) => {
+    onSelect(inserted);
+    setOpen(false);
+  };
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -122,7 +185,7 @@ export function VariablePicker({
         <div className="border-b px-3 py-2 text-center text-sm font-medium">
           Insert a field
         </div>
-        {groups.length === 0 && !showCustom ? (
+        {groups.length === 0 && !showCustom && extraGroups.length === 0 ? (
           <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             No previous steps are connected before this one yet.
           </div>
@@ -157,38 +220,23 @@ export function VariablePicker({
                 </ul>
               </div>
             ) : null}
+            {extraGroups.map((group) => (
+              <PickerGroup
+                key={group.label}
+                label={group.label}
+                fields={group.fields}
+                bare={bare}
+                onPick={pick}
+              />
+            ))}
             {groups.map((group) => (
-              <div key={group.fields[0].nodeId} className="mb-1">
-                <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.nodeLabel}
-                </div>
-                <ul>
-                  {group.fields.map((row) => {
-                    const inserted = bare
-                      ? toBarePath(row.insertText)
-                      : row.insertText;
-                    return (
-                      <li key={row.insertText}>
-                        <button
-                          type="button"
-                          className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-                          onClick={() => {
-                            onSelect(inserted);
-                            setOpen(false);
-                          }}
-                        >
-                          <span className="font-medium text-foreground">
-                            {row.fieldLabel}
-                          </span>
-                          <span className="w-full break-all font-mono text-xs text-muted-foreground">
-                            {inserted}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
+              <PickerGroup
+                key={group.fields[0].nodeId}
+                label={group.nodeLabel}
+                fields={group.fields}
+                bare={bare}
+                onPick={pick}
+              />
             ))}
           </div>
         )}

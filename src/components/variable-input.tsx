@@ -2,7 +2,10 @@
 
 import * as React from "react";
 import { Input } from "@/components/ui/input";
-import { VariablePicker } from "@/components/variable-picker";
+import {
+  type PickerExtraGroup,
+  VariablePicker,
+} from "@/components/variable-picker";
 import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
 import { cn } from "@/lib/utils";
@@ -12,6 +15,8 @@ export type VariableInputProps = React.ComponentProps<typeof Input> & {
   workflowId?: string;
   /** Insert a bare dotted path instead of the `@<path>@` template form. */
   bare?: boolean;
+  /** Fields the current node offers about itself (forwarded to VariablePicker). */
+  extraGroups?: PickerExtraGroup[];
   /** Override for the picker popover anchor (forwarded to VariablePicker). */
   anchorClassName?: string;
 };
@@ -29,6 +34,7 @@ export const VariableInput = React.forwardRef<
       onChange,
       disabled,
       bare,
+      extraGroups,
       anchorClassName,
       ...rest
     },
@@ -86,6 +92,7 @@ export const VariableInput = React.forwardRef<
             disabled={disabled}
             bare={bare}
             currentValue={strValue}
+            extraGroups={extraGroups}
             anchorClassName={anchorClassName}
           />
         </div>
