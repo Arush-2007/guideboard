@@ -40,6 +40,47 @@ interface Props {
   itemNoun?: string;
 }
 
+/**
+ * The `maxFanOutItems` cap on its own, for nodes that fan out but do NOT choose
+ * between first/each/error — the Sheets insert action, whose modes are about
+ * WHERE the row lands, not which match to keep. Same key, same clamping, so the
+ * cap behaves identically wherever it is offered.
+ */
+export const FanOutCapInput = ({
+  maxItems,
+  onMaxItemsChange,
+  itemNoun = "item",
+}: Pick<Props, "maxItems" | "onMaxItemsChange" | "itemNoun">) => (
+  <div className="space-y-2">
+    <Label>Max {itemNoun}s</Label>
+    <Input
+      type="number"
+      min={1}
+      max={MAX_FAN_OUT_ITEMS_LIMIT}
+      placeholder={String(DEFAULT_MAX_FAN_OUT_ITEMS)}
+      value={maxItems ?? ""}
+      onChange={(e) => {
+        // Empty = "use the default" (a valid saved state). Typed values are
+        // clamped into the schema's range so the form can never sit in an
+        // invalid state that silently blocks Save.
+        const raw = e.target.value;
+        if (raw === "") {
+          onMaxItemsChange(undefined);
+          return;
+        }
+        const n = Math.trunc(Number(raw));
+        if (Number.isFinite(n)) {
+          onMaxItemsChange(Math.min(MAX_FAN_OUT_ITEMS_LIMIT, Math.max(1, n)));
+        }
+      }}
+    />
+    <p className="text-xs text-muted-foreground">
+      Safety cap on how many runs one match may start (default{" "}
+      {DEFAULT_MAX_FAN_OUT_ITEMS}).
+    </p>
+  </div>
+);
+
 export const MultiMatchSelect = ({
   mode,
   onModeChange,
@@ -71,35 +112,12 @@ export const MultiMatchSelect = ({
         {DESCRIPTIONS[value](itemNoun)}
       </p>
       {value === "each" && (
-        <div className="space-y-2 pt-1">
-          <Label>Max {itemNoun}s</Label>
-          <Input
-            type="number"
-            min={1}
-            max={MAX_FAN_OUT_ITEMS_LIMIT}
-            placeholder={String(DEFAULT_MAX_FAN_OUT_ITEMS)}
-            value={maxItems ?? ""}
-            onChange={(e) => {
-              // Empty = "use the default" (a valid saved state). Typed values
-              // are clamped into the schema's range so the form can never sit
-              // in an invalid state that silently blocks Save.
-              const raw = e.target.value;
-              if (raw === "") {
-                onMaxItemsChange(undefined);
-                return;
-              }
-              const n = Math.trunc(Number(raw));
-              if (Number.isFinite(n)) {
-                onMaxItemsChange(
-                  Math.min(MAX_FAN_OUT_ITEMS_LIMIT, Math.max(1, n)),
-                );
-              }
-            }}
+        <div className="pt-1">
+          <FanOutCapInput
+            maxItems={maxItems}
+            onMaxItemsChange={onMaxItemsChange}
+            itemNoun={itemNoun}
           />
-          <p className="text-xs text-muted-foreground">
-            Safety cap on how many runs one match may start (default{" "}
-            {DEFAULT_MAX_FAN_OUT_ITEMS}).
-          </p>
         </div>
       )}
     </div>
