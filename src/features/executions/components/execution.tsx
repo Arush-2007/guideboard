@@ -283,9 +283,9 @@ const RowsGrid = ({
   );
 };
 
-// An update_row result as a spreadsheet would show it: the sheet's columns
-// across the top, the row BEFORE the write and the row AFTER it stacked
-// underneath, with every cell the write actually changed highlighted.
+// A written row as a spreadsheet would show it: the sheet's columns across the
+// top, and either the single row that was added, or the row BEFORE the write and
+// the row AFTER it stacked underneath with every changed cell highlighted.
 const RowChangeGrid = ({
   columns,
   before,
@@ -296,9 +296,9 @@ const RowChangeGrid = ({
   before: Record<string, string>;
   after: Record<string, string>;
   /**
-   * When set, there is no prior state to diff against (a fan-out child, whose
-   * reshaped output carries only the row it handled) — `after` renders alone
-   * under this label.
+   * When set, there is no prior state to diff against — a row that was just
+   * added, or a fan-out child whose reshaped output carries only its own row.
+   * `after` then renders alone under this label.
    */
   singleRowLabel?: string | null;
 }) => {
@@ -308,6 +308,13 @@ const RowChangeGrid = ({
         { label: "Before", cells: before, diff: false },
         { label: "After", cells: after, diff: true },
       ];
+
+  // Re-running a workflow rewrites the same values, so a diff view can legitimately
+  // have ZERO changed cells. Saying "green cells are the ones that changed" with
+  // nothing green reads as a bug — say what actually happened instead.
+  const changedCount = singleRowLabel
+    ? 0
+    : columns.filter((col) => before[col] !== after[col]).length;
 
   return (
     <div className="space-y-1">
@@ -357,11 +364,17 @@ const RowChangeGrid = ({
           </tbody>
         </table>
       </div>
-      {!singleRowLabel ? (
+      {singleRowLabel ? null : changedCount > 0 ? (
         <p className="text-xs text-green-700">
-          Green cells are the ones this run changed.
+          {changedCount === 1
+            ? "1 cell changed (highlighted green). Every other cell was left as it was."
+            : `${changedCount} cells changed (highlighted green). Every other cell was left as it was.`}
         </p>
-      ) : null}
+      ) : (
+        <p className="text-xs text-muted-foreground">
+          No cell changed — the row already held these exact values.
+        </p>
+      )}
     </div>
   );
 };
@@ -722,10 +735,56 @@ const NodeRow = ({
       );
     }
 
-    // find_rows renders a multi-column results grid — like CONDITION/SWITCH, its
-    // output can't be expressed as a Field | Value table.
+    // Every Google Sheets action renders its own summary + a spreadsheet-shaped
+    // view here — never a Field | Value table of JSON blobs. The summary must be
+    // true for EVERY outcome; in particular it may never imply a write happened
+    // when no row matched. `nodeSummaries` deliberately has NO entry for this
+    // node type, so nothing can contradict what is said below.
     if (node.nodeType === NodeType.GOOGLE_SHEETS_ACTION) {
       const root = getNodeOutputRoot(node.nodeType, node.output);
+      const tab =
+        typeof root?.sheetName === "string" && root.sheetName.trim()
+          ? `“${root.sheetName.trim()}”`
+          : "the sheet";
+      const conditionRows = Array.isArray(config?.conditions)
+        ? (config.conditions as DisplayCondition[])
+        : [];
+      // Fan-out bookkeeping, shared by the read and the write views. A PARENT
+      // that fanned out acted on no single row (each match got its own run); a
+      // CHILD's reshaped output carries its own 1-based position.
+      const fannedOut =
+        typeof root?.fannedOut === "number" ? root.fannedOut : null;
+      const childIndex = typeof root?.index === "number" ? root.index : null;
+      const childTotal = typeof root?.total === "number" ? root.total : null;
+      const isChildRun = root?.__fanOut === true && childIndex !== null;
+
+      if (root?.action === "append_row") {
+        // Header-keyed row, in sheet-column order. The legacy raw-values path
+        // emits none, so that falls back to the count alone.
+        const appendedRow = (root.rowByHeader ?? {}) as Record<string, string>;
+        const appendedColumns = Object.keys(appendedRow);
+        const added =
+          typeof root.appendedRows === "number" ? root.appendedRows : 1;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {added === 1
+                ? `Added 1 new row to the bottom of ${tab}.`
+                : `Added ${added} new rows to the bottom of ${tab}.`}
+            </SummaryMessage>
+            {appendedColumns.length > 0 ? (
+              <RowChangeGrid
+                columns={appendedColumns}
+                before={{}}
+                after={appendedRow}
+                singleRowLabel="Added"
+              />
+            ) : null}
+          </div>
+        );
+      }
+
       if (root?.action === "find_rows") {
         const columns = Array.isArray(root.columns)
           ? (root.columns as string[])
@@ -735,34 +794,28 @@ const NodeRow = ({
           : [];
         const count =
           typeof root.matchCount === "number" ? root.matchCount : rows.length;
-        // A parent that fanned out acted for NO single row (each match got its
-        // own run); a fan-out child's reshaped output carries its position
-        // marker and acts for its (only) row; "first"/"error" runs continue
-        // with the first match — ambiguous only when several matched.
-        const fannedOut =
-          typeof root.fannedOut === "number" ? root.fannedOut : null;
-        const childIndex = typeof root.index === "number" ? root.index : null;
-        const childTotal = typeof root.total === "number" ? root.total : null;
-        const isChildRun = root.__fanOut === true && childIndex !== null;
+        // Which row THIS run went on to use: a child uses its own row; a
+        // "first"-mode run uses row 1 — worth pointing out only when several
+        // matched, since the rest were then ignored.
         const actedRowIndex =
           isChildRun || (fannedOut === null && count > 1) ? 0 : null;
         return (
           <div className="space-y-2">
             <SummaryMessage>
               {isChildRun && childTotal !== null
-                ? `This run handled row ${childIndex} of ${childTotal} matching rows.`
+                ? `Run ${childIndex} of ${childTotal} — this run is handling row ${childIndex} of the ${childTotal} rows that matched.`
                 : fannedOut !== null
                   ? fannedOut === 0
-                    ? "Found 0 matching rows — no runs started; the following steps were skipped."
-                    : `Found ${count} matching row${count === 1 ? "" : "s"} — started one run per row.`
-                  : `Found ${count} matching row${count === 1 ? "" : "s"}.`}
+                    ? `No rows in ${tab} matched the filter. No runs were started, so every step after this one was skipped.`
+                    : `${fannedOut} rows in ${tab} matched the filter. Started one run per row, so the steps after this one ran ${fannedOut} times — once for each row.`
+                  : count === 0
+                    ? `No rows in ${tab} matched the filter. Nothing was read.`
+                    : count === 1
+                      ? `1 row in ${tab} matched the filter.`
+                      : `${count} rows in ${tab} matched the filter. This step is set to use only the first, so the other ${count - 1} were ignored.`}
             </SummaryMessage>
             <RowConditionsTable
-              conditions={
-                Array.isArray(config?.conditions)
-                  ? (config.conditions as DisplayCondition[])
-                  : []
-              }
+              conditions={conditionRows}
               input={node.input}
               unmatched={count === 0}
             />
@@ -777,8 +830,6 @@ const NodeRow = ({
         );
       }
 
-      // update_row shows the row as a spreadsheet would — before and after the
-      // write — rather than a JSON blob in a Field | Value table.
       if (root?.action === "update_row") {
         const after = (root.rowByHeader ?? {}) as Record<string, string>;
         const before = (root.previousRow ?? {}) as Record<string, string>;
@@ -787,34 +838,23 @@ const NodeRow = ({
         // Column order comes from the row itself (the executor keys it by the
         // sheet's header row, in sheet order).
         const columns = Object.keys({ ...before, ...after });
-
-        const count =
-          typeof root.matchCount === "number" ? root.matchCount : null;
-        const fannedOut =
-          typeof root.fannedOut === "number" ? root.fannedOut : null;
-        const childIndex = typeof root.index === "number" ? root.index : null;
-        const childTotal = typeof root.total === "number" ? root.total : null;
-        const isChildRun = root.__fanOut === true && childIndex !== null;
+        const count = typeof root.matchCount === "number" ? root.matchCount : 0;
 
         return (
           <div className="space-y-2">
             <SummaryMessage>
               {!matched
-                ? "No row matched — nothing was updated."
+                ? `No rows in ${tab} matched the filter, so nothing was changed. This step only updates rows that already exist — it never adds one.`
                 : isChildRun && childTotal !== null
-                  ? `This run handled row ${childIndex} of ${childTotal} updated rows.`
+                  ? `Run ${childIndex} of ${childTotal} — this run is handling the row below, one of the ${childTotal} rows that were updated.`
                   : fannedOut !== null
-                    ? `Updated ${fannedOut} matching row${fannedOut === 1 ? "" : "s"} — started one run per row.`
-                    : count !== null && count > 1
-                      ? `${count} rows matched — updated the first one.`
-                      : "Updated the matching row."}
+                    ? `${fannedOut} rows in ${tab} matched the filter, and all ${fannedOut} were updated. Started one run per row, so the steps after this one ran ${fannedOut} times — once for each row.`
+                    : count > 1
+                      ? `${count} rows in ${tab} matched the filter, but this step is set to update only the first. 1 row was changed; the other ${count - 1} were left untouched.`
+                      : `1 row in ${tab} matched the filter, and it was updated.`}
             </SummaryMessage>
             <RowConditionsTable
-              conditions={
-                Array.isArray(config?.conditions)
-                  ? (config.conditions as DisplayCondition[])
-                  : []
-              }
+              conditions={conditionRows}
               input={node.input}
               unmatched={!matched}
             />

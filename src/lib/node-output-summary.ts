@@ -74,16 +74,13 @@ export const nodeSummaries: Partial<Record<NodeType, NodeSummary>> = {
       ? `Message sent to chat ${str(output.chatId)}.`
       : "Telegram message sent.",
   [NodeType.NOTION_ACTION]: () => "Created a Notion page.",
-  [NodeType.GOOGLE_SHEETS_ACTION]: ({ output }) => {
-    // find_rows (results grid) and update_row (before/after row view) each
-    // render their own summary + table in the execution view.
-    if (output?.action === "find_rows" || output?.action === "update_row") {
-      return null;
-    }
-    return output?.appendedRows != null
-      ? `Appended ${str(output.appendedRows)} row(s) to the sheet.`
-      : "Updated the sheet.";
-  },
+  // NOTE: GOOGLE_SHEETS_ACTION is intentionally absent. Every one of its actions
+  // (append_row / find_rows / update_row) renders its own summary + a
+  // spreadsheet-shaped view in the execution page, because what happened depends
+  // on the action, on how many rows matched, and on whether the run fanned out —
+  // none of which a single generic line can state truthfully. A catch-all here
+  // once claimed "Updated the sheet." for a run that matched zero rows and wrote
+  // nothing; there must be no such line to fall back to.
   [NodeType.CONVERT]: ({ output }) => {
     const from = asFormat(typeof output?.from === "string" ? output.from : "");
     const to = asFormat(typeof output?.to === "string" ? output.to : "");

@@ -157,12 +157,12 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       // and works per-row in every mode.
       {
         path: "rowByHeader",
-        label: "Row written (JSON)",
+        label: "The row this step wrote (all columns)",
         pickIf: (data) => isSheetsAppend(data) || isSheetsUpdate(data),
       },
       {
         path: "appendedRows",
-        label: "Rows appended",
+        label: "How many rows were added",
         example: "1",
         pickIf: isSheetsAppend,
       },
@@ -172,27 +172,26 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       // where firstRow IS its row), so one reference works per-row everywhere.
       {
         path: "firstRow",
-        label: "Matching row (JSON)",
+        label: "The row this run matched (all columns)",
         pickIf: isSheetsFindRows,
       },
-      // How many rows the filter (find_rows) or the key (update_row) matched.
       {
         path: "matchCount",
-        label: "Matches found",
+        label: "How many rows matched the filter",
         example: "3",
         pickIf: (data) => isSheetsFindRows(data) || isSheetsUpdate(data),
       },
       // update_row only.
       {
         path: "previousRow",
-        label: "Row before the update (JSON)",
+        label: "The row as it was BEFORE this step changed it",
         pickIf: isSheetsUpdate,
       },
-      // False when nothing matched the key — the run updated no row at all.
-      // Branch on this to handle the "row isn't there yet" case.
+      // False when nothing matched — the run updated no row at all. Branch on
+      // this to handle the "that row doesn't exist yet" case.
       {
         path: "matched",
-        label: "A row was found",
+        label: "Whether a row was found to update (true/false)",
         example: "true",
         pickIf: isSheetsUpdate,
       },
