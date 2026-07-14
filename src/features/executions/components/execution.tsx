@@ -223,14 +223,18 @@ const FieldTable = ({
 // Scrolls horizontally; display capped at 50 rows (stored output is ≤100).
 // `actedRowIndex` paints the row THIS run acted on green, so the user can tell
 // which of several matches this particular workflow run was for.
+// `rowLabels` adds a leading label column (the same one RowChangeGrid uses) —
+// the insert action labels each added row with the sheet row it landed on.
 const RowsGrid = ({
   columns,
   rows,
   actedRowIndex = null,
+  rowLabels = null,
 }: {
   columns: string[];
   rows: Record<string, string>[];
   actedRowIndex?: number | null;
+  rowLabels?: string[] | null;
 }) => {
   const shown = rows.slice(0, 50);
   return (
@@ -239,6 +243,9 @@ const RowsGrid = ({
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b bg-muted/60 text-xs text-muted-foreground">
+              {rowLabels ? (
+                <th className="w-20 px-2 py-1 text-left font-medium" />
+              ) : null}
               {columns.map((col) => (
                 <th
                   key={col}
@@ -259,6 +266,11 @@ const RowsGrid = ({
                   i === actedRowIndex && "bg-green-50 text-green-900",
                 )}
               >
+                {rowLabels ? (
+                  <td className="whitespace-nowrap px-2 py-1.5 text-xs font-medium text-muted-foreground">
+                    {rowLabels[i] ?? ""}
+                  </td>
+                ) : null}
                 {columns.map((col) => (
                   <td key={col} className="break-words px-2 py-1.5 text-xs">
                     {row[col] ?? ""}
@@ -291,6 +303,7 @@ const RowChangeGrid = ({
   before,
   after,
   singleRowLabel = null,
+  contextRow = null,
 }: {
   columns: string[];
   before: Record<string, string>;
@@ -301,13 +314,38 @@ const RowChangeGrid = ({
    * `after` then renders alone under this label.
    */
   singleRowLabel?: string | null;
+  /**
+   * An existing row shown ABOVE the added one purely as context, never diffed:
+   * the insert action's anchor — the row the new one was placed under. Only
+   * meaningful alongside `singleRowLabel`, since a row that was ADDED has no
+   * prior state of its own to compare against.
+   */
+  contextRow?: { label: string; cells: Record<string, string> } | null;
 }) => {
   const rows = singleRowLabel
-    ? [{ label: singleRowLabel, cells: after, diff: false }]
+    ? [
+        ...(contextRow
+          ? [
+              {
+                label: contextRow.label,
+                cells: contextRow.cells,
+                diff: false,
+                added: false,
+              },
+            ]
+          : []),
+        { label: singleRowLabel, cells: after, diff: false, added: true },
+      ]
     : [
-        { label: "Before", cells: before, diff: false },
-        { label: "After", cells: after, diff: true },
+        { label: "Before", cells: before, diff: false, added: false },
+        { label: "After", cells: after, diff: true, added: false },
       ];
+
+  // With a context row above it, the added row is highlighted whole — every one
+  // of its cells is new. (A lone added row needs no highlight: there is nothing
+  // to tell it apart FROM.) Green means "what this run wrote", as it does in the
+  // diff view and in RowsGrid's acted-row.
+  const highlightAdded = Boolean(singleRowLabel && contextRow);
 
   // Re-running a workflow rewrites the same values, so a diff view can legitimately
   // have ZERO changed cells. Saying "green cells are the ones that changed" with
@@ -352,7 +390,8 @@ const RowChangeGrid = ({
                       key={col}
                       className={cn(
                         "break-words px-2 py-1.5 text-xs",
-                        isChanged && "bg-green-50 font-medium text-green-900",
+                        (isChanged || (highlightAdded && row.added)) &&
+                          "bg-green-50 font-medium text-green-900",
                       )}
                     >
                       {row.cells[col] ?? ""}
@@ -364,7 +403,14 @@ const RowChangeGrid = ({
           </tbody>
         </table>
       </div>
-      {singleRowLabel ? null : changedCount > 0 ? (
+      {singleRowLabel ? (
+        highlightAdded ? (
+          <p className="text-xs text-green-700">
+            The green row is the one this step added. It was placed directly
+            under the row above it.
+          </p>
+        ) : null
+      ) : changedCount > 0 ? (
         <p className="text-xs text-green-700">
           {changedCount === 1
             ? "1 cell changed (highlighted green). Every other cell was left as it was."
@@ -387,42 +433,55 @@ type DisplayCondition = {
   enabled?: boolean;
 };
 
-// The row filter as a Field | Operator | Value table — shared by find_rows and
-// update_row, which select rows the same way. Green when rows matched, red when
-// nothing matched, so the user sees exactly what was applied and why it did (or
-// didn't) hit any rows.
+const CONDITION_TONES = {
+  matched: {
+    frame: "border-green-300 text-green-800",
+    row: "border-green-200",
+    header: "bg-green-50",
+  },
+  danger: {
+    frame: "border-red-300 text-red-800",
+    row: "border-red-200",
+    header: "bg-red-50",
+  },
+  muted: {
+    frame: "border-border text-muted-foreground",
+    row: "border-border",
+    header: "bg-muted/60",
+  },
+} as const;
+
+// The row filter as a Field | Operator | Value table — shared by every action
+// that selects rows the same way. Green when rows matched; when none did, red by
+// default, because for find_rows and update_row that means nothing was read or
+// written. Actions where matching nothing is a perfectly good outcome
+// (insert_row_adjacent starts a new group) pass `unmatchedTone="muted"`, so a
+// normal run is never dressed up as a failure.
 const RowConditionsTable = ({
   conditions,
   input,
   unmatched,
+  unmatchedLabel = "No rows matched these conditions:",
+  unmatchedTone = "danger",
 }: {
   conditions: DisplayCondition[];
   input: unknown;
   unmatched: boolean;
+  unmatchedLabel?: string;
+  unmatchedTone?: "danger" | "muted";
 }) => {
   const active = conditions.filter(
     (c) => c.enabled !== false && c.column?.trim(),
   );
   if (active.length === 0) return null;
-  const rowBorder = unmatched ? "border-red-200" : "border-green-200";
+  const tone = CONDITION_TONES[unmatched ? unmatchedTone : "matched"];
+  const rowBorder = tone.row;
   return (
     <div
-      className={cn(
-        "overflow-hidden rounded-md border text-xs",
-        unmatched
-          ? "border-red-300 text-red-800"
-          : "border-green-300 text-green-800",
-      )}
+      className={cn("overflow-hidden rounded-md border text-xs", tone.frame)}
     >
-      <div
-        className={cn(
-          "px-2 py-1 font-medium",
-          unmatched ? "bg-red-50" : "bg-green-50",
-        )}
-      >
-        {unmatched
-          ? "No rows matched these conditions:"
-          : "Conditions applied — rows matched:"}
+      <div className={cn("px-2 py-1 font-medium", tone.header)}>
+        {unmatched ? unmatchedLabel : "Conditions applied — rows matched:"}
       </div>
       <table className="w-full table-fixed">
         <thead>
@@ -868,6 +927,101 @@ const NodeRow = ({
                 singleRowLabel={isChildRun ? "Updated" : null}
               />
             ) : null}
+          </div>
+        );
+      }
+
+      if (root?.action === "insert_row_adjacent") {
+        // This action ALWAYS writes — there is no no-op outcome. What varies is
+        // how many rows it wrote and where they went, so every line below states
+        // both. The cases: nothing matched (one row starts a new group at the
+        // bottom); one row went below the group; one row went below EACH match
+        // (a fan-out parent); or this is one child of that fan-out.
+        const addedRow = (root.rowByHeader ?? {}) as Record<string, string>;
+        const anchorRow = (root.anchorRow ?? {}) as Record<string, string>;
+        const count = typeof root.matchCount === "number" ? root.matchCount : 0;
+        const joinedGroup = root.insertedUnderGroup === true;
+        const rowNumber =
+          typeof root.rowIndex === "number" ? root.rowIndex : null;
+        const separated = root.blankSeparatorAdded === true;
+        // Present only in "below every matching row" mode, and only on the
+        // PARENT run — a child's reshaped output carries just its own row.
+        const addedRows = Array.isArray(root.insertedRows)
+          ? (root.insertedRows as Record<string, string>[])
+          : null;
+        const addedRowNumbers = Array.isArray(root.insertedRowIndexes)
+          ? (root.insertedRowIndexes as number[])
+          : null;
+        // The multi-row grid is for the fan-out PARENT only. A no-match run in
+        // that same mode wrote exactly one row (a new group at the bottom), so
+        // it renders like every other single-row insert.
+        const perMatch = addedRows !== null && !isChildRun && joinedGroup;
+
+        const at = rowNumber !== null ? ` It is now row ${rowNumber}.` : "";
+        const summary = !joinedGroup
+          ? // Nothing matched. Still a success — and in "per match" mode the
+            // fan-out did NOT happen, which the user has to be told: they chose
+            // "once per row", and the steps after this one ran exactly once.
+            `No rows in ${tab} matched the filter, so there was no group to add to. One new row was added at the bottom of the tab${
+              separated ? ", after a blank separator row" : ""
+            }, starting a group of its own.${at}${
+              addedRows !== null
+                ? " No rows matched, so nothing was fanned out — the steps after this one ran once."
+                : ""
+            }`
+          : isChildRun && childTotal !== null
+            ? `Run ${childIndex} of ${childTotal} — this run is handling the row below, one of the ${childTotal} rows this step added.`
+            : fannedOut !== null
+              ? // Fan-out parent: N matched, N rows added, N child runs.
+                fannedOut === 1
+                ? `1 row in ${tab} matched the filter, and a new row was added directly below it. Started one run for that row, so the steps after this one ran once.`
+                : `${fannedOut} rows in ${tab} matched the filter, and a new row was added directly below each one. Started one run per added row, so the steps after this one ran ${fannedOut} times.`
+              : count === 1
+                ? `Added 1 row to ${tab}, directly below the row that matched.${at}`
+                : `${count} rows in ${tab} matched the filter — they are the group. Added 1 row directly below the last of them, so it joins the bottom of that group.${at}`;
+
+        // The grid shows exactly the rows THIS run wrote: all of them in "per
+        // match" mode (labelled with the sheet row each landed on), otherwise
+        // the single row — with the row it was placed under above it, which is
+        // the one thing a lone "Added" row can't show.
+        const columns = perMatch
+          ? Object.keys(
+              Object.assign({}, ...(addedRows as Record<string, string>[])),
+            )
+          : Object.keys({ ...anchorRow, ...addedRow });
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>{summary}</SummaryMessage>
+            <RowConditionsTable
+              conditions={conditionRows}
+              input={node.input}
+              unmatched={!joinedGroup}
+              unmatchedLabel="No rows matched these conditions, so the new row started a group of its own:"
+              // Not a failure — a row was still written.
+              unmatchedTone="muted"
+            />
+            {columns.length === 0 ? null : perMatch ? (
+              <RowsGrid
+                columns={columns}
+                rows={addedRows as Record<string, string>[]}
+                rowLabels={addedRowNumbers?.map((n) => `Row ${n}`) ?? null}
+              />
+            ) : (
+              <RowChangeGrid
+                columns={columns}
+                before={{}}
+                after={addedRow}
+                singleRowLabel="Added"
+                // The anchor — absent when nothing matched, since then the row
+                // was placed under nothing at all.
+                contextRow={
+                  joinedGroup && Object.keys(anchorRow).length > 0
+                    ? { label: "Row above", cells: anchorRow }
+                    : null
+                }
+              />
+            )}
           </div>
         );
       }
