@@ -13,6 +13,7 @@ import {
   rewriteRefsInJson,
 } from "@/lib/node-ref";
 import {
+  assertNoEdgeIntoTrigger,
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
   syncTriggerPollsForWorkflow,
@@ -238,6 +239,11 @@ export const workflowsRouter = createTRPCRouter({
       const workflow = await prisma.workflow.findUniqueOrThrow({
         where: { id, userId: ctx.auth.user.id },
       });
+
+      // The canvas can't draw an edge into a trigger, but that guard is
+      // client-side — this is the server door for the same invariant, so a
+      // scripted client can't persist a graph the engine would mis-run.
+      assertNoEdgeIntoTrigger(nodes, edges);
 
       // Snapshot existing refs by node id BEFORE we replace the rows. The save
       // is a full delete+recreate, so we recover each node's frozen `ref` by its

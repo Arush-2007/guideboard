@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
+import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
 import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
@@ -52,6 +53,41 @@ export type GeneratedNode = GeneratedWorkflow["nodes"][number];
 const NODE_TYPE_VALUES = new Set<string>(Object.values(NodeType));
 
 /**
+ * Rejects any edge pointing INTO a trigger.
+ *
+ * Triggers are workflow roots: the engine runs them unconditionally and never
+ * reads an incoming edge (the reachability gate in `src/inngest/run-workflow.ts`
+ * roots on node TYPE, not in-degree). An edge into a trigger is therefore
+ * meaningless — and worse than inert, because the trigger would fire even on
+ * paths that are supposed to be dead: an untaken branch, or once per item inside
+ * a fan-out child's replay slice, which the engine explicitly promises won't
+ * re-fire triggers.
+ *
+ * The canvas already refuses to draw one (`invalidConnectionReason` in
+ * features/editor/lib/connection-validation.ts) — but that is a *client-side*
+ * guard, so every server write path has to enforce it too or a generated (or
+ * scripted) graph can persist a shape no user could ever draw. Called by
+ * `validateGeneratedWorkflowGraph` (covering both AI builders) and by
+ * `workflows.update` (the editor's save). Deliberately the same message as the
+ * canvas toast, so the rule reads identically wherever it surfaces.
+ */
+export function assertNoEdgeIntoTrigger(
+  nodes: { id: string; type?: string | null }[],
+  edges: { target: string }[],
+): void {
+  const typeById = new Map(nodes.map((node) => [node.id, node.type ?? null]));
+  for (const edge of edges) {
+    const type = typeById.get(edge.target);
+    if (type && TRIGGER_NODE_TYPES.has(type as NodeType)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Triggers can't receive a connection",
+      });
+    }
+  }
+}
+
+/**
  * Validates a generated graph beyond what the Zod schema covers: every node
  * type is a real `NodeType`, node ids are unique, and every edge references
  * known nodes. Throws `TRPCError(BAD_REQUEST)` on the first violation.
@@ -85,6 +121,10 @@ export function validateGeneratedWorkflowGraph(
       });
     }
   }
+
+  // Runs after the endpoint check, so every edge target is known to be a real
+  // node before its type is consulted.
+  assertNoEdgeIntoTrigger(nodes, edges);
 }
 
 /**
