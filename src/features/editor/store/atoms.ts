@@ -67,3 +67,15 @@ export const nodeStatusMapAtom = atom<Record<string, NodeStatus>>({});
 // — a boolean slice, so fixing one node re-renders just that node, not the whole
 // canvas. The Execute button reads the whole map to gate + name offenders.
 export const invalidNodeConfigAtom = atom<Record<string, string[]>>({});
+
+// Shared map of nodeId -> why that node cannot run as wired (an unreachable
+// action, or a trigger driving nothing), present ONLY for broken nodes. Written
+// solely by <ConnectivityValidator>, which derives it from the React Flow store
+// via `unrunnableNodes`. Each node reads only its own reason via
+// useUnrunnableReason(nodeId) — a string|null slice, so wiring one edge
+// re-renders only the nodes whose state actually flipped.
+//
+// Purely advisory: unlike `invalidNodeConfigAtom` this does NOT gate the Execute
+// button. A half-wired canvas is a normal intermediate state while building, and
+// the engine already tolerates orphans.
+export const unrunnableNodesAtom = atom<Record<string, string>>({});

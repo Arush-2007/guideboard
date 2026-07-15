@@ -38,6 +38,7 @@ import { channelNameForNodeType } from "@/features/executions/lib/node-status-re
 import { NodeType } from "@/generated/prisma";
 import { useEditorShortcuts } from "../hooks/use-editor-shortcuts";
 import { invalidConnectionReason } from "../lib/connection-validation";
+import { unrunnableNodes } from "../lib/connectivity";
 import { serializeSnapshot } from "../lib/snapshot";
 import {
   editorAtom,
@@ -47,8 +48,10 @@ import {
   STAGED_NODE_MIME,
   type StagedNode,
   stagedNodesAtom,
+  unrunnableNodesAtom,
 } from "../store/atoms";
 import { AddNodeButton } from "./add-node-button";
+import { DeletableEdge } from "./deletable-edge";
 import { ExecuteWorkflowButton } from "./execute-workflow-button";
 import { HistoryController } from "./history-controller";
 import { NavGuardDialog } from "./nav-guard-dialog";
@@ -202,6 +205,50 @@ const ConfigValidator = () => {
       setInvalid(map);
     }
   }, [nodes, setInvalid]);
+
+  return null;
+};
+
+// Derives which nodes cannot run as wired (an unreachable action, or a trigger
+// driving nothing) and is the sole writer of `unrunnableNodesAtom` (read by the
+// per-node warning badge). Like <ConfigValidator>, it reads the React Flow store
+// — the same source the Save button persists — so a wire deleted via the edge's
+// × button, the Delete key, or an undo all reach it identically. Must be a child
+// of <ReactFlowProvider>.
+//
+// The derivation runs on every store change (O(nodes + edges)), but the atom is
+// written ONLY when the reason map actually changes, so node drags never
+// re-render the nodes that read it.
+const ConnectivityValidator = () => {
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
+  const setUnrunnable = useSetAtom(unrunnableNodesAtom);
+  // Seeded `null`, NOT "" — an empty map serializes to "", so a `""` seed would
+  // make the first derivation of a clean canvas compare equal and skip its write,
+  // leaving whatever the previously-opened workflow published in the atom. The
+  // atom is an app-lifetime singleton (the jotai <Provider> is in the root
+  // layout), so it outlives this component and that stale state would persist.
+  const lastKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    const map = unrunnableNodes(nodes, edges);
+
+    // Order-independent change key so React Flow reordering the nodes array
+    // (e.g. elevate-on-select) can't masquerade as a connectivity change.
+    const key = Object.keys(map)
+      .sort()
+      .map((id) => `${id}:${map[id]}`)
+      .join(";");
+    if (key !== lastKeyRef.current) {
+      lastKeyRef.current = key;
+      setUnrunnable(map);
+    }
+  }, [nodes, edges, setUnrunnable]);
+
+  // Drop the map when the editor unmounts so a closed workflow can't leave
+  // entries behind in the shared atom — same contract <HistoryController> keeps
+  // for `historyControlsAtom`.
+  useEffect(() => () => setUnrunnable({}), [setUnrunnable]);
 
   return null;
 };
@@ -402,8 +449,11 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
     [nodeTypeSignature],
   );
 
+  const edgeTypes = useMemo(() => ({ deletable: DeletableEdge }), []);
+
   const defaultEdgeOptions = useMemo(
     () => ({
+      type: "deletable",
       markerEnd: {
         type: MarkerType.ArrowClosed,
         width: 18,
@@ -434,6 +484,10 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             publishing `invalidNodeConfigAtom` for the per-node badge and the
             Execute button. Renders nothing. */}
         <ConfigValidator />
+        {/* Derives which nodes can't run as wired off the same store, publishing
+            `unrunnableNodesAtom` for the per-node warning triangle. Renders
+            nothing. */}
+        <ConnectivityValidator />
         {/* Owns undo/redo: observes the same store to record history and
             restores into it. Renders nothing; publishes controls for the
             toolbar buttons. Inside the provider so it can read the store, and
@@ -471,6 +525,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             onConnect={onConnect}
             isValidConnection={isValidConnection}
             nodeTypes={nodeComponents}
+            edgeTypes={edgeTypes}
             defaultEdgeOptions={defaultEdgeOptions}
             onInit={setEditor}
             deleteKeyCode={["Delete", "Backspace"]}

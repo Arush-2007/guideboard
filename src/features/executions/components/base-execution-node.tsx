@@ -6,6 +6,7 @@ import Image from "next/image";
 import { memo, type ReactNode } from "react";
 import { BaseHandle } from "@/components/react-flow/base-handle";
 import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
+import { CannotRunBadge } from "@/components/react-flow/cannot-run-badge";
 import { NeedsConfigBadge } from "@/components/react-flow/needs-config-badge";
 import { NodeFailureBadge } from "@/components/react-flow/node-failure-badge";
 import {
@@ -68,6 +69,7 @@ export const BaseExecutionNode = memo(
             className="relative size-20 rounded-2xl"
           >
             <NeedsConfigBadge nodeId={id} />
+            <CannotRunBadge nodeId={id} />
             {status === "error" ? <NodeFailureBadge nodeId={id} /> : null}
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
