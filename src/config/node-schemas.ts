@@ -1,6 +1,9 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
+// `http-budget`, NOT `http` — this module runs in the browser (the dialogs validate
+// against it), and `http.ts` imports ky.
+import { MAX_USER_TIMEOUT_SECONDS } from "@/lib/http-budget";
 import { multiMatchConfigFields } from "@/lib/multi-match";
 import {
   hasActiveRowCondition,
@@ -41,6 +44,18 @@ const httpRequestSchema = z
     endpoint: z.string().min(1, { message: "Please enter a valid URL" }),
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
     body: z.string().optional(),
+    // Seconds in the UI (what a user thinks in), milliseconds everywhere else.
+    // The executor CLAMPS this to the platform's step budget — a user must not be
+    // able to ask for a clock the platform will not honour, because that yields an
+    // opaque platform kill instead of a clean node failure. See `clampUserTimeout`.
+    timeoutSeconds: z.coerce
+      .number()
+      .int()
+      .min(1, "Timeout must be at least 1 second")
+      .max(MAX_USER_TIMEOUT_SECONDS, {
+        message: `This deployment cannot run a request longer than ${MAX_USER_TIMEOUT_SECONDS}s`,
+      })
+      .optional(),
   })
   .passthrough();
 
