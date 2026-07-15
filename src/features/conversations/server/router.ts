@@ -1,13 +1,14 @@
-import prisma from "@/lib/db";
-import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
 import type { Prisma } from "@/generated/prisma";
+import prisma from "@/lib/db";
+import { isTimeout, timeoutSignal } from "@/lib/http";
 import {
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
   validateGeneratedWorkflowGraph,
 } from "@/lib/workflow-persistence";
+import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
 
 const ANTHROPIC_CONVERSATION_SYSTEM_PROMPT = `You are Guideboard AI, a conversational workflow automation builder.
 Your job is to help users build automations through natural conversation.
@@ -31,6 +32,38 @@ SCHEDULE_TRIGGER, TELEGRAM_TRIGGER, HTTP_REQUEST, AI_TEXT, AI_REPLY_GENERATOR,
 DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
+
+GOOGLE_SHEETS_ACTION supports four actions in its data: "append_row",
+"find_rows", "update_row" and "insert_row_adjacent". The last three select rows
+with the same AND-ed "conditions" array. find_rows with no conditions reads
+every row of the tab; every column is always returned. update_row overwrites the
+mapped columns of every row matching its conditions; unmapped columns keep their
+current value. update_row REQUIRES at least one condition (an empty filter would
+overwrite the whole sheet), and it never adds a row — when nothing matches it
+does nothing and reports "matched": false.
+
+insert_row_adjacent adds a new row INSIDE a group instead of at the bottom of the
+tab. Use it for a tab whose rows are grouped (every job for a customer kept
+together). It REQUIRES at least one condition — the conditions are what pick the
+group. "insertUnder" chooses where the row lands: "group" (the default) adds ONE
+row directly under the LAST matching row, i.e. below the group as a whole;
+"each_row" adds one row below EVERY matching row and then runs the steps after it
+once per added row (capped by "maxFanOutItems"). When nothing matches, one row
+starts a new group at the bottom of the tab (set "blankSeparators": true to leave
+one blank row above it). It takes no "onMultipleMatches" — several matches are
+its normal case, not a dilemma.
+
+In insert_row_adjacent's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
+cell of the row the new row is placed under, so a new row can copy values from
+the row above it (e.g. "Service Buyer": "@<anchorRow.Service Buyer>@").
+
+find_rows and update_row both accept "onMultipleMatches": "first" (default —
+find_rows continues with the first matching row; update_row updates it),
+"each" (run the steps after it once per matching row, each in its own run —
+update_row also writes every matched row; optional "maxFanOutItems" caps the
+runs, default 100), or "error" (fail the run when more than one row matches).
+Use "each" when the user wants to act on every matching row (e.g. "send an
+email for each overdue order").
 
 When in BUILDING phase, respond with ONLY this JSON:
 {
@@ -67,7 +100,7 @@ const conversationalResponseSchema = z.object({
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
 function stripMarkdownCodeFences(text: string): string {
-  let t = text.trim();
+  const t = text.trim();
   if (!t.startsWith("```")) {
     return t;
   }
@@ -170,6 +203,20 @@ export const conversationsRouter = createTRPCRouter({
               content: m.content,
             })),
           }),
+          // Was an UNBOUNDED fetch: a slow generation would hang the chat request
+          // until the platform killed it. This runs in tRPC with a human watching, so
+          // a timeout becomes a TRPCError the chat panel can render — an Inngest
+          // RetryAfterError would be meaningless here.
+          signal: timeoutSignal("LLM"),
+        }).catch((error: unknown) => {
+          if (isTimeout(error)) {
+            throw new TRPCError({
+              code: "TIMEOUT",
+              message:
+                "Claude took too long to respond. Please send your message again.",
+            });
+          }
+          throw error;
         });
 
         if (!res.ok) {

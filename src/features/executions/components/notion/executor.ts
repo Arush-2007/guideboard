@@ -1,12 +1,12 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 const NOTION_VERSION = "2022-06-28";
@@ -104,7 +104,9 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
   });
 
   if (!credential || credential.type !== CredentialType.NOTION) {
-    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
+    );
     throw new NonRetriableError(
       "Notion node: Notion credential not found or wrong type",
     );
@@ -117,14 +119,18 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
     }
     token = decrypt(credential.value).trim();
   } catch {
-    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
+    );
     throw new NonRetriableError(
       "Notion node: Failed to read integration token",
     );
   }
 
   if (!token) {
-    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
+    );
     throw new NonRetriableError("Notion node: Integration token is empty");
   }
 
@@ -192,12 +198,22 @@ export const notionExecutor: NodeExecutor<NotionActionData> = async ({
         };
       }
 
-      const res = await ky
+      const res = await http
         .post("https://api.notion.com/v1/pages", {
           headers: notionHeaders,
           json: requestBody,
+          timeout: HTTP_TIMEOUT.WRITE,
         })
-        .json<{ id: string; url?: string }>();
+        .json<{ id: string; url?: string }>()
+        .catch(
+          rethrowTimeout({
+            integration: "Notion",
+            timeoutClass: "WRITE",
+            // A retry would create a SECOND page.
+            idempotent: false,
+            hint: "The page may or may not have been created — check the database before re-running.",
+          }),
+        );
 
       return {
         ...context,

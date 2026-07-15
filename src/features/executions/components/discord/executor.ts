@@ -1,10 +1,10 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type DiscordData = {
@@ -61,12 +61,23 @@ export const discordExecutor: NodeExecutor<DiscordData> = async ({
         throw new NonRetriableError("Discord node: Webhook URL is required");
       }
 
-      await ky.post(config.webhookUrl as string, {
-        json: {
-          content: content.slice(0, 2000), // Discord's max message length
-          username,
-        },
-      });
+      await http
+        .post(config.webhookUrl as string, {
+          json: {
+            content: content.slice(0, 2000), // Discord's max message length
+            username,
+          },
+          timeout: HTTP_TIMEOUT.WRITE,
+        })
+        .catch(
+          rethrowTimeout({
+            integration: "Discord",
+            timeoutClass: "WRITE",
+            // A retry would post the message a SECOND time.
+            idempotent: false,
+            hint: "The message may already have been sent — check before re-running.",
+          }),
+        );
 
       return {
         ...context,

@@ -42,12 +42,35 @@ export type NodeOutputField = {
    * picker for power users). Human-readable, actionable fields omit the flag.
    */
   developer?: boolean;
+  /**
+   * Optional VARIABLE-PICKER visibility predicate, for nodes whose output shape
+   * depends on their saved config (e.g. a Sheets node only emits `matchCount`
+   * when its action is find_rows). Receives the placed node's saved `data`; a
+   * field without a predicate is always offered. The friendly execution view
+   * ignores this — it is already absence-driven (fields missing from a run's
+   * recorded output are dropped).
+   */
+  pickIf?: (data: Record<string, unknown> | null | undefined) => boolean;
 };
 
 export type NodeOutputDescriptor =
   | { rootKind: "fixed"; rootKey: string; fields: NodeOutputField[] }
   | { rootKind: "perNode"; fields: NodeOutputField[] }
   | { rootKind: "topLevel"; fields: NodeOutputField[] };
+
+// The Sheets action's pickable fields depend on the node's selected `action`
+// (append_row is the historical default when unset).
+const sheetsAction = (data: Record<string, unknown> | null | undefined) =>
+  (data?.action as string | undefined) ?? "append_row";
+const isSheetsAppend = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "append_row";
+const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "find_rows";
+const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "update_row";
+const isSheetsInsertAdjacent = (
+  data: Record<string, unknown> | null | undefined,
+) => sheetsAction(data) === "insert_row_adjacent";
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
 // here simply contribute no mappable fields yet (the `raw`/templating escape
@@ -124,7 +147,89 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
   [NodeType.GOOGLE_SHEETS_ACTION]: {
     rootKind: "perNode",
     fields: [
-      { path: "appendedRows", label: "Rows appended", example: "1" },
+      // NOTE: field `path`s must stay UNIQUE per node type — `pickIf` scopes
+      // which fields the PICKER offers, but the execution page's friendly
+      // views look fields up by path alone (resolveFields / describePath in
+      // friendly-output.ts), so two entries sharing a path would render twice
+      // and mislabel each other. Actions that emit the same key therefore share
+      // ONE entry with a label that reads correctly for all of them.
+      //
+      // `rowByHeader` is "the row this run wrote", header-keyed — the appended
+      // row, the updated row, the row inserted into a group, and in "each"
+      // (fan-out) mode the child run's own row. One reference survives a switch
+      // between the row-writing actions, and works per-row in every mode.
+      {
+        path: "rowByHeader",
+        label: "The row this step wrote (all columns)",
+        pickIf: (data) =>
+          isSheetsAppend(data) ||
+          isSheetsUpdate(data) ||
+          isSheetsInsertAdjacent(data),
+      },
+      {
+        path: "appendedRows",
+        label: "How many rows were added",
+        example: "1",
+        pickIf: isSheetsAppend,
+      },
+      // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
+      // the first match in "first"/"error" mode, and — in "each" (fan-out)
+      // mode — the child run's own row (each child carries a reshaped output
+      // where firstRow IS its row), so one reference works per-row everywhere.
+      {
+        path: "firstRow",
+        label: "The row this run matched (all columns)",
+        pickIf: isSheetsFindRows,
+      },
+      // find_rows: rows returned. update_row: rows overwritten. insert_row_adjacent:
+      // the size of the group the new row joined (0 ⇒ it started a new one).
+      {
+        path: "matchCount",
+        label: "How many rows matched the filter",
+        example: "3",
+        pickIf: (data) =>
+          isSheetsFindRows(data) ||
+          isSheetsUpdate(data) ||
+          isSheetsInsertAdjacent(data),
+      },
+      // update_row only.
+      {
+        path: "previousRow",
+        label: "The row as it was BEFORE this step changed it",
+        pickIf: isSheetsUpdate,
+      },
+      // False when nothing matched — the run updated no row at all. Branch on
+      // this to handle the "that row doesn't exist yet" case.
+      {
+        path: "matched",
+        label: "Whether a row was found to update (true/false)",
+        example: "true",
+        pickIf: isSheetsUpdate,
+      },
+      // insert_row_adjacent only. False ⇒ nothing matched, so the row started a
+      // new group at the bottom instead of joining one.
+      {
+        path: "insertedUnderGroup",
+        label: "Whether the row joined an existing group (true/false)",
+        example: "true",
+        pickIf: isSheetsInsertAdjacent,
+      },
+      // The row the new one was attached to: the group's last row, or — in
+      // "below every match" mode — the specific row this one sits under (each
+      // fan-out child carries its own). Empty when nothing matched.
+      {
+        path: "anchorRow",
+        label: "The row the new row was placed under (all columns)",
+        pickIf: isSheetsInsertAdjacent,
+      },
+      // Where the row landed. update_row emits this too (the row it overwrote),
+      // so the label reads correctly for both — one entry, one path.
+      {
+        path: "rowIndex",
+        label: "The sheet row number this step wrote",
+        example: "7",
+        pickIf: (data) => isSheetsInsertAdjacent(data) || isSheetsUpdate(data),
+      },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],
   },
@@ -347,7 +452,8 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
     rootKind: "fixed",
     rootKey: "googleForm",
     fields: [
-      { path: "respondentEmail", label: "Respondent email" },
+      { path: "respondentEmail", label: "Respondent email (if collected)" },
+      { path: "timestamp", label: "Submitted at" },
       { path: "formTitle", label: "Form title" },
       { path: "responses", label: "All responses (raw)" },
     ],

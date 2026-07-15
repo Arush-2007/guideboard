@@ -101,6 +101,9 @@ export function getUpstreamFields(
 
     if (descriptor) {
       for (const field of descriptor.fields) {
+        // Config-dependent fields (e.g. Sheets append vs find_rows) declare a
+        // predicate over the node's saved data; hide the ones that don't apply.
+        if (field.pickIf && !field.pickIf(node.data)) continue;
         const path = resolveOutputPath(type, id, field.path, node.ref);
         if (!path) continue;
         rows.push({

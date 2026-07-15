@@ -1,5 +1,4 @@
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { CompareOperator } from "@/features/executions/lib/compare";
 import type { NodeExecutor } from "@/features/executions/types";
@@ -12,6 +11,12 @@ import {
 } from "@/lib/candidate-scoring";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import {
+  carriesRetryDecision,
+  HTTP_TIMEOUT,
+  http,
+  rethrowTimeout,
+} from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type ScoringProvider = "rules" | "affinda";
@@ -67,10 +72,24 @@ async function ensureResumeIndexed(
 ): Promise<void> {
   const headers = { Authorization: `Bearer ${apiKey}` };
   const addDocument = () =>
-    ky.post(
-      `${AFFINDA_BASE}/v2/index/${encodeURIComponent(indexName)}/documents`,
-      { headers, json: { document: resumeId }, timeout: 60_000 },
-    );
+    http
+      .post(
+        `${AFFINDA_BASE}/v2/index/${encodeURIComponent(indexName)}/documents`,
+        {
+          headers,
+          json: { document: resumeId },
+          timeout: HTTP_TIMEOUT.SLOW_API,
+        },
+      )
+      .catch(
+        rethrowTimeout({
+          integration: "Affinda",
+          timeoutClass: "SLOW_API",
+          // Indexing the same document twice is a no-op on Affinda's side.
+          idempotent: true,
+          hint: "Affinda's index is slow right now.",
+        }),
+      );
 
   try {
     await addDocument();
@@ -88,11 +107,21 @@ async function ensureResumeIndexed(
       (/object_not_found/i.test(text) && /"attr":\s*"index"/i.test(text));
     if (indexMissing) {
       try {
-        await ky.post(`${AFFINDA_BASE}/v2/index`, {
-          headers,
-          json: { name: indexName, docType: "resumes" },
-          timeout: 60_000,
-        });
+        await http
+          .post(`${AFFINDA_BASE}/v2/index`, {
+            headers,
+            json: { name: indexName, docType: "resumes" },
+            timeout: HTTP_TIMEOUT.SLOW_API,
+          })
+          .catch(
+            rethrowTimeout({
+              integration: "Affinda",
+              timeoutClass: "SLOW_API",
+              // Creating an index that exists is tolerated below as a create race.
+              idempotent: true,
+              hint: "Affinda is slow right now.",
+            }),
+          );
       } catch (createError) {
         // Tolerate a create race (another run made it first).
         const created = await errorBody(createError);
@@ -190,7 +219,7 @@ export const candidateScoringExecutor: NodeExecutor<
       );
 
       output = await step.run("affinda-match", async () => {
-        const res = await ky
+        const res = await http
           .get(`${AFFINDA_BASE}/v3/resume_search/match`, {
             headers: { Authorization: `Bearer ${apiKey}` },
             searchParams: {
@@ -203,9 +232,19 @@ export const candidateScoringExecutor: NodeExecutor<
                 ]),
               ),
             },
-            timeout: 60_000,
+            // ML scoring is genuinely slow work on their side.
+            timeout: HTTP_TIMEOUT.SLOW_API,
           })
-          .json<AffindaMatchResponse>();
+          .json<AffindaMatchResponse>()
+          .catch(
+            rethrowTimeout({
+              integration: "Affinda",
+              timeoutClass: "SLOW_API",
+              // Scoring is a pure read — re-running it returns the same score.
+              idempotent: true,
+              hint: "Affinda's scoring is slow right now.",
+            }),
+          );
 
         const score = Math.round((res.score ?? 0) * 100);
         const reasons = Object.values(res.details ?? {})
@@ -261,7 +300,10 @@ export const candidateScoringExecutor: NodeExecutor<
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
-    if (error instanceof NonRetriableError) throw error;
+    // Pass through anything that ALREADY carries a retry decision (a classified
+    // timeout, a 429 with Retry-After, a transient 5xx). Re-wrapping it below would
+    // flatten it into "never retry" and turn a recoverable blip into a failed run.
+    if (carriesRetryDecision(error)) throw error;
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Candidate scoring failed",
     );

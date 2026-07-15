@@ -2,10 +2,13 @@
 
 import { useEdges, useNodes } from "@xyflow/react";
 import { Wand2 } from "lucide-react";
+import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { VariableInput } from "@/components/variable-input";
+import type { PickerExtraGroup } from "@/components/variable-picker";
 import { getUpstreamFields } from "@/lib/upstream-fields";
+import { cn } from "@/lib/utils";
 
 export type FieldMappingTarget = { key: string; label: string };
 
@@ -17,6 +20,25 @@ export type FieldMappingProps = {
   onChange: (next: Record<string, string>) => void;
   currentNodeId: string;
   workflowId?: string;
+  /**
+   * Optional per-row control rendered as a third column (e.g. a "required"
+   * toggle, a column on/off checkbox, a set/add select). When provided the row
+   * grid gains a third `auto` column; when omitted the layout is unchanged.
+   */
+  renderAccessory?: (target: FieldMappingTarget) => ReactNode;
+  /**
+   * Fields the node offers about ITSELF (not inherited from upstream), shown as
+   * their own picker group — e.g. the Sheets insert action's "the row this one
+   * is attached to". Deliberately excluded from "Auto-map by name": auto-filling
+   * every column from the anchor row would silently duplicate it.
+   */
+  extraGroups?: PickerExtraGroup[];
+  /**
+   * Override for the variable picker's popover anchor. Defaults to `ml-72`
+   * (half the standard config dialog); pass `ml-96` when rendered inside a
+   * `WideOverlayPanel` so the popover clears the wider overlay's right edge.
+   */
+  anchorClassName?: string;
 };
 
 function normalize(s: string): string {
@@ -35,6 +57,9 @@ export function FieldMapping({
   onChange,
   currentNodeId,
   workflowId,
+  renderAccessory,
+  extraGroups,
+  anchorClassName,
 }: FieldMappingProps) {
   const nodes = useNodes();
   const edges = useEdges();
@@ -83,7 +108,12 @@ export function FieldMapping({
         {targets.map((target) => (
           <div
             key={target.key}
-            className="grid grid-cols-[1fr_1.6fr] items-center gap-3"
+            className={cn(
+              "grid items-center gap-3",
+              renderAccessory
+                ? "grid-cols-[1fr_1.6fr_auto]"
+                : "grid-cols-[1fr_1.6fr]",
+            )}
           >
             <Label
               className="truncate text-sm font-medium"
@@ -97,7 +127,10 @@ export function FieldMapping({
               placeholder="Type a value or insert a field"
               currentNodeId={currentNodeId}
               workflowId={workflowId}
+              extraGroups={extraGroups}
+              anchorClassName={anchorClassName}
             />
+            {renderAccessory ? renderAccessory(target) : null}
           </div>
         ))}
       </div>

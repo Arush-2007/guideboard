@@ -1,16 +1,17 @@
 "use client";
 
-import dynamic from "next/dynamic";
-
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { WhatsappActionFormValues } from "./dialog";
+
 const WhatsappActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.WhatsappActionDialog),
 );
+
 import { getNodeOption } from "@/config/node-options";
 import { NodeType } from "@/generated/prisma";
 

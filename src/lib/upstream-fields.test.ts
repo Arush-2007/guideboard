@@ -85,4 +85,69 @@ describe("getUpstreamFields", () => {
       }),
     );
   });
+
+  it("filters config-dependent fields by the node's saved data (pickIf)", () => {
+    const edges2 = [{ source: "g1", target: "c2" }];
+    const labelsFor = (data: Record<string, unknown>) =>
+      getUpstreamFields(
+        "c2",
+        [
+          { id: "g1", type: NodeType.GOOGLE_SHEETS_ACTION, data },
+          { id: "c2", type: NodeType.DISCORD },
+        ],
+        edges2,
+      ).map((r) => r.fieldLabel);
+
+    const ROW_WRITTEN = "The row this step wrote (all columns)";
+    const ROWS_ADDED = "How many rows were added";
+    const ROW_MATCHED = "The row this run matched (all columns)";
+    const MATCH_COUNT = "How many rows matched the filter";
+    const ROW_BEFORE = "The row as it was BEFORE this step changed it";
+    const WAS_FOUND = "Whether a row was found to update (true/false)";
+    const JOINED_GROUP =
+      "Whether the row joined an existing group (true/false)";
+    const ROW_NUMBER = "The sheet row number this step wrote";
+    const ANCHOR_ROW = "The row the new row was placed under (all columns)";
+
+    const findLabels = labelsFor({ action: "find_rows" });
+    expect(findLabels).toContain(ROW_MATCHED);
+    expect(findLabels).toContain(MATCH_COUNT);
+    expect(findLabels).not.toContain(ROWS_ADDED);
+    expect(findLabels).not.toContain(WAS_FOUND);
+
+    // append_row is the default when action is unset.
+    const appendLabels = labelsFor({});
+    expect(appendLabels).toContain(ROW_WRITTEN);
+    expect(appendLabels).toContain(ROWS_ADDED);
+    expect(appendLabels).not.toContain(ROW_MATCHED);
+    expect(appendLabels).not.toContain(MATCH_COUNT);
+
+    // update_row shares `rowByHeader` with append (one entry, so the friendly
+    // views can't render it twice) and `matchCount` with find_rows, and adds
+    // `matched` + `previousRow` of its own. It must NOT offer append's counter.
+    const updateLabels = labelsFor({ action: "update_row" });
+    expect(updateLabels).toContain(ROW_WRITTEN);
+    expect(updateLabels).toContain(MATCH_COUNT);
+    expect(updateLabels).toContain(WAS_FOUND);
+    expect(updateLabels).toContain(ROW_BEFORE);
+    expect(updateLabels).toContain(ROW_NUMBER);
+    expect(updateLabels).not.toContain(ROWS_ADDED);
+    expect(updateLabels).not.toContain(ROW_MATCHED);
+    expect(updateLabels).not.toContain(JOINED_GROUP);
+
+    // insert_row_adjacent writes ONE new row, so it shares `rowByHeader` with
+    // the other writers and `matchCount` with the other matchers (there the
+    // count is the size of the group it joined), and adds `insertedUnderGroup`.
+    // It never updates a row, so update's `matched` / `previousRow` are absent.
+    const insertLabels = labelsFor({ action: "insert_row_adjacent" });
+    expect(insertLabels).toContain(ROW_WRITTEN);
+    expect(insertLabels).toContain(MATCH_COUNT);
+    expect(insertLabels).toContain(JOINED_GROUP);
+    expect(insertLabels).toContain(ROW_NUMBER);
+    expect(insertLabels).toContain(ANCHOR_ROW);
+    expect(insertLabels).not.toContain(WAS_FOUND);
+    expect(insertLabels).not.toContain(ROW_BEFORE);
+    expect(insertLabels).not.toContain(ROWS_ADDED);
+    expect(insertLabels).not.toContain(ROW_MATCHED);
+  });
 });

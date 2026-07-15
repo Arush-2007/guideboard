@@ -1,14 +1,15 @@
 "use client";
 
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import dynamic from "next/dynamic";
-
-import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { BaseTriggerNode } from "../base-trigger-node";
 import type { GoogleSheetsTriggerFormValues } from "./dialog";
+
 const GoogleSheetsTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsTriggerDialog),
 );
+
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";

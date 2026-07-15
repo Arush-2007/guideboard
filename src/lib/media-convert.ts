@@ -1,6 +1,24 @@
 import "server-only";
 import { FORMAT_META, type Format } from "@/lib/conversions";
 import { assertWithinTransferLimit } from "@/lib/file-limits";
+import { rethrowTimeout, timeoutSignal } from "@/lib/http";
+
+/**
+ * Every CloudConvert call is bounded.
+ *
+ * These were raw `fetch`es with NO timeout at all — worse than a wrong timeout,
+ * because a hung `fetch` holds the serverless invocation open until the PLATFORM
+ * kills it, which surfaces as an opaque platform error rather than a node failure.
+ *
+ * All three are safe to repeat: CloudConvert jobs are addressed by id, the upload
+ * is a presigned PUT-style overwrite, and the download is a read.
+ */
+const CLOUDCONVERT = {
+  integration: "CloudConvert",
+  timeoutClass: "MEDIA",
+  idempotent: true,
+  hint: "The file may be large, or CloudConvert may be busy right now.",
+} as const;
 
 /**
  * Binary/media conversions (images, PDF, audio, video) can't run in the
@@ -72,12 +90,14 @@ async function ccRequest<T>(
 ): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
+    // After the spread: no caller may opt out of being bounded.
+    signal: timeoutSignal("MEDIA"),
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
       ...init?.headers,
     },
-  });
+  }).catch(rethrowTimeout(CLOUDCONVERT));
   if (!res.ok) {
     throw new Error(
       `CloudConvert ${path} failed: ${res.status} ${res.statusText}`,
@@ -99,7 +119,11 @@ async function uploadToForm(
   // stricter ArrayBuffer-vs-ArrayBufferLike generic on Blob parts.
   body.append("file", new Blob([source.bytes as BlobPart]), source.filename);
 
-  const res = await fetch(form.url, { method: "POST", body });
+  const res = await fetch(form.url, {
+    method: "POST",
+    body,
+    signal: timeoutSignal("MEDIA"),
+  }).catch(rethrowTimeout(CLOUDCONVERT));
   // S3-style upload endpoints answer 201 (or 200/204) on success.
   if (!res.ok) {
     throw new Error(
@@ -210,7 +234,9 @@ export async function fetchMediaResult(
     throw new Error("CloudConvert: no output file was produced");
   }
 
-  const download = await fetch(file.url);
+  const download = await fetch(file.url, {
+    signal: timeoutSignal("MEDIA"),
+  }).catch(rethrowTimeout(CLOUDCONVERT));
   if (!download.ok) {
     throw new Error(
       `CloudConvert: output download failed: ${download.status} ${download.statusText}`,

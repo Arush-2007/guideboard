@@ -1,5 +1,4 @@
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { buildFailureEmail } from "@/features/executions/lib/failure-email";
 import type { StepTools } from "@/features/executions/types";
 import {
@@ -17,13 +16,28 @@ import {
 import { clampJson, isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
+import { SHEETS_READ, sheetRange } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
-import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
+import { planFanOutDispatches } from "./fan-out";
+import {
+  type FanOutDispatcher,
+  type NodeRecorder,
+  runWorkflowNodes,
+} from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
+
+/** The Gmail poller's reads — listing and fetching messages changes nothing. */
+const GMAIL_READ = {
+  integration: "Gmail",
+  timeoutClass: "READ",
+  idempotent: true,
+  hint: "Gmail is slow right now; the next poll will pick these up.",
+} as const;
 
 /**
  * Prisma-backed NodeRecorder: writes one NodeExecution row per node, once when
@@ -134,6 +148,77 @@ function createPrismaNodeRecorder({
 }
 
 /**
+ * Inngest/blob-backed FanOutDispatcher: turns a fan-out node's items into one
+ * child sub-execution each — a replay-from-node run of the fan-out node +
+ * descendants, seeded with the per-item payload. All sends happen inside ONE
+ * `step.run` so a retried step re-emits every item; the children's own
+ * `check-idempotency` step then dedupes on the per-item `idempotencyKey`. Safe
+ * because same-workflow runs serialize under `executeWorkflow`'s concurrency
+ * limit, so no duplicate child can slip through concurrently.
+ */
+function createFanOutDispatcher({
+  step,
+  executionId,
+  workflowId,
+}: {
+  step: StepTools;
+  executionId: string;
+  workflowId: string;
+}): FanOutDispatcher {
+  return {
+    async dispatch({ nodeId, outputKey, context, items }) {
+      await step.run(`fan-out:${nodeId}`, async () => {
+        const plans = planFanOutDispatches({
+          items,
+          context,
+          outputKey,
+          executionId,
+          nodeId,
+        });
+
+        // Sequential so an oversized-but-unconfigured item throws before later
+        // sends fire, and so retries re-walk the same order deterministically.
+        for (const plan of plans) {
+          if (plan.oversized) {
+            if (!isBlobConfigured()) {
+              throw new NonRetriableError(
+                `Fan-out item ${plan.index} is too large to send inline and ` +
+                  "blob storage (R2) is not configured — set R2_ACCOUNT_ID, " +
+                  "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET so " +
+                  "oversized item contexts can be offloaded instead of " +
+                  "exceeding the Inngest event size limit.",
+              );
+            }
+            await putBlob({
+              key: plan.blobKey,
+              bytes: Buffer.from(JSON.stringify(plan.seeded)),
+              contentType: "application/json",
+            });
+            await sendWorkflowExecution({
+              workflowId,
+              initialDataBlobKey: plan.blobKey,
+              replayFromNodeId: nodeId,
+              replayOfExecutionId: executionId,
+              idempotencyKey: plan.idempotencyKey,
+            });
+          } else {
+            await sendWorkflowExecution({
+              workflowId,
+              initialData: plan.seeded,
+              replayFromNodeId: nodeId,
+              replayOfExecutionId: executionId,
+              idempotencyKey: plan.idempotencyKey,
+            });
+          }
+        }
+
+        return { dispatched: plans.length };
+      });
+    },
+  };
+}
+
+/**
  * Best-effort failure alert. Honors the per-user opt-out (default on when no
  * NotificationSettings row exists) and names the offending node when a FAILED
  * NodeExecution exists — degrading gracefully when the run failed before any
@@ -183,6 +268,12 @@ export const executeWorkflow = inngest.createFunction(
   {
     id: "execute-workflow",
     retries: process.env.NODE_ENV === "production" ? 3 : 0,
+    // Serialize runs of the same workflow: at most one execution in flight per
+    // workflowId. Stops same-workflow triggers (e.g. a form submission and a
+    // hand-edit) from interleaving and racing on shared external state, and
+    // closes the create-vs-check-idempotency window on trigger bursts. Distinct
+    // workflows still run fully in parallel (the key partitions the limit).
+    concurrency: { key: "event.data.workflowId", limit: 1 },
     onFailure: async ({ event }) => {
       const execution = await prisma.execution.update({
         where: { inngestEventId: event.data.event.id },
@@ -359,6 +450,11 @@ export const executeWorkflow = inngest.createFunction(
       step,
       publish,
       recorder: createPrismaNodeRecorder({ step, executionId }),
+      fanOutDispatcher: createFanOutDispatcher({
+        step,
+        executionId,
+        workflowId,
+      }),
       replayFromNodeId,
     });
 
@@ -554,15 +650,17 @@ export const handleGmailPoll = inngest.createFunction(
         Authorization: `Bearer ${accessToken}`,
       };
 
-      const list = await ky
+      const list = await http
         .get("https://gmail.googleapis.com/gmail/v1/users/me/messages", {
           headers,
           searchParams: {
             q: "is:unread",
             maxResults: "10",
           },
+          timeout: HTTP_TIMEOUT.READ,
         })
-        .json<GmailListResponse>();
+        .json<GmailListResponse>()
+        .catch(rethrowTimeout(GMAIL_READ));
 
       for (const msg of list.messages ?? []) {
         const metadataParams = new URLSearchParams();
@@ -570,15 +668,17 @@ export const handleGmailPoll = inngest.createFunction(
         metadataParams.append("metadataHeaders", "Subject");
         metadataParams.append("metadataHeaders", "From");
 
-        const detail = await ky
+        const detail = await http
           .get(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
             {
               headers,
               searchParams: metadataParams,
+              timeout: HTTP_TIMEOUT.READ,
             },
           )
-          .json<GmailMessageResponse>();
+          .json<GmailMessageResponse>()
+          .catch(rethrowTimeout(GMAIL_READ));
 
         const subject = getHeaderValue(detail.payload?.headers, "Subject");
         const from = getHeaderValue(detail.payload?.headers, "From");
@@ -597,18 +697,30 @@ export const handleGmailPoll = inngest.createFunction(
           idempotencyKey: `gmail:${msg.id}`,
         });
 
-        await ky.post(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`,
-          {
-            headers: {
-              ...headers,
-              "Content-Type": "application/json",
+        await http
+          .post(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`,
+            {
+              headers: {
+                ...headers,
+                "Content-Type": "application/json",
+              },
+              json: {
+                removeLabelIds: ["UNREAD"],
+              },
+              timeout: HTTP_TIMEOUT.WRITE,
             },
-            json: {
-              removeLabelIds: ["UNREAD"],
-            },
-          },
-        );
+          )
+          .catch(
+            rethrowTimeout({
+              integration: "Gmail",
+              timeoutClass: "WRITE",
+              // Removing a label already removed is a no-op — this is a set
+              // operation, not an append, so repeating it is safe.
+              idempotent: true,
+              hint: "Gmail is slow right now; the message stays unread until this succeeds.",
+            }),
+          );
       }
 
       await prisma.gmailPoll.update({
@@ -674,17 +786,23 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         return;
       }
 
-      const a1Range = `${poll.sheetName}!A:ZZ`;
-      const valuesResult = await ky
+      const a1Range = sheetRange(poll.sheetName, "A:ZZ");
+      // The SAME wide A:ZZ read that died on ky's 10s default — and this one is on a
+      // 5-minute cron, so a silent timeout here means the trigger just stops firing.
+      const valuesResult = await http
         .get(
           `https://sheets.googleapis.com/v4/spreadsheets/${poll.spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
             },
+            timeout: HTTP_TIMEOUT.READ,
           },
         )
-        .json<GoogleSheetsValuesResponse>();
+        .json<GoogleSheetsValuesResponse>()
+        .catch(
+          rethrowTimeout({ integration: "Google Sheets", ...SHEETS_READ }),
+        );
 
       const rows = valuesResult.values ?? [];
       const currentRowCount = rows.length;

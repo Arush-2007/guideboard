@@ -3,6 +3,7 @@
 import { useEdges, useNodes } from "@xyflow/react";
 import { Braces } from "lucide-react";
 import { useMemo, useState } from "react";
+import { CustomFeatureEntry } from "@/components/custom-feature-entry";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -10,11 +11,23 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { getCustomFeatures } from "@/config/custom-features";
 import {
   getUpstreamFields,
   type UpstreamFieldRow,
 } from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
+
+/**
+ * A group of fields the CURRENT node offers about itself, rather than fields
+ * inherited from an upstream node — the Sheets insert action's "row it is
+ * attached to" is the first of these. Listed above the upstream groups, since
+ * they belong to the step the user is configuring.
+ */
+export type PickerExtraGroup = {
+  label: string;
+  fields: { insertText: string; fieldLabel: string }[];
+};
 
 export type VariablePickerProps = {
   currentNodeId: string;
@@ -23,12 +36,22 @@ export type VariablePickerProps = {
   onSelect: (variablePath: string) => void;
   disabled?: boolean;
   className?: string;
+  /** The field's current value — lets a custom feature pre-fill from its token. */
+  currentValue?: string;
+  /** Fields the current node supplies itself (see PickerExtraGroup). */
+  extraGroups?: PickerExtraGroup[];
   /**
    * Insert the bare dotted context path (e.g. `ai_text_abc.output`) instead of
    * the `@<path>@` template form. Used by inputs that consume a raw path rather
    * than a rendered template — e.g. the Condition node's "Field path".
    */
   bare?: boolean;
+  /**
+   * Horizontal offset for the fixed popover anchor. Defaults to `ml-72` (≈ half
+   * the standard `sm:max-w-xl` dialog). Pass `ml-96` when the picker lives in a
+   * wider `WideOverlayPanel` (`sm:max-w-3xl`) so the popover clears its edge.
+   */
+  anchorClassName?: string;
 };
 
 /** Strips the `@<path>@` template wrapper down to the bare dotted path. */
@@ -36,12 +59,59 @@ function toBarePath(insertText: string): string {
   return insertText.replace(/^@<\s*/, "").replace(/\s*>@$/, "");
 }
 
+/**
+ * One labelled section of the picker: an upstream node's fields, or a group the
+ * current node supplies itself. Both render identically — the only difference is
+ * where the fields came from.
+ */
+const PickerGroup = ({
+  label,
+  fields,
+  bare,
+  onPick,
+}: {
+  label: string;
+  fields: { insertText: string; fieldLabel: string }[];
+  bare?: boolean;
+  onPick: (inserted: string) => void;
+}) => (
+  <div className="mb-1">
+    <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+      {label}
+    </div>
+    <ul>
+      {fields.map((field) => {
+        const inserted = bare ? toBarePath(field.insertText) : field.insertText;
+        return (
+          <li key={field.insertText}>
+            <button
+              type="button"
+              className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+              onClick={() => onPick(inserted)}
+            >
+              <span className="font-medium text-foreground">
+                {field.fieldLabel}
+              </span>
+              <span className="w-full break-all font-mono text-xs text-muted-foreground">
+                {inserted}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  </div>
+);
+
 export function VariablePicker({
   currentNodeId,
   onSelect,
   disabled,
   className,
   bare,
+  currentValue,
+  extraGroups = [],
+  anchorClassName = "ml-72",
 }: VariablePickerProps) {
   const [open, setOpen] = useState(false);
 
@@ -65,6 +135,20 @@ export function VariablePicker({
     return [...byNode.values()];
   }, [nodes, edges, currentNodeId]);
 
+  // Custom features belong to the CURRENT node's type (not an upstream node),
+  // and are meaningless for bare-path inputs (they insert a `@<custom:…>@`
+  // token, not a dotted path).
+  const customFeatures = useMemo(() => {
+    const node = nodes.find((n) => n.id === currentNodeId);
+    return getCustomFeatures(node?.type);
+  }, [nodes, currentNodeId]);
+  const showCustom = !bare && customFeatures.length > 0;
+
+  const pick = (inserted: string) => {
+    onSelect(inserted);
+    setOpen(false);
+  };
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -81,10 +165,16 @@ export function VariablePicker({
       </PopoverTrigger>
       {/* Anchor the panel to a fixed point at the right edge of the centered
           config dialog, so it opens in the SAME place every time — independent
-          of which field's button was clicked. ml-72 (18rem) ≈ half the dialog's
-          sm:max-w-xl width; top-1/2 + align="center" keeps it vertically
-          centered next to the dialog. */}
-      <PopoverAnchor className="pointer-events-none fixed top-1/2 left-1/2 ml-72 h-0 w-0" />
+          of which field's button was clicked. anchorClassName sets the offset:
+          ml-72 (18rem) ≈ half the dialog's sm:max-w-xl width; a WideOverlayPanel
+          passes ml-96. top-1/2 + align="center" keeps it vertically centered
+          next to the dialog. */}
+      <PopoverAnchor
+        className={cn(
+          "pointer-events-none fixed top-1/2 left-1/2 h-0 w-0",
+          anchorClassName,
+        )}
+      />
       <PopoverContent
         side="right"
         align="center"
@@ -93,9 +183,9 @@ export function VariablePicker({
         className="w-80 border-primary/60 p-0"
       >
         <div className="border-b px-3 py-2 text-center text-sm font-medium">
-          Insert a field from a previous step
+          Insert a field
         </div>
-        {groups.length === 0 ? (
+        {groups.length === 0 && !showCustom && extraGroups.length === 0 ? (
           <div className="px-3 py-6 text-center text-sm text-muted-foreground">
             No previous steps are connected before this one yet.
           </div>
@@ -110,38 +200,43 @@ export function VariablePicker({
               e.currentTarget.scrollTop += e.deltaY;
             }}
           >
-            {groups.map((group) => (
-              <div key={group.fields[0].nodeId} className="mb-1">
+            {showCustom ? (
+              <div className="mb-1">
                 <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {group.nodeLabel}
+                  Custom
                 </div>
                 <ul>
-                  {group.fields.map((row) => {
-                    const inserted = bare
-                      ? toBarePath(row.insertText)
-                      : row.insertText;
-                    return (
-                      <li key={row.insertText}>
-                        <button
-                          type="button"
-                          className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-                          onClick={() => {
-                            onSelect(inserted);
-                            setOpen(false);
-                          }}
-                        >
-                          <span className="font-medium text-foreground">
-                            {row.fieldLabel}
-                          </span>
-                          <span className="w-full break-all font-mono text-xs text-muted-foreground">
-                            {inserted}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
+                  {customFeatures.map((feature) => (
+                    <CustomFeatureEntry
+                      key={feature.id}
+                      feature={feature}
+                      currentValue={currentValue}
+                      onInsert={(token) => {
+                        onSelect(token);
+                        setOpen(false);
+                      }}
+                    />
+                  ))}
                 </ul>
               </div>
+            ) : null}
+            {extraGroups.map((group) => (
+              <PickerGroup
+                key={group.label}
+                label={group.label}
+                fields={group.fields}
+                bare={bare}
+                onPick={pick}
+              />
+            ))}
+            {groups.map((group) => (
+              <PickerGroup
+                key={group.fields[0].nodeId}
+                label={group.nodeLabel}
+                fields={group.fields}
+                bare={bare}
+                onPick={pick}
+              />
             ))}
           </div>
         )}

@@ -1,10 +1,10 @@
 "use server";
 
+import { headers } from "next/headers";
+import { parseNodeConfig } from "@/config/node-schemas";
+import { NodeType } from "@/generated/prisma";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
-import { headers } from "next/headers";
-import { NodeType } from "@/generated/prisma";
-import { parseNodeConfig } from "@/config/node-schemas";
 
 export type InstagramCommentTriggerConfig = {
   postId?: string;

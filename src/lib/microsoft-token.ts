@@ -1,6 +1,6 @@
-import ky from "ky";
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
+import { asTimeoutError, HTTP_TIMEOUT, http } from "@/lib/http";
 
 type MicrosoftRefreshResponse = {
   access_token: string;
@@ -55,8 +55,9 @@ export async function refreshMicrosoftTokenIfNeeded(
 
   let response: MicrosoftRefreshResponse;
   try {
-    response = await ky
+    response = await http
       .post(MICROSOFT_TOKEN_URL, {
+        timeout: HTTP_TIMEOUT.TOKEN,
         body: new URLSearchParams({
           grant_type: "refresh_token",
           client_id: clientId,
@@ -68,6 +69,17 @@ export async function refreshMicrosoftTokenIfNeeded(
       })
       .json<MicrosoftRefreshResponse>();
   } catch (err) {
+    // Classify BEFORE the generic wrap below — re-wrapping a timeout as a plain
+    // Error would erase its retry decision and lose the actionable message.
+    const timeout = asTimeoutError(err, {
+      integration: "Microsoft sign-in",
+      timeoutClass: "TOKEN",
+      // A token refresh is safe to repeat.
+      idempotent: true,
+      hint: "This is Microsoft's OAuth service, not your workbook — usually transient.",
+    });
+    if (timeout) throw timeout;
+
     const message = err instanceof Error ? err.message : "unknown error";
     throw new Error(
       `Microsoft token refresh failed: ${message}. If this persists, reconnect your Microsoft account in Credentials.`,

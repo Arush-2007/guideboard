@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { ActivityIcon, Clock3Icon, SparklesIcon } from "lucide-react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 export const DashboardRightRail = () => {
@@ -13,8 +13,14 @@ export const DashboardRightRail = () => {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm text-muted-foreground">
-          <p>Create reusable credentials once, then attach them to multiple nodes.</p>
-          <p>Run workflows from the editor and inspect each execution in the history page.</p>
+          <p>
+            Create reusable credentials once, then attach them to multiple
+            nodes.
+          </p>
+          <p>
+            Run workflows from the editor and inspect each execution in the
+            history page.
+          </p>
         </CardContent>
       </Card>
 
@@ -23,13 +29,22 @@ export const DashboardRightRail = () => {
           <CardTitle className="text-sm">Quick Access</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm">
-          <Link href="/workflows" className="block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/70">
+          <Link
+            href="/workflows"
+            className="block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/70"
+          >
             Workflows
           </Link>
-          <Link href="/credentials" className="block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/70">
+          <Link
+            href="/credentials"
+            className="block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/70"
+          >
             Credentials
           </Link>
-          <Link href="/executions" className="block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/70">
+          <Link
+            href="/executions"
+            className="block rounded-lg px-2.5 py-2 transition-colors hover:bg-accent/70"
+          >
             Executions
           </Link>
         </CardContent>

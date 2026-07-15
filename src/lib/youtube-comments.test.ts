@@ -1,15 +1,21 @@
+import ky from "ky";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
-import ky from "ky";
 import { fetchNewYoutubeComments } from "./youtube-comments";
 
 vi.mock("@/lib/youtube-token", () => ({
   refreshYoutubeTokenIfNeeded: vi.fn(),
 }));
 
-vi.mock("ky", () => ({
-  default: { get: vi.fn() },
-}));
+// HTTP goes through the shared client in `http.ts` (`ky.create(...)`), so the
+// mock must answer `create` with the same fake instance.
+vi.mock("ky", () => {
+  const instance = { get: vi.fn() };
+  return {
+    default: { ...instance, create: () => instance },
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 describe("fetchNewYoutubeComments", () => {
   beforeEach(() => vi.clearAllMocks());

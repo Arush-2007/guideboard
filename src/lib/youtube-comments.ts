@@ -1,4 +1,4 @@
-import ky from "ky";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
 
 export interface YoutubeComment {
@@ -29,7 +29,7 @@ export async function fetchNewYoutubeComments(
 ): Promise<YoutubeComment[]> {
   const accessToken = await refreshYoutubeTokenIfNeeded(userId);
 
-  const data = await ky
+  const data = await http
     .get("https://www.googleapis.com/youtube/v3/commentThreads", {
       searchParams: {
         part: "snippet",
@@ -39,8 +39,18 @@ export async function fetchNewYoutubeComments(
         order: "time",
       },
       headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: HTTP_TIMEOUT.READ,
     })
-    .json<CommentThreadsResponse>();
+    .json<CommentThreadsResponse>()
+    .catch(
+      rethrowTimeout({
+        integration: "YouTube",
+        timeoutClass: "READ",
+        // A read is safe to repeat.
+        idempotent: true,
+        hint: "YouTube's API is slow right now — the next poll will pick these comments up.",
+      }),
+    );
 
   return (data.items ?? []).map((item) => ({
     commentId: item.id,

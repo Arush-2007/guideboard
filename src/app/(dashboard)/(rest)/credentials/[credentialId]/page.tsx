@@ -1,15 +1,18 @@
+import { Suspense } from "react";
 import { QueryErrorBoundary } from "@/components/query-error-boundary";
-import { CredentialDetailLoading, CredentialView } from "@/features/credentials/components/credential";
+import {
+  CredentialDetailLoading,
+  CredentialView,
+} from "@/features/credentials/components/credential";
 import { prefetchCredential } from "@/features/credentials/server/prefetch";
 import { requireAuth } from "@/lib/auth-utils";
 import { HydrateClient } from "@/trpc/server";
-import { Suspense } from "react";
 
 interface PageProps {
   params: Promise<{
     credentialId: string;
-  }>
-};
+  }>;
+}
 
 const Page = async ({ params }: PageProps) => {
   await requireAuth();
@@ -29,7 +32,7 @@ const Page = async ({ params }: PageProps) => {
         </HydrateClient>
       </div>
     </div>
-  )
+  );
 };
 
 export default Page;

@@ -1,15 +1,16 @@
 "use client";
 
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import dynamic from "next/dynamic";
-
-import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { memo, useState } from "react";
 import { useParams } from "next/navigation";
+import { memo, useState } from "react";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { OpenAiFormValues } from "./dialog";
+
 const OpenAiDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.OpenAiDialog),
 );
+
 import { INTEGRATIONS } from "@/config/integrations";
 import { useNodeStatus } from "../../hooks/use-node-status";
 

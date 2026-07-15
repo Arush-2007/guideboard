@@ -1,11 +1,11 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type GmailActionData = {
@@ -84,16 +84,24 @@ export const gmailActionExecutor: NodeExecutor<GmailActionData> = async ({
       const rfc2822 = `To: ${to}\r\nSubject: ${subject}\r\nContent-Type: text/plain\r\n\r\n${body}`;
       const raw = toBase64Url(rfc2822);
 
-      await ky.post(
-        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-        {
+      await http
+        .post("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
           headers: {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
           },
           json: { raw },
-        },
-      );
+          timeout: HTTP_TIMEOUT.WRITE,
+        })
+        .catch(
+          rethrowTimeout({
+            integration: "Gmail",
+            timeoutClass: "WRITE",
+            // A retry would send the email a SECOND time.
+            idempotent: false,
+            hint: "The email may or may not have been sent — check your Sent folder before re-running.",
+          }),
+        );
 
       return {
         ...context,

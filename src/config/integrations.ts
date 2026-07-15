@@ -37,21 +37,23 @@ export type IntegrationKey = keyof typeof INTEGRATIONS;
 
 // Complete by construction: TypeScript rejects a new CredentialType until it
 // gets a branding row here.
-export const credentialTypeIntegrations: Record<CredentialType, IntegrationKey> =
-  {
-    [CredentialType.OPENAI]: "openai",
-    [CredentialType.ANTHROPIC]: "anthropic",
-    [CredentialType.GEMINI]: "gemini",
-    [CredentialType.INSTAGRAM]: "instagram",
-    [CredentialType.NOTION]: "notion",
-    [CredentialType.TELEGRAM]: "telegram",
-    [CredentialType.WHATSAPP]: "whatsapp",
-    [CredentialType.XAI]: "xai",
-    [CredentialType.GROQ]: "groq",
-    [CredentialType.AFFINDA]: "affinda",
-    [CredentialType.LEVER]: "lever",
-    [CredentialType.TYPEFORM]: "typeform",
-  };
+export const credentialTypeIntegrations: Record<
+  CredentialType,
+  IntegrationKey
+> = {
+  [CredentialType.OPENAI]: "openai",
+  [CredentialType.ANTHROPIC]: "anthropic",
+  [CredentialType.GEMINI]: "gemini",
+  [CredentialType.INSTAGRAM]: "instagram",
+  [CredentialType.NOTION]: "notion",
+  [CredentialType.TELEGRAM]: "telegram",
+  [CredentialType.WHATSAPP]: "whatsapp",
+  [CredentialType.XAI]: "xai",
+  [CredentialType.GROQ]: "groq",
+  [CredentialType.AFFINDA]: "affinda",
+  [CredentialType.LEVER]: "lever",
+  [CredentialType.TYPEFORM]: "typeform",
+};
 
 export const getCredentialIntegration = (type: CredentialType) =>
   INTEGRATIONS[credentialTypeIntegrations[type]];

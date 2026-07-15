@@ -9,8 +9,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { nodeOptionByType } from "@/config/node-options";
-import type { NodeType } from "@/generated/prisma";
 import { useExecuteWorkflow } from "@/features/workflows/hooks/use-workflows";
+import type { NodeType } from "@/generated/prisma";
 import { invalidNodeConfigAtom } from "../store/atoms";
 
 export const ExecuteWorkflowButton = ({

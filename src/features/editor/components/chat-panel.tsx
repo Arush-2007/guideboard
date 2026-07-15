@@ -1,15 +1,15 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
-import { useTRPC } from "@/trpc/client";
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Loader2, SendHorizontal, Sparkles, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { useTRPC } from "@/trpc/client";
 
 type ChatMessage = { role: "user" | "assistant"; content: string };
 
@@ -77,10 +77,7 @@ export function ChatPanel({ workflowId }: { workflowId: string }) {
         message: text,
       });
 
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: result.reply },
-      ]);
+      setMessages((m) => [...m, { role: "assistant", content: result.reply }]);
 
       if (result.workflowId) {
         toast.success("Workflow created! Opening it now...");
@@ -141,7 +138,9 @@ export function ChatPanel({ workflowId }: { workflowId: string }) {
                   <div className="mb-1 text-xs font-medium text-muted-foreground">
                     {msg.role === "user" ? "You" : "AI"}
                   </div>
-                  <p className="whitespace-pre-wrap break-words">{msg.content}</p>
+                  <p className="whitespace-pre-wrap break-words">
+                    {msg.content}
+                  </p>
                 </div>
               ))}
               {isLoading && (
@@ -161,9 +160,7 @@ export function ChatPanel({ workflowId }: { workflowId: string }) {
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
                 placeholder={
-                  conversationId
-                    ? "Describe your automation…"
-                    : "Connecting…"
+                  conversationId ? "Describe your automation…" : "Connecting…"
                 }
                 disabled={!conversationId || isLoading}
                 className="min-h-[80px] resize-none bg-background text-sm"

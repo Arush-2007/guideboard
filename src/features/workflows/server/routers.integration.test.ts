@@ -284,4 +284,47 @@ describe("workflows.update", () => {
       await prisma.gmailPoll.count({ where: { workflowId: workflow.id } }),
     ).toBe(0);
   });
+
+  it("rewrites a downstream legacy-key reference to the producer's new ref on save", async () => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Ref rewrite", userId: authState.userId },
+    });
+
+    // The producer (a1) has no ref yet; the consumer (b1) references it by the
+    // legacy `<type>_<id>` key — exactly what a picked field authored before the
+    // producer got a ref would store.
+    await caller.workflows.update({
+      id: workflow.id,
+      nodes: [
+        {
+          id: "a1",
+          type: "GOOGLE_SHEETS_ACTION",
+          position: { x: 0, y: 0 },
+          data: { action: "find_rows" },
+        },
+        {
+          id: "b1",
+          type: "SLACK",
+          position: { x: 200, y: 0 },
+          data: {
+            message: "Jobs: @<google_sheets_action_a1.columnValues.Job No>@",
+          },
+        },
+      ],
+      edges: [{ source: "a1", target: "b1" }],
+    });
+
+    const nodes = await prisma.node.findMany({
+      where: { workflowId: workflow.id },
+    });
+    const producer = nodes.find((n) => n.id === "a1");
+    const consumer = nodes.find((n) => n.id === "b1");
+
+    expect(producer?.ref).toBe("GOOGLE_SHEETS_ACTION_1");
+    // The consumer's legacy reference now points at the producer's ref, so it
+    // resolves against the ref-keyed run context.
+    expect((consumer?.data as { message?: string }).message).toBe(
+      "Jobs: @<GOOGLE_SHEETS_ACTION_1.columnValues.Job No>@",
+    );
+  });
 });

@@ -1,11 +1,11 @@
 import "server-only";
 
+import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
-import { headers } from "next/headers";
-import ky from "ky";
-import { NextResponse } from "next/server";
+import { HTTP_TIMEOUT, http } from "@/lib/http";
 
 type ShortLivedTokenResponse = {
   access_token: string;
@@ -55,7 +55,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const shortLived = await ky
+    const shortLived = await http
       .post("https://api.instagram.com/oauth/access_token", {
         body: new URLSearchParams({
           client_id: clientId,
@@ -67,6 +67,7 @@ export async function GET(request: Request) {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
+        timeout: HTTP_TIMEOUT.TOKEN,
       })
       .json<ShortLivedTokenResponse>();
 
@@ -77,8 +78,8 @@ export async function GET(request: Request) {
     longLivedUrl.searchParams.set("client_secret", clientSecret);
     longLivedUrl.searchParams.set("access_token", shortLivedToken);
 
-    const longLived = await ky
-      .get(longLivedUrl.toString())
+    const longLived = await http
+      .get(longLivedUrl.toString(), { timeout: HTTP_TIMEOUT.TOKEN })
       .json<LongLivedTokenResponse>();
 
     const longLivedToken = longLived.access_token;
@@ -90,7 +91,9 @@ export async function GET(request: Request) {
     meUrl.searchParams.set("fields", "id,username");
     meUrl.searchParams.set("access_token", longLivedToken);
 
-    const me = await ky.get(meUrl.toString()).json<InstagramMeResponse>();
+    const me = await http
+      .get(meUrl.toString(), { timeout: HTTP_TIMEOUT.TOKEN })
+      .json<InstagramMeResponse>();
 
     const existing = await prisma.instagramCredential.findFirst({
       where: { userId: session.user.id },

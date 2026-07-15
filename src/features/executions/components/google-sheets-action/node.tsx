@@ -1,28 +1,38 @@
 "use client";
 
-import dynamic from "next/dynamic";
-
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import type { MultiMatchMode } from "@/lib/multi-match";
+import type { RowMatchCondition } from "@/lib/row-match";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
-import type { GoogleSheetsActionFormValues } from "./dialog";
+import type { GoogleSheetsActionSubmitValues } from "./dialog";
+
 const GoogleSheetsActionDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsActionDialog),
 );
+
 import { getNodeOption } from "@/config/node-options";
 import { NodeType } from "@/generated/prisma";
 
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
-  action?: "append_row" | "read_rows";
+  action?: "append_row" | "find_rows" | "update_row" | "insert_row_adjacent";
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
   values?: string;
   columnMappings?: Record<string, string>;
+  requiredColumns?: string[];
+  conditions?: RowMatchCondition[];
+  onMultipleMatches?: MultiMatchMode;
+  maxFanOutItems?: number;
+  blankSeparators?: boolean;
+  insertUnder?: "group" | "each_row";
+  discoveredFields?: { path: string; label: string }[];
 };
 
 type GoogleSheetsActionFlowNode = Node<GoogleSheetsActionNodeData>;
@@ -39,7 +49,7 @@ export const GoogleSheetsActionNode = memo(
 
     const handleOpenSettings = () => setDialogOpen(true);
 
-    const handleSubmit = (values: GoogleSheetsActionFormValues) => {
+    const handleSubmit = (values: GoogleSheetsActionSubmitValues) => {
       setNodes((nodes) =>
         nodes.map((node) => {
           if (node.id === props.id) {
@@ -58,9 +68,15 @@ export const GoogleSheetsActionNode = memo(
 
     const nodeData = props.data;
     const description = nodeData?.sheetName
-      ? nodeData.action === "read_rows"
-        ? `Read ${nodeData.sheetName}:${nodeData.range ?? ""}`
-        : `Append to ${nodeData.sheetName}`
+      ? nodeData.action === "find_rows"
+        ? `Find rows in ${nodeData.sheetName}`
+        : nodeData.action === "update_row"
+          ? `Update a row in ${nodeData.sheetName}`
+          : nodeData.action === "insert_row_adjacent"
+            ? nodeData.insertUnder === "each_row"
+              ? `Insert rows into ${nodeData.sheetName}`
+              : `Insert a row into ${nodeData.sheetName}`
+            : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (

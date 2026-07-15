@@ -1,15 +1,16 @@
 "use client";
 
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import dynamic from "next/dynamic";
-
-import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
-import { memo, useState } from "react";
 import { useParams } from "next/navigation";
+import { memo, useState } from "react";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { DiscordFormValues } from "./dialog";
+
 const DiscordDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.DiscordDialog),
 );
+
 import { getNodeOption } from "@/config/node-options";
 import { NodeType } from "@/generated/prisma";
 import { useNodeStatus } from "../../hooks/use-node-status";

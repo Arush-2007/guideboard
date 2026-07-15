@@ -13,10 +13,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
 }
 
-export const GmailTriggerDialog = ({
-  open,
-  onOpenChange,
-}: Props) => {
+export const GmailTriggerDialog = ({ open, onOpenChange }: Props) => {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>

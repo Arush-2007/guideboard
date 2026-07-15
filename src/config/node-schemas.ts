@@ -1,6 +1,15 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
+// `http-budget`, NOT `http` — this module runs in the browser (the dialogs validate
+// against it), and `http.ts` imports ky.
+import { MAX_USER_TIMEOUT_SECONDS } from "@/lib/http-budget";
+import { multiMatchConfigFields } from "@/lib/multi-match";
+import {
+  hasActiveRowCondition,
+  ROW_MATCH_OPERATORS,
+  type RowMatchOperator,
+} from "@/lib/row-match-operators";
 
 type AnyZodSchema = z.ZodTypeAny;
 
@@ -35,6 +44,18 @@ const httpRequestSchema = z
     endpoint: z.string().min(1, { message: "Please enter a valid URL" }),
     method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]),
     body: z.string().optional(),
+    // Seconds in the UI (what a user thinks in), milliseconds everywhere else.
+    // The executor CLAMPS this to the platform's step budget — a user must not be
+    // able to ask for a clock the platform will not honour, because that yields an
+    // opaque platform kill instead of a clean node failure. See `clampUserTimeout`.
+    timeoutSeconds: z.coerce
+      .number()
+      .int()
+      .min(1, "Timeout must be at least 1 second")
+      .max(MAX_USER_TIMEOUT_SECONDS, {
+        message: `This deployment cannot run a request longer than ${MAX_USER_TIMEOUT_SECONDS}s`,
+      })
+      .optional(),
   })
   .passthrough();
 
@@ -362,30 +383,111 @@ const excelActionSchema = z
   })
   .passthrough();
 
+// Row-selection operator superset for find_rows / color_rows. Derived from the
+// single source in row-match-operators.ts (cast only to satisfy z.enum's tuple
+// type) — do NOT re-list literals and do NOT widen compareOperatorEnum (v3 #6).
+const rowMatchOperatorEnum = z.enum(
+  ROW_MATCH_OPERATORS as [RowMatchOperator, ...RowMatchOperator[]],
+);
+
+// One filter condition for find_rows / color_rows (matches RowMatchCondition).
+const rowConditionSchema = z.object({
+  id: z.string().optional(),
+  column: z.string(),
+  operator: rowMatchOperatorEnum,
+  value: z.string().optional(),
+  enabled: z.boolean().optional(),
+});
+
 const googleSheetsActionSchema = z
   .object({
-    action: z.enum(["append_row", "read_rows"]),
+    // read_rows (raw A1-range grid) was removed — find_rows with no conditions
+    // reads every row of the tab, header-keyed. Saved read_rows nodes are
+    // coerced here (not just in the dialog) so scheduled/triggered workflows
+    // that were never re-opened keep running instead of permafailing.
+    action: z.preprocess(
+      (v) => (v === "read_rows" ? "find_rows" : v),
+      z.enum(["append_row", "find_rows", "update_row", "insert_row_adjacent"]),
+    ),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Sheet Name is required"),
     range: z.string().optional(),
     values: z.string().optional(),
     columnMappings: mappingSchema.optional(),
+    // Headers that may NOT be blank on the row-creating actions (append_row,
+    // insert_row_adjacent) — the accessory "may be blank" toggle turned off.
+    // Enforced after the row is built.
+    requiredColumns: z.array(z.string()).optional(),
+    // AND-ed filter conditions, selecting rows for find_rows, update_row and
+    // insert_row_adjacent alike (one row-matching mechanism, one editor, one
+    // `matchRows`).
+    // find_rows: no conditions reads every row (an old saved `selectedColumns`
+    // key rides through harmlessly via .passthrough()).
+    // update_row: the rows to overwrite. At least one condition is REQUIRED.
+    // insert_row_adjacent: the GROUP the new row joins — `insertUnder` decides
+    // whether it lands below the group or below each of its rows. At least one
+    // condition is REQUIRED.
+    conditions: z.array(rowConditionSchema).optional(),
+    // insert_row_adjacent only: when the filter matches nothing, the new row
+    // starts a new group at the bottom of the tab — separated from the group
+    // above it by one blank row when this is on (and the tab already has data).
+    blankSeparators: z.boolean().optional(),
+    // insert_row_adjacent only: WHERE the new row(s) land when several rows
+    // match. Deliberately NOT `onMultipleMatches` — that field's "first" means
+    // "keep the first match and drop the rest", which is not a thing this action
+    // can do: it always writes, and the matches are a group, not candidates.
+    //  - "group" (default): ONE row, below the LAST matching row — i.e. below
+    //    the whole group.
+    //  - "each_row": one row below EVERY matching row, and (via the shared
+    //    fan-out) the steps after this one run once per inserted row, capped by
+    //    `maxFanOutItems`.
+    insertUnder: z.enum(["group", "each_row"]).optional(),
+    // Multi-match policy (shared fragment) for the list-producing actions:
+    // "first" (default), "each" (fan out one child run per matched row, capped
+    // by maxFanOutItems), or "error" (fail when more than one matches).
+    // find_rows: which matched row downstream continues with.
+    // update_row: which matched row(s) the write lands on.
+    ...multiMatchConfigFields,
   })
   .superRefine((data, ctx) => {
-    if (data.action === "read_rows") {
-      if (!data.range?.trim()) {
+    // find_rows needs only spreadsheet + tab (already required above).
+    if (data.action === "find_rows") return;
+
+    // append_row: a column mapping (preferred) or a legacy values array.
+    // update_row / insert_row_adjacent: a column mapping is the only supported form.
+    const hasMappings = data.columnMappings
+      ? Object.values(data.columnMappings).some((v) => v.trim())
+      : false;
+
+    if (data.action === "update_row" || data.action === "insert_row_adjacent") {
+      const isUpdate = data.action === "update_row";
+      if (!hasMappings) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Range is required to read rows",
-          path: ["range"],
+          message: isUpdate
+            ? "Map at least one column to update"
+            : "Map at least one column to fill the new row",
+          path: ["columnMappings"],
+        });
+      }
+      // An empty filter matches EVERY row (matchRows is vacuously true with no
+      // conditions). Harmless for find_rows — it just reads the tab — but both
+      // write actions need a real filter: update_row would overwrite the entire
+      // sheet, and insert_row_adjacent would "join" a group spanning every row,
+      // which is just an append wearing a filter's clothes. Enforced in the
+      // executor too — that is what actually writes.
+      if (!hasActiveRowCondition(data.conditions)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: isUpdate
+            ? "Add at least one condition — an empty filter would overwrite every row"
+            : "Add at least one condition — it picks the group the new row joins",
+          path: ["conditions"],
         });
       }
       return;
     }
-    // append_row: need a column mapping (preferred) or a legacy values array.
-    const hasMappings = data.columnMappings
-      ? Object.values(data.columnMappings).some((v) => v.trim())
-      : false;
+
     if (!hasMappings && !data.values?.trim()) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,

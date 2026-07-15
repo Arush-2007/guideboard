@@ -1,6 +1,6 @@
-import ky from "ky";
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
+import { asTimeoutError, HTTP_TIMEOUT, http } from "@/lib/http";
 
 type GoogleRefreshResponse = {
   access_token: string;
@@ -51,8 +51,9 @@ export async function refreshYoutubeTokenIfNeeded(
 
   let response: GoogleRefreshResponse;
   try {
-    response = await ky
+    response = await http
       .post("https://oauth2.googleapis.com/token", {
+        timeout: HTTP_TIMEOUT.TOKEN,
         body: new URLSearchParams({
           grant_type: "refresh_token",
           client_id: clientId,
@@ -63,8 +64,18 @@ export async function refreshYoutubeTokenIfNeeded(
       })
       .json<GoogleRefreshResponse>();
   } catch (err) {
-    const message =
-      err instanceof Error ? err.message : "unknown error";
+    // Classify BEFORE the generic wrap below — re-wrapping a timeout as a plain
+    // Error would erase its retry decision and lose the actionable message.
+    const timeout = asTimeoutError(err, {
+      integration: "YouTube sign-in",
+      timeoutClass: "TOKEN",
+      // A token refresh is safe to repeat.
+      idempotent: true,
+      hint: "This is Google's OAuth service, not YouTube itself — usually transient.",
+    });
+    if (timeout) throw timeout;
+
+    const message = err instanceof Error ? err.message : "unknown error";
     throw new Error(`YouTube token refresh failed: ${message}`);
   }
 

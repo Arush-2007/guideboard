@@ -167,9 +167,8 @@ export const RecordLookupDialog = ({
           <DialogTitle>Record Lookup</DialogTitle>
           <DialogDescription>
             Check whether a value exists in a spreadsheet column or a Notion
-            database property. Outputs{" "}
-            <span className="font-mono">exists</span> (true/false) — pair it with
-            a Condition node to branch.
+            database property. Outputs <span className="font-mono">exists</span>{" "}
+            (true/false) — pair it with a Condition node to branch.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -275,7 +274,10 @@ export const RecordLookupDialog = ({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Notion credential</FormLabel>
-                      <Select onValueChange={field.onChange} value={field.value}>
+                      <Select
+                        onValueChange={field.onChange}
+                        value={field.value}
+                      >
                         <FormControl>
                           <SelectTrigger className="w-full">
                             <SelectValue placeholder="Select integration token" />

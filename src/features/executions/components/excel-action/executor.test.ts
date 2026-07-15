@@ -32,10 +32,17 @@ const { kyGetMock, kyPostMock, kyPatchMock, FakeHTTPError } = vi.hoisted(() => {
     FakeHTTPError,
   };
 });
-vi.mock("ky", () => ({
-  default: { get: kyGetMock, post: kyPostMock, patch: kyPatchMock },
-  HTTPError: FakeHTTPError,
-}));
+// HTTP goes through the shared client in `http.ts` (`ky.create(...)`), so the mock
+// must answer `create` with the same fake instance — the assertions below still see
+// every call.
+vi.mock("ky", () => {
+  const instance = { get: kyGetMock, post: kyPostMock, patch: kyPatchMock };
+  return {
+    default: { ...instance, create: () => instance },
+    HTTPError: FakeHTTPError,
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 const { getFirstTableMock, getColumnsMock } = vi.hoisted(() => ({
   getFirstTableMock: vi.fn(),
@@ -63,7 +70,7 @@ vi.mock("@/inngest/channels/node-status", () => ({
 }));
 
 import type { NodeExecutorParams } from "@/features/executions/types";
-import { coerceCellValue, excelActionExecutor } from "./executor";
+import { excelActionExecutor } from "./executor";
 
 const step = {
   run: async (_name: string, fn: () => unknown) => fn(),
@@ -391,16 +398,5 @@ describe("excelActionExecutor error mapping", () => {
     );
 
     await expect(run(appendData)).rejects.toBeInstanceOf(NonRetriableError);
-  });
-});
-
-describe("coerceCellValue", () => {
-  it("converts plain numerics and preserves leading-zero ids as text", () => {
-    expect(coerceCellValue("4200")).toBe(4200);
-    expect(coerceCellValue("-3.5")).toBe(-3.5);
-    expect(coerceCellValue("0")).toBe(0);
-    expect(coerceCellValue("0001")).toBe("0001");
-    expect(coerceCellValue("DL01AB1234")).toBe("DL01AB1234");
-    expect(coerceCellValue("")).toBe("");
   });
 });

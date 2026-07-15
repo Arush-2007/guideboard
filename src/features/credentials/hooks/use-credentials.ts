@@ -1,8 +1,13 @@
-import { useTRPC } from "@/trpc/client"
-import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  useSuspenseQuery,
+} from "@tanstack/react-query";
 import { toast } from "sonner";
+import type { CredentialType } from "@/generated/prisma";
+import { useTRPC } from "@/trpc/client";
 import { useCredentialsParams } from "./use-credentials-params";
-import { CredentialType } from "@/generated/prisma";
 
 /**
  * Hook to fetch all credentials using suspense
@@ -10,7 +15,7 @@ import { CredentialType } from "@/generated/prisma";
 export const useSuspenseCredentials = () => {
   const trpc = useTRPC();
   const [params] = useCredentialsParams();
-  
+
   return useSuspenseQuery(trpc.credentials.getMany.queryOptions(params));
 };
 
@@ -48,15 +53,17 @@ export const useRemoveCredential = () => {
     trpc.credentials.remove.mutationOptions({
       onSuccess: (data) => {
         toast.success(`Credential "${data.name}" removed`);
-        queryClient.invalidateQueries(trpc.credentials.getMany.queryOptions({}));
+        queryClient.invalidateQueries(
+          trpc.credentials.getMany.queryOptions({}),
+        );
         queryClient.invalidateQueries(
           trpc.credentials.getOne.queryFilter({ id: data.id }),
         );
         queryClient.invalidateQueries(trpc.credentials.getByType.queryFilter());
-      }
-    })
-  )
-}
+      },
+    }),
+  );
+};
 
 /**
  * Hook to fetch a single credential using suspense

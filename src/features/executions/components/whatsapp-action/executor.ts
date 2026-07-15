@@ -1,12 +1,12 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type WhatsappCredentialValue = {
@@ -135,24 +135,36 @@ export const whatsappActionExecutor: NodeExecutor<WhatsappActionData> = async ({
         throw new NonRetriableError("WhatsApp node: Message is required");
       }
 
+      // Concurrent, so the step's cost is ONE write timeout, not one per recipient.
       await Promise.all(
         recipientPhones.map((to) =>
-          ky.post(
-            `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
-            {
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-              },
-              json: {
-                messaging_product: "whatsapp",
-                to,
-                type: "text",
-                text: {
-                  body: compiledMessage,
+          http
+            .post(
+              `https://graph.facebook.com/v18.0/${phoneNumberId}/messages`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
                 },
+                json: {
+                  messaging_product: "whatsapp",
+                  to,
+                  type: "text",
+                  text: {
+                    body: compiledMessage,
+                  },
+                },
+                timeout: HTTP_TIMEOUT.WRITE,
               },
-            },
-          ),
+            )
+            .catch(
+              rethrowTimeout({
+                integration: "WhatsApp",
+                timeoutClass: "WRITE",
+                // A retry would message the recipients a SECOND time.
+                idempotent: false,
+                hint: "Some recipients may already have received the message — check before re-running.",
+              }),
+            ),
         ),
       );
 

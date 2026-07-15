@@ -2,6 +2,15 @@
 
 import { formatDistanceToNow } from "date-fns";
 import {
+  Loader2Icon,
+  PlusIcon,
+  SparklesIcon,
+  WorkflowIcon,
+} from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { toast } from "sonner";
+import {
   EmptyView,
   EntityContainer,
   EntityItem,
@@ -11,28 +20,24 @@ import {
   EntitySearch,
 } from "@/components/entity-components";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
-  DialogDescription,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import type { Workflow } from "@/generated/prisma";
+import { useEntitySearch } from "@/hooks/use-entity-search";
+import { useUpgradeModal } from "@/hooks/use-upgrade-modal";
 import {
   useCreateWorkflow,
   useGenerateWorkflowFromPrompt,
   useRemoveWorkflow,
   useSuspenseWorkflows,
 } from "../hooks/use-workflows";
-import { useUpgradeModal } from "@/hooks/use-upgrade-modal";
-import { useRouter } from "next/navigation";
 import { useWorkflowsParams } from "../hooks/use-workflows-params";
-import { useEntitySearch } from "@/hooks/use-entity-search";
-import type { Workflow } from "@/generated/prisma";
-import { Loader2Icon, PlusIcon, SparklesIcon, WorkflowIcon } from "lucide-react";
-import { useState } from "react";
-import { toast } from "sonner";
 
 export const WorkflowsSearch = () => {
   const [params, setParams] = useWorkflowsParams();
@@ -60,7 +65,7 @@ export const WorkflowsList = () => {
       renderItem={(workflow) => <WorkflowItem data={workflow} />}
       emptyView={<WorkflowsEmpty />}
     />
-  )
+  );
 };
 
 export const CreateWorkflowDialog = ({
@@ -253,7 +258,7 @@ export const WorkflowsPagination = () => {
 };
 
 export const WorkflowsContainer = ({
-  children
+  children,
 }: {
   children: React.ReactNode;
 }) => {
@@ -285,16 +290,12 @@ export const WorkflowsEmpty = () => {
   );
 };
 
-export const WorkflowItem = ({
-  data,
-}: { 
-  data: Workflow
-}) => {
+export const WorkflowItem = ({ data }: { data: Workflow }) => {
   const removeWorkflow = useRemoveWorkflow();
 
   const handleRemove = () => {
     removeWorkflow.mutate({ id: data.id });
-  }
+  };
 
   return (
     <EntityItem
@@ -315,5 +316,5 @@ export const WorkflowItem = ({
       onRemove={handleRemove}
       isRemoving={removeWorkflow.isPending}
     />
-  )
-}
+  );
+};

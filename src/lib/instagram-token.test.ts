@@ -1,6 +1,6 @@
+import ky from "ky";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import prisma from "@/lib/db";
-import ky from "ky";
 import { refreshInstagramTokenIfNeeded } from "./instagram-token";
 
 vi.mock("@/lib/db", () => ({
@@ -17,9 +17,15 @@ vi.mock("@/lib/encryption", () => ({
   decrypt: vi.fn((v: string) => v.replace("enc:", "")),
 }));
 
-vi.mock("ky", () => ({
-  default: { get: vi.fn() },
-}));
+// HTTP goes through the shared client in `http.ts` (`ky.create(...)`), so the
+// mock must answer `create` with the same fake instance.
+vi.mock("ky", () => {
+  const instance = { get: vi.fn() };
+  return {
+    default: { ...instance, create: () => instance },
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 describe("refreshInstagramTokenIfNeeded", () => {
   beforeEach(() => vi.clearAllMocks());
@@ -58,7 +64,9 @@ describe("refreshInstagramTokenIfNeeded", () => {
         expires_in: 5184000,
       }),
     } as any);
-    vi.mocked(prisma.instagramCredential.update).mockResolvedValue(undefined as any);
+    vi.mocked(prisma.instagramCredential.update).mockResolvedValue(
+      undefined as any,
+    );
 
     await refreshInstagramTokenIfNeeded("user-1");
 
