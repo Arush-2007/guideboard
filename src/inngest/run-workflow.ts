@@ -1,4 +1,5 @@
 import type { Realtime } from "@inngest/realtime";
+import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
   isFanOut,
@@ -175,8 +176,9 @@ function forwardReachableFrom(
  * `sortedNodes` must already be topologically sorted (see `topologicalSort`).
  *
  * Branch routing: nodes are visited in topological order, but a node only runs
- * if it's reachable along an *active* path. A node runs when it has no incoming
- * connections (a trigger/root) or at least one incoming connection is active.
+ * if it's reachable along an *active* path. A node runs when it is a **trigger**
+ * (the only roots) or at least one incoming connection is active — so a node the
+ * user has unwired from the flow is skipped, not fired.
  * After a node runs, its outgoing connections become active per the activation
  * rule: a non-branching node (returns a plain context) activates *all* its
  * outgoing connections — preserving the original linear behavior with no data
@@ -272,14 +274,21 @@ export async function runWorkflowNodes({
       continue;
     }
 
-    // Reachability: roots (no incoming edges) always run; everyone else needs at
-    // least one active incoming edge. On a replay the node we replay from is a
-    // forced root — it runs fresh against the seeded context even though its
-    // real incoming edges' sources were skipped.
+    // Reachability: **triggers** are the only roots — they always run. Every
+    // other node needs at least one active incoming edge, so anything the user
+    // has unwired from the flow is skipped rather than fired. On a replay the
+    // node we replay from is a forced root — it runs fresh against the seeded
+    // context even though its real incoming edges' sources were skipped.
+    //
+    // This used to read `incoming.length === 0`, i.e. ANY node with no incoming
+    // edges was a root. That was right for triggers and wrong for everything
+    // else: deleting a node's last incoming wire promoted it to a root, so it
+    // still ran (and activated its own downstream, keeping a whole severed chain
+    // alive). Deleting an edge therefore didn't stop anything from running.
     const incoming = incomingByNode.get(node.id) ?? [];
     const reachable =
       node.id === replayFromNodeId ||
-      incoming.length === 0 ||
+      TRIGGER_NODE_TYPES.has(node.type) ||
       incoming.some(isEdgeActive);
 
     if (!reachable) {

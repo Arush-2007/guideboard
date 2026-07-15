@@ -64,6 +64,17 @@ const node = (id: string, data?: unknown): N => ({
   name: id,
   data,
 });
+// A real trigger type — the ONLY kind the engine runs as a root. Every graph
+// below needs one at its head: an action with no incoming edge is skipped, not
+// run. (These tests used to root on `node()`, i.e. an AI_TEXT action, which only
+// worked because the engine used to promote any node with no incoming edges to a
+// root — the bug fixed in run-workflow.ts's reachability gate.)
+const trigger = (id: string, data?: unknown): N => ({
+  id,
+  type: "MANUAL_TRIGGER",
+  name: id,
+  data,
+});
 const edge = (from: string, to: string, fromOutput = "main") => ({
   fromNodeId: from,
   toNodeId: to,
@@ -90,7 +101,7 @@ describe("runWorkflowNodes branch routing", () => {
   it("runs every node when there is no branching (back-compat)", async () => {
     const { recorder, ran, skipped } = collect();
     await runWorkflowNodes({
-      sortedNodes: [node("a"), node("b"), node("c")],
+      sortedNodes: [trigger("a"), node("b"), node("c")],
       connections: [edge("a", "b"), edge("b", "c")],
       userId: "u",
       executionId: "exec_test",
@@ -106,7 +117,7 @@ describe("runWorkflowNodes branch routing", () => {
     const { recorder, ran, skipped } = collect();
     await runWorkflowNodes({
       sortedNodes: [
-        node("trigger"),
+        trigger("trigger"),
         node("cond", { route: ["true"] }),
         node("yes"),
         node("no"),
@@ -130,18 +141,23 @@ describe("runWorkflowNodes branch routing", () => {
     const { recorder, ran, skipped } = collect();
     await runWorkflowNodes({
       sortedNodes: [
+        trigger("t"),
         node("cond", { route: ["true"] }),
         node("no"),
         node("after-no"),
       ],
-      connections: [edge("cond", "no", "false"), edge("no", "after-no")],
+      connections: [
+        edge("t", "cond"),
+        edge("cond", "no", "false"),
+        edge("no", "after-no"),
+      ],
       userId: "u",
       executionId: "exec_test",
       step,
       publish,
       recorder,
     });
-    expect(ran).toEqual(["cond"]);
+    expect(ran).toEqual(["t", "cond"]);
     expect(skipped).toEqual(expect.arrayContaining(["no", "after-no"]));
   });
 
@@ -149,11 +165,13 @@ describe("runWorkflowNodes branch routing", () => {
     const { recorder, ran } = collect();
     await runWorkflowNodes({
       sortedNodes: [
+        trigger("t"),
         node("cond", { route: ["true"] }),
         node("yes"),
         node("merge"),
       ],
       connections: [
+        edge("t", "cond"),
         edge("cond", "yes", "true"),
         edge("cond", "merge", "false"),
         edge("yes", "merge"),
@@ -167,6 +185,120 @@ describe("runWorkflowNodes branch routing", () => {
     // merge's "false" incoming is dead, but its incoming from the live "yes"
     // path keeps it reachable.
     expect(ran).toContain("merge");
+  });
+});
+
+describe("runWorkflowNodes reachability (only triggers are roots)", () => {
+  it("SKIPS an action whose only incoming edge was deleted", async () => {
+    // The Instagram case: trigger -> ig -> slack, then ig->slack is removed.
+    // Slack must NOT fire. Before the fix it was promoted to a root and ran, so
+    // deleting a wire didn't stop anything.
+    const { recorder, ran, skipped } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("ig"), node("slack")],
+      connections: [edge("t", "ig")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual(["t", "ig"]);
+    expect(skipped).toEqual(["slack"]);
+  });
+
+  it("SKIPS an entire chain severed from its trigger", async () => {
+    // a -> b -> c with the trigger wired to nothing: the whole chain is dead.
+    // Before the fix `a` became a root and dragged b and c along with it.
+    const { recorder, ran, skipped } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [node("a"), node("b"), node("c"), trigger("t")],
+      connections: [edge("a", "b"), edge("b", "c")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual(["t"]);
+    expect(skipped).toEqual(expect.arrayContaining(["a", "b", "c"]));
+  });
+
+  it("still runs a terminal node (no downstream) — must not regress", async () => {
+    const { recorder, ran, skipped } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("slack")],
+      connections: [edge("t", "slack")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual(["t", "slack"]);
+    expect(skipped).toEqual([]);
+  });
+
+  it("runs a trigger even though it has no incoming edge", async () => {
+    const { recorder, ran } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t")],
+      connections: [],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual(["t"]);
+  });
+
+  it("runs every trigger when a workflow has more than one", async () => {
+    const { recorder, ran } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t1"), trigger("t2"), node("a")],
+      connections: [edge("t1", "a")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual(expect.arrayContaining(["t1", "t2", "a"]));
+  });
+
+  it("runs nothing but leaves no orphan running when there is no trigger at all", async () => {
+    const { recorder, ran, skipped } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [node("a"), node("b")],
+      connections: [edge("a", "b")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual([]);
+    expect(skipped).toEqual(["a", "b"]);
+  });
+
+  it("forces the replayed node to run even though its incoming source is skipped", async () => {
+    // Replay-from-node (also how fan-out children are dispatched): the trigger
+    // is outside the slice and must not re-fire, the replayed node is a forced
+    // root, and its descendants activate normally.
+    const { recorder, ran, skipped } = collect();
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a"), node("b")],
+      connections: [edge("t", "a"), edge("a", "b")],
+      replayFromNodeId: "a",
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+    expect(ran).toEqual(["a", "b"]);
+    expect(skipped).toEqual(["t"]);
   });
 });
 
@@ -201,7 +333,7 @@ describe("runWorkflowNodes fan-out", () => {
 
     const result = await runWorkflowNodes({
       sortedNodes: [
-        node("trigger"),
+        trigger("trigger"),
         node("fan", { fanOut: [{ x: 1 }, { x: 2 }] }),
         node("child"),
       ],
@@ -243,8 +375,8 @@ describe("runWorkflowNodes fan-out", () => {
 
     await expect(
       runWorkflowNodes({
-        sortedNodes: [node("fan", { fanOut: [{ x: 1 }] })],
-        connections: [],
+        sortedNodes: [trigger("t"), node("fan", { fanOut: [{ x: 1 }] })],
+        connections: [edge("t", "fan")],
         userId: "u",
         executionId: "exec_test",
         step,
@@ -255,7 +387,7 @@ describe("runWorkflowNodes fan-out", () => {
 
     expect(failed).toEqual(["fan"]);
     // The node never reaches a SUCCESS record.
-    expect(succeeded).toEqual([]);
+    expect(succeeded).not.toContain("fan");
   });
 
   it("records the node FAILED and propagates when the dispatcher rejects", async () => {
@@ -271,8 +403,8 @@ describe("runWorkflowNodes fan-out", () => {
 
     await expect(
       runWorkflowNodes({
-        sortedNodes: [node("fan", { fanOut: [{ x: 1 }] })],
-        connections: [],
+        sortedNodes: [trigger("t"), node("fan", { fanOut: [{ x: 1 }] })],
+        connections: [edge("t", "fan")],
         userId: "u",
         executionId: "exec_test",
         step,
@@ -284,7 +416,7 @@ describe("runWorkflowNodes fan-out", () => {
 
     expect(failed).toEqual(["fan"]);
     // Dispatch runs before the SUCCESS record, so the node is never marked done.
-    expect(succeeded).toEqual([]);
+    expect(succeeded).not.toContain("fan");
   });
 
   it("still dispatches (empty items) and records SUCCESS when fanning out zero items", async () => {
@@ -292,8 +424,8 @@ describe("runWorkflowNodes fan-out", () => {
     const { dispatcher, calls } = collectDispatcher();
 
     await runWorkflowNodes({
-      sortedNodes: [node("fan", { fanOut: [] }), node("child")],
-      connections: [edge("fan", "child")],
+      sortedNodes: [trigger("t"), node("fan", { fanOut: [] }), node("child")],
+      connections: [edge("t", "fan"), edge("fan", "child")],
       userId: "u",
       executionId: "exec_test",
       step,
@@ -306,7 +438,7 @@ describe("runWorkflowNodes fan-out", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].items).toEqual([]);
 
-    expect(ran).toEqual(["fan"]);
+    expect(ran).toEqual(["t", "fan"]);
     expect(skipped).toEqual(["child"]);
   });
 });
@@ -328,8 +460,10 @@ describe("fan-out child output recording", () => {
     const seed = { item: { x: 1 }, index: 1, total: 2, __fanOut: true };
 
     await runWorkflowNodes({
-      sortedNodes: [node("a", { rewriteSeed: true }), node("b")],
-      connections: [edge("a", "b")],
+      // `a` stays an AI_TEXT so `key` (its legacy output key) still matches; a
+      // trigger heads the graph so `a` is reachable.
+      sortedNodes: [trigger("t"), node("a", { rewriteSeed: true }), node("b")],
+      connections: [edge("t", "a"), edge("a", "b")],
       initialData: { [key]: seed },
       userId: "u",
       executionId: "exec_test",

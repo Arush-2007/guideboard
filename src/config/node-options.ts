@@ -96,12 +96,14 @@ export const triggerNodeOptions: NodeOption[] = [
   },
 ];
 
-// Single source of truth for "is this node type a trigger?", derived from the
-// options above so it can never drift from the selectable trigger list. Consumed
-// by draw-time connection validation to reject edges that point into a trigger.
-export const triggerNodeTypeSet: ReadonlySet<NodeType> = new Set(
-  triggerNodeOptions.map((option) => option.type),
-);
+// Re-exported from `node-kinds.ts`, which is the single source of truth for
+// "is this node type a trigger?". It lives there rather than here because the
+// Inngest engine needs it too (it runs only triggers as roots) and this module
+// pulls in lucide-react + the integrations registry, which must not reach the
+// server bundle. `node-kinds.test.ts` asserts this list and that set stay in
+// lockstep, so they cannot drift. Consumed by draw-time connection validation to
+// reject edges that point into a trigger.
+export { TRIGGER_NODE_TYPES as triggerNodeTypeSet } from "@/config/node-kinds";
 
 export const executionNodeOptions: NodeOption[] = [
   {
