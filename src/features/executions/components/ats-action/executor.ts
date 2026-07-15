@@ -91,26 +91,36 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
       throw new NonRetriableError("ATS node: candidate name is required");
     }
 
-    const result = await step.run("ats-create-candidate", async () => {
-      // Lever: Basic auth with the API key as the username (empty password).
-      const authHeader = `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`;
-      const base = leverBaseUrl(environment);
-      const performAs = config.performAsUserId?.trim();
-      if (!performAs) {
-        throw new NonRetriableError(
-          "ATS node (Lever): a 'perform as' user id is required",
-        );
-      }
+    // Pure, cheap, side-effect-free — compute OUTSIDE the steps so each step
+    // makes exactly ONE bounded call. With one 45s SLOW_API call per step, ky's
+    // classified timeout always fires before a 60s platform kill, so no
+    // whole-step retry can duplicate a non-idempotent write.
+    // Lever: Basic auth with the API key as the username (empty password).
+    const authHeader = `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`;
+    const base = leverBaseUrl(environment);
+    const performAs = config.performAsUserId?.trim();
+    if (!performAs) {
+      throw new NonRetriableError(
+        "ATS node (Lever): a 'perform as' user id is required",
+      );
+    }
+    const hireBase =
+      environment === "production"
+        ? "https://hire.lever.co"
+        : "https://hire.sandbox.lever.co";
 
-      const body: Record<string, unknown> = {
-        name,
-        emails: email ? [email] : [],
-        tags: ["guideboard"],
-      };
-      if (resumeUrl) body.links = [resumeUrl];
-      if (config.stageId?.trim()) body.stage = config.stageId.trim();
-      if (config.postingId?.trim()) body.postings = [config.postingId.trim()];
+    const body: Record<string, unknown> = {
+      name,
+      emails: email ? [email] : [],
+      tags: ["guideboard"],
+    };
+    if (resumeUrl) body.links = [resumeUrl];
+    if (config.stageId?.trim()) body.stage = config.stageId.trim();
+    if (config.postingId?.trim()) body.postings = [config.postingId.trim()];
 
+    // STEP 1 — create. ONE SLOW_API call, so ky's 45s timeout fires before any
+    // 60s platform kill; no whole-step retry can duplicate the create.
+    const result = await step.run("ats-create-opportunity", async () => {
       const created = await http
         .post(`${base}/opportunities`, {
           headers: { Authorization: authHeader },
@@ -130,10 +140,18 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
         );
 
       const opportunityId = created.data?.id ?? null;
+      return {
+        opportunityId,
+        url: opportunityId ? `${hireBase}/candidates/${opportunityId}` : null,
+      };
+    });
 
-      if (opportunityId && note) {
+    // STEP 2 — note in its OWN step. The create above is memoized, so a note
+    // retry never re-creates the opportunity.
+    if (result.opportunityId && note) {
+      await step.run("ats-add-note", async () => {
         await http
-          .post(`${base}/opportunities/${opportunityId}/notes`, {
+          .post(`${base}/opportunities/${result.opportunityId}/notes`, {
             headers: { Authorization: authHeader },
             searchParams: { perform_as: performAs },
             json: { value: note },
@@ -148,17 +166,9 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
               hint: "The note may already have been added — check the opportunity before re-running.",
             }),
           );
-      }
-
-      const hireBase =
-        environment === "production"
-          ? "https://hire.lever.co"
-          : "https://hire.sandbox.lever.co";
-      return {
-        opportunityId,
-        url: opportunityId ? `${hireBase}/candidates/${opportunityId}` : null,
-      };
-    });
+        return null;
+      });
+    }
 
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "success" }),
