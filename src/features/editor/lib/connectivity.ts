@@ -1,74 +1,89 @@
-import { triggerNodeTypeSet } from "@/config/node-options";
+import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
 import { NodeType } from "@/generated/prisma";
 
 type ConnNode = { id: string; type?: string | null };
 type ConnEdge = { source: string; target: string };
 
 /**
- * Map of nodeId -> why that node is mis-wired. Present ONLY for broken nodes; a
- * node absent from the map is fine.
+ * Map of nodeId -> why that node can never run as currently wired. Present ONLY
+ * for broken nodes; a node absent from the map is fine.
  *
- * The rule is "isn't wired into the flow", not "has no downstream". A node with
- * no *outgoing* edge is perfectly legal — it's the last step of the workflow (a
- * final Slack notify), and warning on it would nag on every well-formed workflow
- * forever. What is genuinely broken is:
+ * **Mirrors the engine exactly.** `run-workflow.ts` runs a node only if it is a
+ * TRIGGER (the only roots) or has a live incoming edge — so the nodes that can
+ * never run are exactly those not forward-reachable from some trigger. This
+ * flags:
  *
  *  - a **trigger with no outgoing edge** — it fires, but drives nothing; and
- *  - an **action with no incoming edge** — nothing feeds it.
+ *  - any **non-trigger not reachable from a trigger** — the engine records it
+ *    SKIPPED.
  *
- * So deleting the wire `Instagram -> Slack` flags Slack (nothing feeds it now)
- * while leaving Instagram — which still runs, and simply ends the flow — unmarked.
+ * A node with no *outgoing* edge is perfectly legal — it's the last step of the
+ * workflow (a final Slack notify) — and is never flagged; warning on it would
+ * nag on every well-formed workflow forever.
  *
- * **In-degree is deliberate; it mirrors the engine exactly.** `run-workflow.ts`
- * decides reachability as `incoming.length === 0 || incoming.some(isEdgeActive)`
- * — i.e. a node with no incoming edges is promoted to a ROOT and always runs, and
- * a node that runs activates its outgoing edges. So severing `trigger -> a` in
- * `trigger -> a -> b -> c` leaves `a` a root: a, b and c all still run. Only `a`
- * is mis-wired; b and c are legitimately fed by a. Walking forward from triggers
- * and flagging everything unreached would therefore be WRONG against today's
- * engine — it would mark b and c broken while they demonstrably run.
+ * Reachability is **transitive**, deliberately: severing `trigger -> a` in
+ * `trigger -> a -> b -> c` kills a, b *and* c, so all three are flagged. (While
+ * the engine still promoted any node with no incoming edges to a root, a, b and
+ * c all really did run and only `a` was mis-wired — so this used to be a plain
+ * in-degree check. Fixing the engine is what made reachability the correct rule;
+ * the two must be changed together or the canvas lies.)
  *
- * That root-promotion is itself a bug (deleting an edge doesn't stop the node
- * running) — see `plans/bugs/engine-runs-disconnected-nodes.md`. Until it's
- * fixed, these messages must describe WIRING, never runtime: claiming "it will
- * never run" would be the opposite of what the engine does.
- *
- * `triggerNodeTypeSet` (`@/config/node-options`) is reused as the single source
- * of truth for "is this a trigger", the same set draw-time connection validation
- * uses, so the two can't drift. A trigger is a root by design, so it is exempt
- * from the incoming check — no incoming edge is healthy for a trigger. Pure and
- * store-shape-agnostic, so it unit-tests cleanly and works off either the React
- * Flow store or a persisted graph.
+ * `TRIGGER_NODE_TYPES` is the very set the engine roots on, so the canvas and
+ * the engine cannot disagree about what runs. Iterative stack + visited set —
+ * mirroring `wouldCreateCycle` in `connection-validation.ts` — so a graph that
+ * already contains a cycle can't hang this. Pure and store-shape-agnostic, so it
+ * unit-tests cleanly and works off either the React Flow store or a persisted
+ * graph.
  */
 export function unrunnableNodes(
   nodes: ConnNode[],
   edges: ConnEdge[],
 ): Record<string, string> {
-  const hasOutgoing = new Set<string>();
+  // The INITIAL placeholder is canvas scaffolding, not part of the graph.
+  const real = nodes.filter(
+    (node) => node.type && node.type !== NodeType.INITIAL,
+  );
+  const isTrigger = (node: ConnNode) =>
+    TRIGGER_NODE_TYPES.has(node.type as NodeType);
+
+  const outgoing = new Map<string, string[]>();
   const hasIncoming = new Set<string>();
   for (const edge of edges) {
-    hasOutgoing.add(edge.source);
+    const list = outgoing.get(edge.source);
+    if (list) list.push(edge.target);
+    else outgoing.set(edge.source, [edge.target]);
     hasIncoming.add(edge.target);
   }
 
-  const reasons: Record<string, string> = {};
-  for (const node of nodes) {
-    if (!node.type || node.type === NodeType.INITIAL) continue;
+  // Walk forward from every trigger — the engine's only roots. Whatever this
+  // walk can't touch is never reached by a live edge, so it never runs.
+  const reachable = new Set<string>();
+  const stack = real.filter(isTrigger).map((node) => node.id);
+  while (stack.length > 0) {
+    const current = stack.pop() as string;
+    if (reachable.has(current)) continue;
+    reachable.add(current);
+    const next = outgoing.get(current);
+    if (next) stack.push(...next);
+  }
 
-    // A trigger is a root by design: having no incoming edge is healthy for it,
-    // so it's only broken when it drives nothing.
-    if (triggerNodeTypeSet.has(node.type as NodeType)) {
-      if (!hasOutgoing.has(node.id)) {
+  const reasons: Record<string, string> = {};
+  for (const node of real) {
+    // A trigger is a root by design: no incoming edge is healthy for it, so it
+    // is only broken when it drives nothing.
+    if (isTrigger(node)) {
+      if (!outgoing.has(node.id)) {
         reasons[node.id] =
           "This trigger isn't connected to anything — it won't drive any steps";
       }
       continue;
     }
 
-    if (!hasIncoming.has(node.id)) {
-      reasons[node.id] =
-        "Nothing connects into this node — it isn't wired into the flow";
-    }
+    if (reachable.has(node.id)) continue;
+
+    reasons[node.id] = hasIncoming.has(node.id)
+      ? "This node can't be reached from a trigger — it will never run"
+      : "Nothing connects into this node — it will never run";
   }
   return reasons;
 }

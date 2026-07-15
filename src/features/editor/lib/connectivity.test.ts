@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { unrunnableNodes } from "./connectivity";
 
-// MANUAL_TRIGGER is in `triggerNodeTypeSet`; SLACK is not.
+// MANUAL_TRIGGER is in TRIGGER_NODE_TYPES; SLACK is not.
 const trigger = (id: string) => ({ id, type: "MANUAL_TRIGGER" });
 const action = (id: string, type = "SLACK") => ({ id, type });
 const edge = (source: string, target: string) => ({ source, target });
@@ -21,26 +21,21 @@ describe("unrunnableNodes", () => {
     expect(flagged(nodes, edges)).toEqual([]);
   });
 
-  it("flags an action left unfed when its incoming edge is deleted", () => {
+  it("flags an action left unreachable when its incoming edge is deleted", () => {
     // The Instagram case: trigger -> ig -> slack, then ig->slack is removed.
-    // Nothing feeds `slack`; `ig` still runs and just ends the flow.
+    // `slack` can never run; `ig` still runs and just ends the flow.
     const nodes = [trigger("t"), action("ig"), action("slack")];
     const edges = [edge("t", "ig")];
     expect(flagged(nodes, edges)).toEqual(["slack"]);
   });
 
-  it("flags ONLY the severed node, not the live chain hanging off it", () => {
-    // trigger -> a -> b -> c, with trigger->a deleted. This pins the rule to the
-    // engine: run-workflow.ts promotes a node with no incoming edges to a ROOT
-    // ("roots (no incoming edges) always run"), and a node that runs activates
-    // its outgoing edges — so a, b and c ALL still run. Only `a` is mis-wired.
-    // Walking forward from triggers and flagging everything unreached would mark
-    // b and c broken while they demonstrably run. Do not "fix" this into
-    // trigger-reachability unless plans/bugs/engine-runs-disconnected-nodes.md
-    // is fixed first.
+  it("flags the WHOLE chain severed from its trigger, not just the cut point", () => {
+    // trigger -> a -> b -> c with trigger->a deleted. The engine roots only on
+    // triggers, so a, b and c are ALL skipped — reachability must be transitive.
+    // `t` is flagged too: it now drives nothing.
     const nodes = [trigger("t"), action("a"), action("b"), action("c")];
     const edges = [edge("a", "b"), edge("b", "c")];
-    expect(flagged(nodes, edges)).toEqual(["a", "t"]);
+    expect(flagged(nodes, edges)).toEqual(["a", "b", "c", "t"]);
   });
 
   it("flags a trigger that drives nothing", () => {
@@ -62,6 +57,32 @@ describe("unrunnableNodes", () => {
     expect(flagged(nodes, edges)).toEqual([]);
   });
 
+  it("reaches through a diamond (merge node fed by two branches)", () => {
+    const nodes = [
+      trigger("t"),
+      action("sw", "SWITCH"),
+      action("yes"),
+      action("no"),
+      action("merge"),
+    ];
+    const edges = [
+      edge("t", "sw"),
+      edge("sw", "yes"),
+      edge("sw", "no"),
+      edge("yes", "merge"),
+      edge("no", "merge"),
+    ];
+    expect(flagged(nodes, edges)).toEqual([]);
+  });
+
+  it("terminates on a cyclic graph instead of hanging", () => {
+    // Draw-time validation rejects cycles, but a persisted/legacy graph could
+    // still contain one — the visited set must stop the walk.
+    const nodes = [trigger("t"), action("a"), action("b"), action("orphan")];
+    const edges = [edge("t", "a"), edge("a", "b"), edge("b", "a")];
+    expect(flagged(nodes, edges)).toEqual(["orphan"]);
+  });
+
   it("excludes the INITIAL placeholder node", () => {
     expect(flagged([{ id: "i", type: "INITIAL" }], [])).toEqual([]);
   });
@@ -76,16 +97,17 @@ describe("unrunnableNodes", () => {
     expect(flagged(nodes, [edge("t", "a")])).not.toContain("a");
   });
 
-  it("explains why each node is broken, describing wiring and never runtime", () => {
-    const reasons = unrunnableNodes([trigger("t"), action("a")], []);
+  it("explains why each node is broken", () => {
+    // Distinguishes 'nothing feeds it' from 'fed, but by a dead upstream'.
+    const reasons = unrunnableNodes(
+      [trigger("t"), action("a"), action("b"), action("c")],
+      [edge("a", "b"), edge("b", "c")],
+    );
     expect(reasons.t).toMatch(/trigger isn't connected/i);
-    expect(reasons.a).toMatch(/isn't wired into the flow/i);
-
-    // The engine RUNS a node with no incoming edges (it becomes a root), so any
-    // claim that it won't run is a lie to the user. See
-    // plans/bugs/engine-runs-disconnected-nodes.md.
-    for (const reason of Object.values(reasons)) {
-      expect(reason).not.toMatch(/never run|won't run|will not run/i);
-    }
+    expect(reasons.a).toMatch(/nothing connects into this node/i);
+    expect(reasons.b).toMatch(/can't be reached from a trigger/i);
+    // Now that the engine skips unreachable nodes, this claim is literally true.
+    expect(reasons.a).toMatch(/never run/i);
+    expect(reasons.c).toMatch(/never run/i);
   });
 });

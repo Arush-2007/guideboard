@@ -5,19 +5,15 @@ import { useHasInvalidConfig } from "@/features/executions/hooks/use-invalid-con
 import { useUnrunnableReason } from "@/features/executions/hooks/use-unrunnable";
 
 /**
- * Amber warning for a canvas node that isn't wired into the flow — an action
- * nothing connects into, or a trigger that drives nothing. Clears the moment the
- * node is wired back up. The tooltip carries the specific reason (see
- * `unrunnableNodes` in `features/editor/lib/connectivity.ts`).
+ * Amber warning for a canvas node that can never run as wired — one the engine
+ * won't reach from any trigger, or a trigger that drives nothing. Clears the
+ * moment the node is wired back up. The tooltip carries the specific reason (see
+ * `unrunnableNodes` in `features/editor/lib/connectivity.ts`, which derives it
+ * from the very same trigger set the engine roots on, so the canvas and the
+ * engine can't disagree about what runs).
  *
  * Deliberately NOT shown for a node that merely has no downstream: that's the
  * last step of a normal workflow, and warning on it nags forever.
- *
- * The "CannotRun" name is aspirational, not a description of today's engine: an
- * unfed node currently still RUNS (it gets promoted to a root — see
- * plans/bugs/engine-runs-disconnected-nodes.md), which is why the tooltips talk
- * about wiring rather than claiming the node won't run. Once that engine bug is
- * fixed the name becomes literally true.
  *
  * Same warning triangle + corner as <NeedsConfigBadge>, so the canvas keeps one
  * visual vocabulary for "this node needs your attention". Because they share the
