@@ -1,5 +1,4 @@
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { buildFailureEmail } from "@/features/executions/lib/failure-email";
 import type { StepTools } from "@/features/executions/types";
 import {
@@ -17,8 +16,9 @@ import {
 import { clampJson, isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
-import { sheetRange } from "@/lib/google-sheets";
+import { SHEETS_READ, sheetRange } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
@@ -30,6 +30,14 @@ import {
 } from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
+
+/** The Gmail poller's reads — listing and fetching messages changes nothing. */
+const GMAIL_READ = {
+  integration: "Gmail",
+  timeoutClass: "READ",
+  idempotent: true,
+  hint: "Gmail is slow right now; the next poll will pick these up.",
+} as const;
 
 /**
  * Prisma-backed NodeRecorder: writes one NodeExecution row per node, once when
@@ -642,15 +650,17 @@ export const handleGmailPoll = inngest.createFunction(
         Authorization: `Bearer ${accessToken}`,
       };
 
-      const list = await ky
+      const list = await http
         .get("https://gmail.googleapis.com/gmail/v1/users/me/messages", {
           headers,
           searchParams: {
             q: "is:unread",
             maxResults: "10",
           },
+          timeout: HTTP_TIMEOUT.READ,
         })
-        .json<GmailListResponse>();
+        .json<GmailListResponse>()
+        .catch(rethrowTimeout(GMAIL_READ));
 
       for (const msg of list.messages ?? []) {
         const metadataParams = new URLSearchParams();
@@ -658,15 +668,17 @@ export const handleGmailPoll = inngest.createFunction(
         metadataParams.append("metadataHeaders", "Subject");
         metadataParams.append("metadataHeaders", "From");
 
-        const detail = await ky
+        const detail = await http
           .get(
             `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}`,
             {
               headers,
               searchParams: metadataParams,
+              timeout: HTTP_TIMEOUT.READ,
             },
           )
-          .json<GmailMessageResponse>();
+          .json<GmailMessageResponse>()
+          .catch(rethrowTimeout(GMAIL_READ));
 
         const subject = getHeaderValue(detail.payload?.headers, "Subject");
         const from = getHeaderValue(detail.payload?.headers, "From");
@@ -685,18 +697,30 @@ export const handleGmailPoll = inngest.createFunction(
           idempotencyKey: `gmail:${msg.id}`,
         });
 
-        await ky.post(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`,
-          {
-            headers: {
-              ...headers,
-              "Content-Type": "application/json",
+        await http
+          .post(
+            `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}/modify`,
+            {
+              headers: {
+                ...headers,
+                "Content-Type": "application/json",
+              },
+              json: {
+                removeLabelIds: ["UNREAD"],
+              },
+              timeout: HTTP_TIMEOUT.WRITE,
             },
-            json: {
-              removeLabelIds: ["UNREAD"],
-            },
-          },
-        );
+          )
+          .catch(
+            rethrowTimeout({
+              integration: "Gmail",
+              timeoutClass: "WRITE",
+              // Removing a label already removed is a no-op — this is a set
+              // operation, not an append, so repeating it is safe.
+              idempotent: true,
+              hint: "Gmail is slow right now; the message stays unread until this succeeds.",
+            }),
+          );
       }
 
       await prisma.gmailPoll.update({
@@ -763,16 +787,22 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
       }
 
       const a1Range = sheetRange(poll.sheetName, "A:ZZ");
-      const valuesResult = await ky
+      // The SAME wide A:ZZ read that died on ky's 10s default — and this one is on a
+      // 5-minute cron, so a silent timeout here means the trigger just stops firing.
+      const valuesResult = await http
         .get(
           `https://sheets.googleapis.com/v4/spreadsheets/${poll.spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
           {
             headers: {
               Authorization: `Bearer ${accessToken}`,
             },
+            timeout: HTTP_TIMEOUT.READ,
           },
         )
-        .json<GoogleSheetsValuesResponse>();
+        .json<GoogleSheetsValuesResponse>()
+        .catch(
+          rethrowTimeout({ integration: "Google Sheets", ...SHEETS_READ }),
+        );
 
       const rows = valuesResult.values ?? [];
       const currentRowCount = rows.length;

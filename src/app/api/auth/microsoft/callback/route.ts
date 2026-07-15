@@ -1,11 +1,11 @@
 import "server-only";
 
-import ky from "ky";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http } from "@/lib/http";
 import { logger } from "@/lib/logger";
 import { MICROSOFT_SCOPES, MICROSOFT_TOKEN_URL } from "@/lib/microsoft-token";
 
@@ -56,7 +56,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const tokenResponse = await ky
+    const tokenResponse = await http
       .post(MICROSOFT_TOKEN_URL, {
         body: new URLSearchParams({
           client_id: clientId,
@@ -69,6 +69,10 @@ export async function GET(request: Request) {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
+        // The auth code is SINGLE-USE, so this must never be retried — the shared
+        // client is retry:0. Bounding it just stops a hung exchange from holding the
+        // redirect open indefinitely.
+        timeout: HTTP_TIMEOUT.TOKEN,
       })
       .json<MicrosoftTokenResponse>();
 
@@ -80,11 +84,12 @@ export async function GET(request: Request) {
       return failRedirect(request);
     }
 
-    const me = await ky
+    const me = await http
       .get(
         "https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName",
         {
           headers: { Authorization: `Bearer ${accessToken}` },
+          timeout: HTTP_TIMEOUT.TOKEN,
         },
       )
       .json<MicrosoftMeResponse>();

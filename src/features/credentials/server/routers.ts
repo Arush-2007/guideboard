@@ -1,4 +1,4 @@
-import ky from "ky";
+import { TRPCError } from "@trpc/server";
 import z from "zod";
 import { PAGINATION } from "@/config/constants";
 import { CredentialType } from "@/generated/prisma";
@@ -6,6 +6,7 @@ import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { sheetRange } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import { interactiveHttp, isTimeout } from "@/lib/http";
 import { refreshMicrosoftTokenIfNeeded } from "@/lib/microsoft-token";
 import {
   GRAPH_BASE,
@@ -40,6 +41,25 @@ async function getTypeformToken(
   const token = decrypt(credential.value).trim();
   if (!token) throw new Error("Typeform credential is empty");
   return token;
+}
+
+/**
+ * These pickers run in tRPC with a HUMAN WAITING on a dropdown spinner, not inside
+ * an Inngest step — so they use the short INTERACTIVE clock (fail fast and legibly,
+ * rather than making someone stare at a spinner), and a timeout becomes a TRPCError
+ * the UI can show. Inngest's `RetryAfterError` would be meaningless here: there is
+ * no engine to retry it.
+ */
+function rethrowPickerTimeout(integration: string) {
+  return (error: unknown): never => {
+    if (isTimeout(error)) {
+      throw new TRPCError({
+        code: "TIMEOUT",
+        message: `${integration} took too long to respond. Please try again.`,
+      });
+    }
+    throw error;
+  };
 }
 
 const credentialBodySchema = z
@@ -359,7 +379,7 @@ export const credentialsRouter = createTRPCRouter({
     };
 
     const accessToken = await refreshYoutubeTokenIfNeeded(ctx.auth.user.id);
-    const data = await ky
+    const data = await interactiveHttp
       .get("https://www.googleapis.com/youtube/v3/search", {
         searchParams: {
           part: "snippet",
@@ -371,7 +391,8 @@ export const credentialsRouter = createTRPCRouter({
           Authorization: `Bearer ${accessToken}`,
         },
       })
-      .json<YoutubeVideosResponse>();
+      .json<YoutubeVideosResponse>()
+      .catch(rethrowPickerTimeout("YouTube"));
 
     return (data.items ?? [])
       .map((item) => ({
@@ -389,7 +410,7 @@ export const credentialsRouter = createTRPCRouter({
     };
 
     const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
-    const data = await ky
+    const data = await interactiveHttp
       .get("https://www.googleapis.com/drive/v3/files", {
         searchParams: {
           q: "mimeType='application/vnd.google-apps.spreadsheet'",
@@ -416,7 +437,7 @@ export const credentialsRouter = createTRPCRouter({
     };
 
     const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
-    const data = await ky
+    const data = await interactiveHttp
       .get("https://www.googleapis.com/drive/v3/files", {
         searchParams: {
           q: "mimeType='application/vnd.google-apps.form'",
@@ -425,7 +446,8 @@ export const credentialsRouter = createTRPCRouter({
         },
         headers: { Authorization: `Bearer ${accessToken}` },
       })
-      .json<DriveFilesResponse>();
+      .json<DriveFilesResponse>()
+      .catch(rethrowPickerTimeout("Google Drive"));
 
     return (data.files ?? [])
       .map((file) => ({
@@ -450,11 +472,12 @@ export const credentialsRouter = createTRPCRouter({
       };
 
       const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
-      const data = await ky
+      const data = await interactiveHttp
         .get(`https://forms.googleapis.com/v1/forms/${input.formId}`, {
           headers: { Authorization: `Bearer ${accessToken}` },
         })
-        .json<FormsGetResponse>();
+        .json<FormsGetResponse>()
+        .catch(rethrowPickerTimeout("Google Forms"));
 
       return (data.items ?? [])
         .filter((item) => item.questionItem || item.questionGroupItem)
@@ -474,7 +497,7 @@ export const credentialsRouter = createTRPCRouter({
         input.credentialId,
         ctx.auth.user.id,
       );
-      const data = await ky
+      const data = await interactiveHttp
         .get("https://api.typeform.com/forms", {
           searchParams: { page_size: "200" },
           headers: { Authorization: `Bearer ${token}` },
@@ -504,7 +527,7 @@ export const credentialsRouter = createTRPCRouter({
         input.credentialId,
         ctx.auth.user.id,
       );
-      const data = await ky
+      const data = await interactiveHttp
         .get(`https://api.typeform.com/forms/${input.formId}`, {
           headers: { Authorization: `Bearer ${token}` },
         })
@@ -561,13 +584,15 @@ export const credentialsRouter = createTRPCRouter({
       const url = `${baseUrl}/api/webhooks/typeform?workflowId=${input.workflowId}`;
       const tag = `guideboard-${input.workflowId}`;
 
-      await ky.put(
-        `https://api.typeform.com/forms/${input.formId}/webhooks/${tag}`,
-        {
+      // A PUT to a specific tag is an upsert — safe to repeat, so the interactive
+      // client's single GET-only retry is not even needed here, but the short clock
+      // is: a human clicked "enable" and is watching.
+      await interactiveHttp
+        .put(`https://api.typeform.com/forms/${input.formId}/webhooks/${tag}`, {
           headers: { Authorization: `Bearer ${token}` },
           json: { url, enabled: true, secret, verify_ssl: true },
-        },
-      );
+        })
+        .catch(rethrowPickerTimeout("Typeform"));
 
       return { enabled: true, url };
     }),
@@ -589,7 +614,7 @@ export const credentialsRouter = createTRPCRouter({
           ctx.auth.user.id,
         );
         const tag = `guideboard-${input.workflowId}`;
-        const hook = await ky
+        const hook = await interactiveHttp
           .get(
             `https://api.typeform.com/forms/${input.formId}/webhooks/${tag}`,
             { headers: { Authorization: `Bearer ${token}` } },
@@ -613,7 +638,7 @@ export const credentialsRouter = createTRPCRouter({
       const accessToken = await refreshGoogleTokenIfNeeded(ctx.auth.user.id);
       const a1Range = sheetRange(input.sheetName, "1:1");
 
-      const data = await ky
+      const data = await interactiveHttp
         .get(
           `https://sheets.googleapis.com/v4/spreadsheets/${input.spreadsheetId}/values/${encodeURIComponent(a1Range)}`,
           { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -638,7 +663,7 @@ export const credentialsRouter = createTRPCRouter({
     };
 
     const accessToken = await refreshMicrosoftTokenIfNeeded(ctx.auth.user.id);
-    const data = await ky
+    const data = await interactiveHttp
       .get(`${GRAPH_BASE}/me/drive/root/search(q='.xlsx')`, {
         searchParams: { $select: "id,name,file", $top: "100" },
         headers: graphHeaders(accessToken),
@@ -661,7 +686,7 @@ export const credentialsRouter = createTRPCRouter({
       };
 
       const accessToken = await refreshMicrosoftTokenIfNeeded(ctx.auth.user.id);
-      const data = await ky
+      const data = await interactiveHttp
         .get(`${workbookUrl(input.workbookId)}/worksheets`, {
           searchParams: { $select: "id,name,position" },
           headers: graphHeaders(accessToken),
@@ -749,7 +774,7 @@ export const credentialsRouter = createTRPCRouter({
       return [] as Array<{ id: string; title: string }>;
     }
 
-    const data = await ky
+    const data = await interactiveHttp
       .post("https://api.notion.com/v1/search", {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -812,7 +837,7 @@ export const credentialsRouter = createTRPCRouter({
       return [] as Array<{ id: string; title: string }>;
     }
 
-    const data = await ky
+    const data = await interactiveHttp
       .post("https://api.notion.com/v1/search", {
         headers: {
           Authorization: `Bearer ${token}`,

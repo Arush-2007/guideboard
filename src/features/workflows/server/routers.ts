@@ -5,6 +5,7 @@ import { PAGINATION } from "@/config/constants";
 import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
+import { isTimeout, timeoutSignal } from "@/lib/http";
 import {
   legacyOutputKey,
   nextNodeRef,
@@ -126,6 +127,19 @@ export const workflowsRouter = createTRPCRouter({
               },
             ],
           }),
+          // Was an UNBOUNDED fetch: a slow generation would hang the request until
+          // the platform killed it. tRPC with a human waiting, so a timeout becomes a
+          // TRPCError the UI can render.
+          signal: timeoutSignal("LLM"),
+        }).catch((error: unknown) => {
+          if (isTimeout(error)) {
+            throw new TRPCError({
+              code: "TIMEOUT",
+              message:
+                "Claude took too long to generate the workflow. Please try again.",
+            });
+          }
+          throw error;
         });
 
         if (!res.ok) {

@@ -13,6 +13,7 @@
 
 import { extractText, getDocumentProxy } from "unpdf";
 import { assertWithinTransferLimit } from "./file-limits";
+import { rethrowTimeout, timeoutSignal } from "./http";
 
 export type FetchedResume = {
   text: string;
@@ -116,7 +117,20 @@ export async function fetchBytes(
   const headers: Record<string, string> = {};
   if (opts.accessToken) headers.Authorization = `Bearer ${opts.accessToken}`;
 
-  const res = await fetch(target, { headers });
+  // Bounded: this downloads from an arbitrary user-supplied URL, so without a
+  // signal a slow or wedged host would hold the invocation open until the platform
+  // killed it. Downloading a file is a read — safe for Inngest to retry.
+  const res = await fetch(target, {
+    headers,
+    signal: timeoutSignal("MEDIA"),
+  }).catch(
+    rethrowTimeout({
+      integration: "The resume host",
+      timeoutClass: "MEDIA",
+      idempotent: true,
+      hint: "The file may be large, or the host may be slow or unreachable.",
+    }),
+  );
   if (!res.ok) {
     throw new Error(
       `Fetch failed: ${res.status} ${res.statusText} for ${target}`,

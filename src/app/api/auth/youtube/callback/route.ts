@@ -1,11 +1,11 @@
 import "server-only";
 
-import ky from "ky";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http } from "@/lib/http";
 import { logger } from "@/lib/logger";
 
 type GoogleTokenResponse = {
@@ -55,7 +55,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    const tokenResponse = await ky
+    const tokenResponse = await http
       .post("https://oauth2.googleapis.com/token", {
         body: new URLSearchParams({
           client_id: clientId,
@@ -67,6 +67,10 @@ export async function GET(request: Request) {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
+        // The auth code is SINGLE-USE, so this must never be retried — the shared
+        // client is retry:0. Bounding it just stops a hung exchange from holding the
+        // redirect open indefinitely.
+        timeout: HTTP_TIMEOUT.TOKEN,
       })
       .json<GoogleTokenResponse>();
 
@@ -84,11 +88,14 @@ export async function GET(request: Request) {
     channelsUrl.searchParams.set("part", "snippet");
     channelsUrl.searchParams.set("mine", "true");
 
-    const res = await fetch(channelsUrl.toString(), {
+    const res = await http.get(channelsUrl.toString(), {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         Accept: "application/json",
       },
+      timeout: HTTP_TIMEOUT.TOKEN,
+      // The 403 path below reads the body itself, so ky must not throw on it.
+      throwHttpErrors: false,
     });
     if (!res.ok) {
       const body = await res.text();

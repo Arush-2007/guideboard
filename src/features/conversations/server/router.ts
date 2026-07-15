@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import z from "zod";
 import type { Prisma } from "@/generated/prisma";
 import prisma from "@/lib/db";
+import { isTimeout, timeoutSignal } from "@/lib/http";
 import {
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
@@ -202,6 +203,20 @@ export const conversationsRouter = createTRPCRouter({
               content: m.content,
             })),
           }),
+          // Was an UNBOUNDED fetch: a slow generation would hang the chat request
+          // until the platform killed it. This runs in tRPC with a human watching, so
+          // a timeout becomes a TRPCError the chat panel can render — an Inngest
+          // RetryAfterError would be meaningless here.
+          signal: timeoutSignal("LLM"),
+        }).catch((error: unknown) => {
+          if (isTimeout(error)) {
+            throw new TRPCError({
+              code: "TIMEOUT",
+              message:
+                "Claude took too long to respond. Please send your message again.",
+            });
+          }
+          throw error;
         });
 
         if (!res.ok) {
