@@ -61,7 +61,7 @@ export const BaseExecutionNode = memo(
         <NodeStatusIndicator
           status={status}
           variant="border"
-          className="rounded-2xl"
+          className="rounded-[18px]"
         >
           <BaseNode
             status={status}

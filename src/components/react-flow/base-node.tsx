@@ -1,4 +1,4 @@
-import { CheckCircle2Icon, Loader2Icon, XCircleIcon } from "lucide-react";
+import { CheckCircle2Icon, Loader2Icon } from "lucide-react";
 import { forwardRef, type HTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
 import type { NodeStatus } from "./node-status-indicator";
@@ -20,11 +20,14 @@ export const BaseNode = forwardRef<HTMLDivElement, BaseNodeProps>(
       {...props}
     >
       {props.children}
-      {status === "error" && (
-        <XCircleIcon className="absolute right-0.5 bottom-0.5 size-2 text-red-700 stroke-3" />
-      )}
+      {/* Error gets its own badge (<NodeFailureBadge>, same bottom-right spot
+          and size) with a popover for the error detail, so there is nothing
+          to render inline here for that status. */}
       {status === "success" && (
-        <CheckCircle2Icon className="absolute right-0.5 bottom-0.5 size-2 text-green-700 stroke-3" />
+        <CheckCircle2Icon
+          className="absolute -right-2 -bottom-2 z-10 size-[18px] fill-green-500 text-white drop-shadow-[0_1px_1.5px_rgba(0,0,0,0.35)]"
+          strokeWidth={2.25}
+        />
       )}
       {status === "loading" && (
         <Loader2Icon className="absolute -right-0.5 -bottom-0.5 size-2 text-blue-700 stroke-3 animate-spin" />
