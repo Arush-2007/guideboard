@@ -1,5 +1,6 @@
 import { NonRetriableError, RetryAfterError } from "inngest";
-import ky, { HTTPError } from "ky";
+import { HTTPError, type Options as KyOptions } from "ky";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "./http";
 
 /**
  * Shared Google Sheets v4 REST plumbing — the Sheets counterpart of
@@ -9,6 +10,31 @@ import ky, { HTTPError } from "ky";
  */
 
 export const SHEETS_BASE = "https://sheets.googleapis.com/v4/spreadsheets";
+
+/**
+ * The timeout classes every Sheets call names, and what a user can do when one
+ * fires. Exported because the WRITES live in the action executor while the READS
+ * live here — both must classify identically or the same failure reads two ways.
+ *
+ * A read is retriable; a WRITE IS NOT — a timed-out `values:append` may have
+ * landed, and retrying it appends the row twice. See `TIMEOUT_RETRIABLE` in
+ * `http.ts` for the full trade-off.
+ */
+export const SHEETS_READ = {
+  timeoutClass: "READ",
+  // Reading a tab changes nothing, so Inngest may safely retry it.
+  idempotent: true,
+  hint: "The tab may be very large — narrow the range, or try again.",
+} as const;
+
+export const SHEETS_WRITE = {
+  timeoutClass: "WRITE",
+  // ⚠️ A timed-out `values:append` MAY HAVE LANDED — the response was lost, not
+  // necessarily the request. Retrying it would append the row a SECOND time, and a
+  // silent duplicate row in a client's ledger is far worse than a visible failure.
+  idempotent: false,
+  hint: "The sheet may be very large, or Google may be slow right now.",
+} as const;
 
 /** Bearer auth headers for a JSON request. */
 export function sheetsAuthHeaders(accessToken: string): Record<string, string> {
@@ -87,11 +113,13 @@ export async function readSheetTable({
   sheetName: string;
   range?: string;
 }): Promise<SheetTable> {
-  const res = await ky
+  const res = await http
     .get(sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, range)), {
       headers: { Authorization: `Bearer ${accessToken}` },
+      timeout: HTTP_TIMEOUT.READ,
     })
-    .json<SheetsValuesResponse>();
+    .json<SheetsValuesResponse>()
+    .catch(rethrowTimeout({ integration: "Google Sheets", ...SHEETS_READ }));
 
   const raw = res.values ?? [];
   const headers = (raw[0] ?? []).map((h) => String(h ?? "").trim());
@@ -142,14 +170,16 @@ export async function getSheetGrid({
   spreadsheetId: string;
   sheetName: string;
 }): Promise<SheetGrid> {
-  const meta = await ky
+  const meta = await http
     .get(`${SHEETS_BASE}/${spreadsheetId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       searchParams: {
         fields: "sheets.properties(sheetId,title,gridProperties.rowCount)",
       },
+      timeout: HTTP_TIMEOUT.READ,
     })
-    .json<SheetsMetaResponse>();
+    .json<SheetsMetaResponse>()
+    .catch(rethrowTimeout({ integration: "Google Sheets", ...SHEETS_READ }));
 
   const target = sheetName.trim().toLowerCase();
   const found = (meta.sheets ?? []).find(
@@ -166,6 +196,24 @@ export async function getSheetGrid({
   };
 }
 
+/**
+ * Every Sheets WRITE goes through here — one clock, one timeout policy, one place
+ * to change it.
+ *
+ * The write REQUESTS live in the action executor (they are branch-specific: append,
+ * batchUpdate, values:batchUpdate), but their HTTP POLICY must not be scattered
+ * across six call sites — that is exactly how the 10s default went unnoticed for
+ * so long. A write's timeout is deliberately NON-retriable; see `SHEETS_WRITE`.
+ */
+export function sheetsWrite(
+  url: string,
+  options: Omit<KyOptions, "timeout">,
+): Promise<Response> {
+  return http
+    .post(url, { ...options, timeout: HTTP_TIMEOUT.WRITE })
+    .catch(rethrowTimeout({ integration: "Google Sheets", ...SHEETS_WRITE }));
+}
+
 type SheetsErrorBody = {
   error?: { code?: number; message?: string; status?: string };
 };
@@ -174,6 +222,12 @@ type SheetsErrorBody = {
  * Maps a Sheets HTTP failure onto Inngest retry semantics, mirroring the Excel
  * action's `toGraphError`: 429 honors Retry-After; 400/401/403/404 are config /
  * permission problems (no retry); everything else (transient 5xx) retries.
+ *
+ * ⚠️ The non-`HTTPError` passthrough below is LOAD-BEARING, not incidental.
+ * Timeouts are classified at the call site by `rethrowTimeout` (a ky
+ * `TimeoutError` is not an `HTTPError`, so it could never be classified here),
+ * and they arrive already wrapped as RetryAfter/NonRetriable. This function must
+ * hand them through UNTOUCHED. Re-wrapping them would erase the retry decision.
  */
 export async function toSheetsError(error: unknown): Promise<Error> {
   if (!(error instanceof HTTPError)) {

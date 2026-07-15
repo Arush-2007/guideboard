@@ -26,10 +26,17 @@ const { kyGetMock, FakeHTTPError } = vi.hoisted(() => {
   }
   return { kyGetMock: vi.fn(), FakeHTTPError };
 });
-vi.mock("ky", () => ({
-  default: { get: kyGetMock },
-  HTTPError: FakeHTTPError,
-}));
+// HTTP now goes through the shared client in `http.ts` (`ky.create(...)`), so the
+// mock must answer `create` — returning the same fake instance, so the assertions
+// below still see the calls.
+vi.mock("ky", () => {
+  const instance = { get: kyGetMock };
+  return {
+    default: { ...instance, create: () => instance },
+    HTTPError: FakeHTTPError,
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 import {
   getSheetGrid,

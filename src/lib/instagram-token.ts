@@ -1,6 +1,6 @@
-import ky from "ky";
 import prisma from "@/lib/db";
-import { encrypt, decrypt } from "@/lib/encryption";
+import { decrypt, encrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 
 const TEN_DAYS_MS = 10 * 24 * 60 * 60 * 1000;
 
@@ -28,14 +28,24 @@ export async function refreshInstagramTokenIfNeeded(
 
   const currentToken = decrypt(credential.accessToken);
 
-  const data = await ky
+  const data = await http
     .get("https://graph.instagram.com/refresh_access_token", {
       searchParams: {
         grant_type: "ig_refresh_token",
         access_token: currentToken,
       },
+      timeout: HTTP_TIMEOUT.TOKEN,
     })
-    .json<RefreshResponse>();
+    .json<RefreshResponse>()
+    .catch(
+      rethrowTimeout({
+        integration: "Instagram sign-in",
+        timeoutClass: "TOKEN",
+        // A token refresh is safe to repeat.
+        idempotent: true,
+        hint: "Instagram's token service is slow right now — usually transient.",
+      }),
+    );
 
   await prisma.instagramCredential.update({
     where: { id: credential.id },

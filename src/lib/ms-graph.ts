@@ -1,4 +1,13 @@
-import ky from "ky";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
+
+/** Every Graph read classifies its timeout the same way. */
+const GRAPH_READ = {
+  integration: "Microsoft Excel",
+  timeoutClass: "READ",
+  // Reading table metadata changes nothing, so Inngest may safely retry it.
+  idempotent: true,
+  hint: "The workbook may be very large, or Microsoft may be slow right now.",
+} as const;
 
 /**
  * Minimal Microsoft Graph plumbing shared by the credentials tRPC procedures
@@ -51,15 +60,17 @@ export async function getFirstTableOnWorksheet({
 }): Promise<GraphTable | null> {
   type TablesResponse = { value?: Array<{ id?: string; name?: string }> };
 
-  const data = await ky
+  const data = await http
     .get(
       `${workbookUrl(workbookId)}/worksheets('${odataQuote(worksheetName)}')/tables`,
       {
         searchParams: { $select: "id,name" },
         headers: graphHeaders(accessToken, sessionId),
+        timeout: HTTP_TIMEOUT.READ,
       },
     )
-    .json<TablesResponse>();
+    .json<TablesResponse>()
+    .catch(rethrowTimeout(GRAPH_READ));
 
   const table = (data.value ?? []).find((t) => t.id && t.name);
   return table ? { id: table.id ?? "", name: table.name ?? "" } : null;
@@ -79,15 +90,17 @@ export async function getTableColumnNames({
 }): Promise<string[]> {
   type ColumnsResponse = { value?: Array<{ name?: string }> };
 
-  const data = await ky
+  const data = await http
     .get(
       `${workbookUrl(workbookId)}/tables('${odataQuote(tableName)}')/columns`,
       {
         searchParams: { $select: "name" },
         headers: graphHeaders(accessToken, sessionId),
+        timeout: HTTP_TIMEOUT.READ,
       },
     )
-    .json<ColumnsResponse>();
+    .json<ColumnsResponse>()
+    .catch(rethrowTimeout(GRAPH_READ));
 
   return (data.value ?? [])
     .map((c) => String(c.name ?? "").trim())

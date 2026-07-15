@@ -1,6 +1,6 @@
+import ky from "ky";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import prisma from "@/lib/db";
-import ky from "ky";
 import { refreshYoutubeTokenIfNeeded } from "./youtube-token";
 
 vi.mock("@/lib/db", () => ({
@@ -17,9 +17,15 @@ vi.mock("@/lib/encryption", () => ({
   decrypt: vi.fn((v: string) => v.replace("enc:", "")),
 }));
 
-vi.mock("ky", () => ({
-  default: { post: vi.fn() },
-}));
+// HTTP goes through the shared client in `http.ts` (`ky.create(...)`), so the
+// mock must answer `create` with the same fake instance.
+vi.mock("ky", () => {
+  const instance = { post: vi.fn() };
+  return {
+    default: { ...instance, create: () => instance },
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 const savedEnv = { ...process.env };
 
@@ -70,7 +76,9 @@ describe("refreshYoutubeTokenIfNeeded", () => {
         token_type: "Bearer",
       }),
     } as any);
-    vi.mocked(prisma.youtubeCredential.update).mockResolvedValue(undefined as any);
+    vi.mocked(prisma.youtubeCredential.update).mockResolvedValue(
+      undefined as any,
+    );
 
     const result = await refreshYoutubeTokenIfNeeded("user-1");
 
