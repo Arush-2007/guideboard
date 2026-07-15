@@ -32,10 +32,17 @@ const { kyGetMock, kyPostMock, kyPatchMock, FakeHTTPError } = vi.hoisted(() => {
     FakeHTTPError,
   };
 });
-vi.mock("ky", () => ({
-  default: { get: kyGetMock, post: kyPostMock, patch: kyPatchMock },
-  HTTPError: FakeHTTPError,
-}));
+// HTTP goes through the shared client in `http.ts` (`ky.create(...)`), so the mock
+// must answer `create` with the same fake instance — the assertions below still see
+// every call.
+vi.mock("ky", () => {
+  const instance = { get: kyGetMock, post: kyPostMock, patch: kyPatchMock };
+  return {
+    default: { ...instance, create: () => instance },
+    HTTPError: FakeHTTPError,
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 const { getFirstTableMock, getColumnsMock } = vi.hoisted(() => ({
   getFirstTableMock: vi.fn(),

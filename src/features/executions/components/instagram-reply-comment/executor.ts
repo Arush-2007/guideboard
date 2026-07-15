@@ -1,12 +1,12 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type InstagramReplyData = {
@@ -87,12 +87,22 @@ export const instagramReplyExecutor: NodeExecutor<InstagramReplyData> = async ({
       // accessToken is stored as encrypt(rawToken) — decrypt gives the raw long-lived token
       const accessToken = decrypt(credential.accessToken);
 
-      await ky
+      await http
         .post(`https://graph.instagram.com/v21.0/${commentId}/replies`, {
           searchParams: { access_token: accessToken },
           json: { message: compiledReply },
+          timeout: HTTP_TIMEOUT.WRITE,
         })
-        .json<InstagramReplyResponse>();
+        .json<InstagramReplyResponse>()
+        .catch(
+          rethrowTimeout({
+            integration: "Instagram",
+            timeoutClass: "WRITE",
+            // A retry would post the reply a SECOND time.
+            idempotent: false,
+            hint: "The reply may or may not have posted — check the comment before re-running.",
+          }),
+        );
 
       const prevAi = context.aiReply;
       const mergedAi =

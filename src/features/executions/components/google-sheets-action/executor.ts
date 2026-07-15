@@ -1,6 +1,5 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import {
   applyMultiMatchPolicy,
@@ -24,6 +23,7 @@ import {
   sheetsBatchUpdateUrl,
   sheetsValuesBatchUpdateUrl,
   sheetsValuesUrl,
+  sheetsWrite,
   toSheetsError,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
@@ -389,7 +389,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 only.anchorIdx === null &&
                 config.blankSeparators === true &&
                 table.rows.length > 0;
-              await ky.post(
+              await sheetsWrite(
                 `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
                 {
                   headers: sheetsAuthHeaders(accessToken),
@@ -455,7 +455,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 },
               });
             }
-            await ky.post(sheetsBatchUpdateUrl(spreadsheetId), {
+            await sheetsWrite(sheetsBatchUpdateUrl(spreadsheetId), {
               headers: sheetsAuthHeaders(accessToken),
               json: { requests },
             });
@@ -484,7 +484,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       if (!placed.written) {
         await step.run("google-sheets-insert-adjacent-write", async () => {
           try {
-            await ky.post(sheetsValuesBatchUpdateUrl(spreadsheetId), {
+            await sheetsWrite(sheetsValuesBatchUpdateUrl(spreadsheetId), {
               headers: sheetsAuthHeaders(accessToken),
               json: {
                 valueInputOption: "USER_ENTERED",
@@ -602,7 +602,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
               );
             }
 
-            await ky.post(
+            await sheetsWrite(
               `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
               {
                 headers: sheetsAuthHeaders(accessToken),
@@ -642,7 +642,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         ).trim();
         const values = parseValuesJson(renderedValues);
 
-        await ky.post(
+        await sheetsWrite(
           `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(a1Range)}:append`,
           {
             headers,
@@ -872,7 +872,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
           // ONE request for every target row ("first" writes a single-element
           // batch — one write path, no branching).
-          await ky.post(sheetsValuesBatchUpdateUrl(spreadsheetId), {
+          await sheetsWrite(sheetsValuesBatchUpdateUrl(spreadsheetId), {
             headers: sheetsAuthHeaders(accessToken),
             json: {
               valueInputOption: "USER_ENTERED",

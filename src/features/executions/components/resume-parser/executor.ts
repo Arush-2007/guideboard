@@ -1,5 +1,4 @@
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
@@ -7,6 +6,12 @@ import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
+import {
+  carriesRetryDecision,
+  HTTP_TIMEOUT,
+  http,
+  rethrowTimeout,
+} from "@/lib/http";
 import { fetchResumeText, isDriveSource } from "@/lib/resume-fetch";
 import { extractResumeFields } from "@/lib/resume-fields";
 import { renderTemplate } from "@/lib/templating";
@@ -102,13 +107,23 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
         if (config.workspaceId?.trim())
           form.append("workspace", config.workspaceId.trim());
 
-        const res = await ky
+        const res = await http
           .post("https://api.affinda.com/v2/resumes", {
             headers: { Authorization: `Bearer ${apiKey}` },
             body: form,
-            timeout: 60_000,
+            // Document parsing with `wait=true` is genuinely slow work on their side.
+            timeout: HTTP_TIMEOUT.SLOW_API,
           })
-          .json<AffindaResumeResponse>();
+          .json<AffindaResumeResponse>()
+          .catch(
+            rethrowTimeout({
+              integration: "Affinda",
+              timeoutClass: "SLOW_API",
+              // Parsing the same resume again is harmless — it returns the same result.
+              idempotent: true,
+              hint: "The resume may be large, or Affinda may be slow right now.",
+            }),
+          );
 
         const d = res.data ?? {};
         return {
@@ -158,7 +173,10 @@ export const resumeParserExecutor: NodeExecutor<ResumeParserData> = async ({
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
-    if (error instanceof NonRetriableError) throw error;
+    // Pass through anything that ALREADY carries a retry decision (a classified
+    // timeout, a 429 with Retry-After, a transient 5xx). Re-wrapping it below would
+    // flatten it into "never retry" and turn a recoverable blip into a failed run.
+    if (carriesRetryDecision(error)) throw error;
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Resume parsing failed",
     );

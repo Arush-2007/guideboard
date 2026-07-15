@@ -8,6 +8,7 @@ import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { timeoutSignal } from "@/lib/http";
 
 type AiReplyGeneratorData = {
   keyword?: string;
@@ -216,6 +217,11 @@ export const aiReplyGeneratorExecutor: NodeExecutor<
           recordInputs: true,
           recordOutputs: true,
         },
+        // The AI SDK has NO default timeout and silently retries twice, so a
+        // wedged provider would hang the step until the platform killed it.
+        // Inngest owns retrying (backoff, isolation, a visible run record).
+        abortSignal: timeoutSignal("LLM"),
+        maxRetries: 0,
       },
     );
 

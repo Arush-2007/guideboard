@@ -1,10 +1,10 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 import { refreshYoutubeTokenIfNeeded } from "@/lib/youtube-token";
 
@@ -63,7 +63,7 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
 
       const accessToken = await refreshYoutubeTokenIfNeeded(userId);
 
-      await ky
+      await http
         .post("https://www.googleapis.com/youtube/v3/comments", {
           searchParams: { part: "snippet" },
           json: {
@@ -75,8 +75,18 @@ export const youtubeReplyExecutor: NodeExecutor<YoutubeReplyData> = async ({
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
+          timeout: HTTP_TIMEOUT.WRITE,
         })
-        .json<YoutubeCommentResponse>();
+        .json<YoutubeCommentResponse>()
+        .catch(
+          rethrowTimeout({
+            integration: "YouTube",
+            timeoutClass: "WRITE",
+            // A retry would post the reply a SECOND time.
+            idempotent: false,
+            hint: "The reply may or may not have posted — check the comment before re-running.",
+          }),
+        );
 
       const prevAi = context.aiReply;
       const mergedAi =

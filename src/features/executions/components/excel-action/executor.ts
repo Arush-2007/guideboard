@@ -1,6 +1,28 @@
 import { decode } from "html-entities";
 import { NonRetriableError, RetryAfterError } from "inngest";
-import ky, { HTTPError } from "ky";
+import { HTTPError } from "ky";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
+
+/** Excel reads — fetching rows/ranges changes nothing, so a retry is free. */
+const EXCEL_READ = {
+  integration: "Microsoft Excel",
+  timeoutClass: "READ",
+  idempotent: true,
+  hint: "The workbook may be very large, or Microsoft may be slow right now.",
+} as const;
+
+/**
+ * Excel writes that REPLACE a known cell range (`PATCH rows/itemAt(index=N)` with
+ * absolute values). Re-issuing them writes the same values to the same place, so a
+ * retry is safe — unlike `rows/add`, which appends and is declared separately.
+ */
+const EXCEL_ABSOLUTE_WRITE = {
+  integration: "Microsoft Excel",
+  timeoutClass: "WRITE",
+  idempotent: true,
+  hint: "Microsoft may be slow right now.",
+} as const;
+
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
@@ -199,10 +221,21 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
             }
           }
 
-          await ky.post(`${tableUrl}/rows/add`, {
-            headers: graphHeaders(accessToken, sessionId),
-            json: { values: [newRow] },
-          });
+          await http
+            .post(`${tableUrl}/rows/add`, {
+              headers: graphHeaders(accessToken, sessionId),
+              json: { values: [newRow] },
+              timeout: HTTP_TIMEOUT.WRITE,
+            })
+            .catch(
+              rethrowTimeout({
+                integration: "Microsoft Excel",
+                timeoutClass: "WRITE",
+                // A retry would APPEND a second row — this is not an absolute write.
+                idempotent: false,
+                hint: "The row may already have been added — check the table before re-running.",
+              }),
+            );
           return newRow;
         };
 
@@ -214,21 +247,25 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
           );
           let currentDataRowCount = 0;
           if (needsRowCount) {
-            const body = await ky
+            const body = await http
               .get(`${tableUrl}/dataBodyRange`, {
                 searchParams: { $select: "rowCount" },
                 headers: graphHeaders(accessToken),
+                timeout: HTTP_TIMEOUT.READ,
               })
-              .json<RangeValuesResponse>();
+              .json<RangeValuesResponse>()
+              .catch(rethrowTimeout(EXCEL_READ));
             currentDataRowCount = body.rowCount ?? 0;
             // A table with no data yet still reports one blank placeholder row.
             if (currentDataRowCount === 1) {
-              const check = await ky
+              const check = await http
                 .get(`${tableUrl}/dataBodyRange`, {
                   searchParams: { $select: "values" },
                   headers: graphHeaders(accessToken),
+                  timeout: HTTP_TIMEOUT.READ,
                 })
-                .json<RangeValuesResponse>();
+                .json<RangeValuesResponse>()
+                .catch(rethrowTimeout(EXCEL_READ));
               const onlyRow = check.values?.[0] ?? [];
               if (onlyRow.every((cell) => String(cell ?? "").trim() === "")) {
                 currentDataRowCount = 0;
@@ -253,21 +290,32 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
         // upsert_by_key: a workbook session pins the scan and the patch to the
         // same snapshot, so the row index found is the row index written even
         // while the file is open in desktop Excel.
-        const session = await ky
+        const session = await http
           .post(`${workbookUrl(workbookId)}/createSession`, {
             headers: graphHeaders(accessToken),
             json: { persistChanges: true },
+            timeout: HTTP_TIMEOUT.WRITE,
           })
-          .json<CreateSessionResponse>();
+          .json<CreateSessionResponse>()
+          .catch(
+            rethrowTimeout({
+              integration: "Microsoft Excel",
+              timeoutClass: "WRITE",
+              // A duplicate session is harmless: an orphaned one times out on its own.
+              idempotent: true,
+              hint: "Microsoft may be slow right now.",
+            }),
+          );
         const sessionId = session.id;
 
         try {
-          const keyColumnData = await ky
+          const keyColumnData = await http
             .get(
               `${tableUrl}/columns('${odataQuote(keyColumn)}')/dataBodyRange`,
               {
                 searchParams: { $select: "values" },
                 headers: graphHeaders(accessToken, sessionId),
+                timeout: HTTP_TIMEOUT.READ,
               },
             )
             .json<RangeValuesResponse>();
@@ -313,12 +361,14 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
 
           let existingRow: unknown[] = [];
           if (needsExisting) {
-            const current = await ky
+            const current = await http
               .get(`${tableUrl}/rows/itemAt(index=${rowIndex})`, {
                 searchParams: { $select: "values" },
                 headers: graphHeaders(accessToken, sessionId),
+                timeout: HTTP_TIMEOUT.READ,
               })
-              .json<TableRowResponse>();
+              .json<TableRowResponse>()
+              .catch(rethrowTimeout(EXCEL_READ));
             existingRow = current.values?.[0] ?? [];
           }
 
@@ -338,10 +388,13 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
             return coerceCellValue(rendered);
           });
 
-          await ky.patch(`${tableUrl}/rows/itemAt(index=${rowIndex})`, {
-            headers: graphHeaders(accessToken, sessionId),
-            json: { values: [patchRow] },
-          });
+          await http
+            .patch(`${tableUrl}/rows/itemAt(index=${rowIndex})`, {
+              headers: graphHeaders(accessToken, sessionId),
+              json: { values: [patchRow] },
+              timeout: HTTP_TIMEOUT.WRITE,
+            })
+            .catch(rethrowTimeout(EXCEL_ABSOLUTE_WRITE));
 
           return {
             ...context,
@@ -358,9 +411,10 @@ export const excelActionExecutor: NodeExecutor<ExcelActionData> = async ({
           };
         } finally {
           if (sessionId) {
-            await ky
+            await http
               .post(`${workbookUrl(workbookId)}/closeSession`, {
                 headers: graphHeaders(accessToken, sessionId),
+                timeout: HTTP_TIMEOUT.TOKEN,
               })
               .catch(() => {
                 // best-effort: an orphaned session times out on its own

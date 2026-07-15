@@ -1,12 +1,12 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type TelegramActionData = {
@@ -109,12 +109,23 @@ export const telegramActionExecutor: NodeExecutor<TelegramActionData> = async ({
       }
 
       const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-      await ky.post(url, {
-        json: {
-          chat_id: chatId,
-          text,
-        },
-      });
+      await http
+        .post(url, {
+          json: {
+            chat_id: chatId,
+            text,
+          },
+          timeout: HTTP_TIMEOUT.WRITE,
+        })
+        .catch(
+          rethrowTimeout({
+            integration: "Telegram",
+            timeoutClass: "WRITE",
+            // A retry would post the message a SECOND time.
+            idempotent: false,
+            hint: "The message may already have been sent — check before re-running.",
+          }),
+        );
 
       return {
         ...context,

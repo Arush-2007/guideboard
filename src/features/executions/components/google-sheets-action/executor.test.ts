@@ -27,10 +27,17 @@ const { kyGetMock, kyPostMock, FakeHTTPError } = vi.hoisted(() => {
   }
   return { kyGetMock: vi.fn(), kyPostMock: vi.fn(), FakeHTTPError };
 });
-vi.mock("ky", () => ({
-  default: { get: kyGetMock, post: kyPostMock },
-  HTTPError: FakeHTTPError,
-}));
+// Writes go through `sheetsWrite` and reads through the shared `http` client, both
+// of which are `ky.create(...)` — so the mock answers `create` with the same fake
+// instance, and `kyPostMock` still observes every write.
+vi.mock("ky", () => {
+  const instance = { get: kyGetMock, post: kyPostMock };
+  return {
+    default: { ...instance, create: () => instance },
+    HTTPError: FakeHTTPError,
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 const { refreshTokenMock } = vi.hoisted(() => ({ refreshTokenMock: vi.fn() }));
 vi.mock("@/lib/google-token", () => ({

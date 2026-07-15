@@ -1,10 +1,10 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type SlackData = {
@@ -65,8 +65,24 @@ export const slackExecutor: NodeExecutor<SlackData> = async ({
       }
 
       // Slack Incoming Webhooks expect a `text` field. Post to every channel.
+      // These run concurrently, so the step's cost is ONE write timeout, not N.
       await Promise.all(
-        uniqueUrls.map((url) => ky.post(url, { json: { text: content } })),
+        uniqueUrls.map((url) =>
+          http
+            .post(url, {
+              json: { text: content },
+              timeout: HTTP_TIMEOUT.WRITE,
+            })
+            .catch(
+              rethrowTimeout({
+                integration: "Slack",
+                timeoutClass: "WRITE",
+                // A retry would post the message a SECOND time.
+                idempotent: false,
+                hint: "The message may already have been sent — check before re-running.",
+              }),
+            ),
+        ),
       );
 
       return {

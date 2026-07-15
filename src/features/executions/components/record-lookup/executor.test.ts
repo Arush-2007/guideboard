@@ -2,7 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // record-lookup's Google Sheets path reads via `readSheetTable` (ky.get.json).
 const { kyGetMock } = vi.hoisted(() => ({ kyGetMock: vi.fn() }));
-vi.mock("ky", () => ({ default: { get: kyGetMock, post: vi.fn() } }));
+// HTTP goes through the shared client in `http.ts` (`ky.create(...)`), so the mock
+// must answer `create` with the same fake instance.
+vi.mock("ky", () => {
+  const instance = { get: kyGetMock, post: vi.fn() };
+  return {
+    default: { ...instance, create: () => instance },
+    TimeoutError: class TimeoutError extends Error {},
+  };
+});
 
 const { refreshTokenMock } = vi.hoisted(() => ({ refreshTokenMock: vi.fn() }));
 vi.mock("@/lib/google-token", () => ({

@@ -1,6 +1,20 @@
 import { decode } from "html-entities";
 import { NonRetriableError } from "inngest";
-import ky from "ky";
+import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
+
+/**
+ * Both Notion calls below are READS — including the `/query` one, which is a POST
+ * only because Notion takes its filter in a body. It mutates nothing, so it is
+ * safe for Inngest to retry on a timeout; marking it WRITE would wrongly make a
+ * transient blip fail the whole run.
+ */
+const NOTION_READ = {
+  integration: "Notion",
+  timeoutClass: "READ",
+  idempotent: true,
+  hint: "The database may be very large, or Notion may be slow right now.",
+} as const;
+
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
@@ -136,11 +150,15 @@ async function lookupNotion(
   const dbId = normalizeNotionId(databaseId);
 
   // Resolve the property's type so we build a filter Notion accepts.
-  const db = await ky
-    .get(`https://api.notion.com/v1/databases/${dbId}`, { headers })
+  const db = await http
+    .get(`https://api.notion.com/v1/databases/${dbId}`, {
+      headers,
+      timeout: HTTP_TIMEOUT.READ,
+    })
     .json<{
       properties?: Record<string, { type?: string }>;
-    }>();
+    }>()
+    .catch(rethrowTimeout(NOTION_READ));
   const propType = db.properties?.[property]?.type;
   if (!propType) {
     throw new NonRetriableError(
@@ -165,12 +183,14 @@ async function lookupNotion(
     );
   }
 
-  const res = await ky
+  const res = await http
     .post(`https://api.notion.com/v1/databases/${dbId}/query`, {
       headers,
       json: { filter, page_size: 5 },
+      timeout: HTTP_TIMEOUT.READ,
     })
-    .json<{ results?: Array<{ id: string; url?: string }> }>();
+    .json<{ results?: Array<{ id: string; url?: string }> }>()
+    .catch(rethrowTimeout(NOTION_READ));
 
   const results = res.results ?? [];
   const first = results[0];

@@ -1,11 +1,16 @@
 import { NonRetriableError } from "inngest";
-import ky from "ky";
 import { parseNodeConfig } from "@/config/node-schemas";
 import type { NodeExecutor } from "@/features/executions/types";
 import { CredentialType, NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
+import {
+  carriesRetryDecision,
+  HTTP_TIMEOUT,
+  http,
+  rethrowTimeout,
+} from "@/lib/http";
 import { renderTemplate } from "@/lib/templating";
 
 type AtsProvider = "lever";
@@ -46,13 +51,17 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
   step,
   publish,
 }) => {
-  await publish(nodeStatusChannel(userId).status({ nodeId, status: "loading" }));
+  await publish(
+    nodeStatusChannel(userId).status({ nodeId, status: "loading" }),
+  );
 
   let config: AtsActionData;
   try {
     config = parseNodeConfig(NodeType.ATS_ACTION, data) as AtsActionData;
   } catch (error) {
-    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
+    );
     throw new NonRetriableError(
       error instanceof Error ? error.message : "Invalid node config",
     );
@@ -102,24 +111,43 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
       if (config.stageId?.trim()) body.stage = config.stageId.trim();
       if (config.postingId?.trim()) body.postings = [config.postingId.trim()];
 
-      const created = await ky
+      const created = await http
         .post(`${base}/opportunities`, {
           headers: { Authorization: authHeader },
           searchParams: { perform_as: performAs },
           json: body,
-          timeout: 60_000,
+          timeout: HTTP_TIMEOUT.SLOW_API,
         })
-        .json<LeverCreateResponse>();
+        .json<LeverCreateResponse>()
+        .catch(
+          rethrowTimeout({
+            integration: "Lever",
+            timeoutClass: "SLOW_API",
+            // A retry would create a SECOND opportunity for the same candidate.
+            idempotent: false,
+            hint: "The candidate may already have been created in Lever — check before re-running.",
+          }),
+        );
 
       const opportunityId = created.data?.id ?? null;
 
       if (opportunityId && note) {
-        await ky.post(`${base}/opportunities/${opportunityId}/notes`, {
-          headers: { Authorization: authHeader },
-          searchParams: { perform_as: performAs },
-          json: { value: note },
-          timeout: 60_000,
-        });
+        await http
+          .post(`${base}/opportunities/${opportunityId}/notes`, {
+            headers: { Authorization: authHeader },
+            searchParams: { perform_as: performAs },
+            json: { value: note },
+            timeout: HTTP_TIMEOUT.SLOW_API,
+          })
+          .catch(
+            rethrowTimeout({
+              integration: "Lever",
+              timeoutClass: "SLOW_API",
+              // A retry would add the note a SECOND time.
+              idempotent: false,
+              hint: "The note may already have been added — check the opportunity before re-running.",
+            }),
+          );
       }
 
       const hireBase =
@@ -137,8 +165,13 @@ export const atsActionExecutor: NodeExecutor<AtsActionData> = async ({
     );
     return { ...context, [outputKey]: result };
   } catch (error) {
-    await publish(nodeStatusChannel(userId).status({ nodeId, status: "error" }));
-    if (error instanceof NonRetriableError) throw error;
+    await publish(
+      nodeStatusChannel(userId).status({ nodeId, status: "error" }),
+    );
+    // Pass through anything that ALREADY carries a retry decision (a classified
+    // timeout, a 429 with Retry-After, a transient 5xx). Re-wrapping it below would
+    // flatten it into "never retry" and turn a recoverable blip into a failed run.
+    if (carriesRetryDecision(error)) throw error;
     throw new NonRetriableError(
       error instanceof Error ? error.message : "ATS sync failed",
     );
