@@ -36,6 +36,16 @@ export const SHEETS_WRITE = {
   hint: "The sheet may be very large, or Google may be slow right now.",
 } as const;
 
+export const SHEETS_ABSOLUTE_WRITE = {
+  timeoutClass: "WRITE",
+  // Writes each cell's FINAL value to a FIXED A1 range (values:batchUpdate). A
+  // retry rewrites the identical cells, so Inngest may safely retry — unlike
+  // :append and insertDimension, which ADD rows/dimensions and stay
+  // idempotent:false.
+  idempotent: true,
+  hint: "The sheet may be very large, or Google may be slow right now.",
+} as const;
+
 /** Bearer auth headers for a JSON request. */
 export function sheetsAuthHeaders(accessToken: string): Record<string, string> {
   return {
@@ -197,21 +207,25 @@ export async function getSheetGrid({
 }
 
 /**
- * Every Sheets WRITE goes through here — one clock, one timeout policy, one place
- * to change it.
+ * Every Sheets WRITE goes through here — one clock, one place to change it.
  *
  * The write REQUESTS live in the action executor (they are branch-specific: append,
  * batchUpdate, values:batchUpdate), but their HTTP POLICY must not be scattered
  * across six call sites — that is exactly how the 10s default went unnoticed for
- * so long. A write's timeout is deliberately NON-retriable; see `SHEETS_WRITE`.
+ * so long. The timeout is deliberately NON-retriable by DEFAULT (`SHEETS_WRITE`),
+ * because most writes ADD rows and a lost-response retry would duplicate them.
+ * Absolute-range writes that rewrite each cell's FINAL value (values:batchUpdate)
+ * ARE retry-safe — pass `{ idempotent: true }` to opt into `SHEETS_ABSOLUTE_WRITE`.
  */
 export function sheetsWrite(
   url: string,
   options: Omit<KyOptions, "timeout">,
+  { idempotent = false }: { idempotent?: boolean } = {},
 ): Promise<Response> {
+  const ctx = idempotent ? SHEETS_ABSOLUTE_WRITE : SHEETS_WRITE;
   return http
     .post(url, { ...options, timeout: HTTP_TIMEOUT.WRITE })
-    .catch(rethrowTimeout({ integration: "Google Sheets", ...SHEETS_WRITE }));
+    .catch(rethrowTimeout({ integration: "Google Sheets", ...ctx }));
 }
 
 type SheetsErrorBody = {

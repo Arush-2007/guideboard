@@ -3,38 +3,48 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Fake ky with a routed GET mock; FakeHTTPError mirrors ky's HTTPError shape so
 // the error mapping (instanceof + response.status/headers/json) is under test.
-const { kyGetMock, FakeHTTPError } = vi.hoisted(() => {
-  class FakeHTTPError extends Error {
-    response: {
-      status: number;
-      headers: Headers;
-      json: () => Promise<unknown>;
-    };
-
-    constructor(
-      status: number,
-      body: unknown = {},
-      headers: Record<string, string> = {},
-    ) {
-      super(`Request failed with status ${status}`);
-      this.response = {
-        status,
-        headers: new Headers(headers),
-        json: async () => body,
+const { kyGetMock, kyPostMock, FakeHTTPError, FakeTimeoutError } = vi.hoisted(
+  () => {
+    class FakeHTTPError extends Error {
+      response: {
+        status: number;
+        headers: Headers;
+        json: () => Promise<unknown>;
       };
+
+      constructor(
+        status: number,
+        body: unknown = {},
+        headers: Record<string, string> = {},
+      ) {
+        super(`Request failed with status ${status}`);
+        this.response = {
+          status,
+          headers: new Headers(headers),
+          json: async () => body,
+        };
+      }
     }
-  }
-  return { kyGetMock: vi.fn(), FakeHTTPError };
-});
+    // Mirrors ky's TimeoutError so `isTimeout` (an `instanceof TimeoutError`
+    // check in http.ts, importing the same mocked class) recognises it.
+    class FakeTimeoutError extends Error {}
+    return {
+      kyGetMock: vi.fn(),
+      kyPostMock: vi.fn(),
+      FakeHTTPError,
+      FakeTimeoutError,
+    };
+  },
+);
 // HTTP now goes through the shared client in `http.ts` (`ky.create(...)`), so the
 // mock must answer `create` — returning the same fake instance, so the assertions
 // below still see the calls.
 vi.mock("ky", () => {
-  const instance = { get: kyGetMock };
+  const instance = { get: kyGetMock, post: kyPostMock };
   return {
     default: { ...instance, create: () => instance },
     HTTPError: FakeHTTPError,
-    TimeoutError: class TimeoutError extends Error {},
+    TimeoutError: FakeTimeoutError,
   };
 });
 
@@ -43,6 +53,7 @@ import {
   hexToRgb,
   readSheetTable,
   sheetRange,
+  sheetsWrite,
   toSheetsError,
 } from "./google-sheets";
 
@@ -51,6 +62,7 @@ const res = (value: unknown) =>
 
 beforeEach(() => {
   kyGetMock.mockReset();
+  kyPostMock.mockReset();
 });
 
 describe("sheetRange", () => {
@@ -240,6 +252,34 @@ describe("toSheetsError", () => {
   it("passes a non-HTTP error through unchanged", async () => {
     const original = new Error("boom");
     expect(await toSheetsError(original)).toBe(original);
+  });
+});
+
+describe("sheetsWrite timeout classification", () => {
+  // The regression this pins: absolute-range writes (values:batchUpdate, final
+  // values to fixed A1 ranges) are retry-safe, but :append / insertDimension are
+  // not. Both share one timeout clock via sheetsWrite; only the retry decision
+  // differs, keyed by the `idempotent` option.
+  beforeEach(() => {
+    kyPostMock.mockRejectedValue(new FakeTimeoutError("Request timed out"));
+  });
+
+  it("classifies a default write timeout (append/insert) as NON-retriable", async () => {
+    await expect(
+      sheetsWrite("https://sheets.example/values/A:ZZ:append", {
+        headers: {},
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+  });
+
+  it("classifies an absolute-range write timeout as RETRIABLE", async () => {
+    await expect(
+      sheetsWrite(
+        "https://sheets.example/values:batchUpdate",
+        { headers: {} },
+        { idempotent: true },
+      ),
+    ).rejects.toBeInstanceOf(RetryAfterError);
   });
 });
 
