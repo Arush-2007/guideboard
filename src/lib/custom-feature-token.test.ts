@@ -39,7 +39,9 @@ describe("custom feature token", () => {
 
   it("returns null for empty featureId, non-tokens, and nullish input", () => {
     for (const v of ["", "hello", "@<custom:>@", undefined, null]) {
-      expect(parseCustomFeatureToken(v as string | null | undefined)).toBeNull();
+      expect(
+        parseCustomFeatureToken(v as string | null | undefined),
+      ).toBeNull();
     }
   });
 

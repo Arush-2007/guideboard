@@ -25,13 +25,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  getCredentialIntegration,
-  INTEGRATIONS,
-} from "@/config/integrations";
+import { getCredentialIntegration, INTEGRATIONS } from "@/config/integrations";
 import type { Credential } from "@/generated/prisma";
-import { authClient } from "@/lib/auth-client";
 import { useEntitySearch } from "@/hooks/use-entity-search";
+import { authClient } from "@/lib/auth-client";
 import {
   useDisconnectInstagram,
   useDisconnectMicrosoft,
@@ -171,7 +168,10 @@ export const CredentialsMicrosoftAuthErrorToast = () => {
 
   useEffect(() => {
     const error = searchParams.get("error");
-    if (error !== "microsoft_auth_failed" && error !== "microsoft_not_configured") {
+    if (
+      error !== "microsoft_auth_failed" &&
+      error !== "microsoft_not_configured"
+    ) {
       return;
     }
 

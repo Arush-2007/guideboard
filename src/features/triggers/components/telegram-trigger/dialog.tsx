@@ -1,5 +1,8 @@
 "use client";
 
+import { CopyIcon } from "lucide-react";
+import { useParams } from "next/navigation";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -10,19 +13,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CopyIcon } from "lucide-react";
-import { useParams } from "next/navigation";
-import { toast } from "sonner";
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
 
-export const TelegramTriggerDialog = ({
-  open,
-  onOpenChange,
-}: Props) => {
+export const TelegramTriggerDialog = ({ open, onOpenChange }: Props) => {
   const params = useParams();
   const workflowId = params.workflowId as string;
 
@@ -79,13 +76,11 @@ export const TelegramTriggerDialog = ({
               <li>Open Telegram and message @BotFather</li>
               <li>Send /mybots and select your bot</li>
               <li>Go to Bot Settings → API Token to get your token</li>
-              <li>
-                Run this command replacing TOKEN and SECRET:
-              </li>
+              <li>Run this command replacing TOKEN and SECRET:</li>
             </ol>
             <p className="text-xs text-muted-foreground font-mono break-all">
-              curl -X POST https://api.telegram.org/bot{"{TOKEN}"}/setWebhook
-              -d url={webhookUrl} -d secret_token={"{TELEGRAM_WEBHOOK_SECRET}"}
+              curl -X POST https://api.telegram.org/bot{"{TOKEN}"}/setWebhook -d
+              url={webhookUrl} -d secret_token={"{TELEGRAM_WEBHOOK_SECRET}"}
             </p>
           </div>
         </div>

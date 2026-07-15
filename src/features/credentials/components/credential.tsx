@@ -23,8 +23,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
-import { getCredentialIntegration } from "@/config/integrations";
 import {
   Select,
   SelectContent,
@@ -32,6 +30,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import { getCredentialIntegration } from "@/config/integrations";
 import { CredentialType } from "@/generated/prisma";
 import { useUpgradeModal } from "@/hooks/use-upgrade-modal";
 import { cn } from "@/lib/utils";

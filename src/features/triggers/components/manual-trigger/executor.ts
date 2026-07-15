@@ -1,8 +1,8 @@
 import { NonRetriableError } from "inngest";
-import type { NodeExecutor } from "@/features/executions/types";
-import { nodeStatusChannel } from "@/inngest/channels/node-status";
-import { NodeType } from "@/generated/prisma";
 import { parseNodeConfig } from "@/config/node-schemas";
+import type { NodeExecutor } from "@/features/executions/types";
+import { NodeType } from "@/generated/prisma";
+import { nodeStatusChannel } from "@/inngest/channels/node-status";
 
 type ManualTriggerData = Record<string, unknown>;
 

@@ -13,7 +13,11 @@ export const AppHeaderNotifications = () => {
   const { failures, unseenCount, markSeen } = useNotifications();
 
   return (
-    <Popover onOpenChange={(open) => { if (open) markSeen(); }}>
+    <Popover
+      onOpenChange={(open) => {
+        if (open) markSeen();
+      }}
+    >
       <PopoverTrigger asChild>
         <button
           type="button"

@@ -1,16 +1,17 @@
 "use client";
 
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import dynamic from "next/dynamic";
-
-import { useReactFlow, type Node, type NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { getNodeOption } from "@/config/node-options";
 import { NodeType } from "@/generated/prisma";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { AiReplyGeneratorFormValues } from "./dialog";
+
 const AiReplyGeneratorDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.AiReplyGeneratorDialog),
 );
+
 import { useNodeStatus } from "../../hooks/use-node-status";
 
 const option = getNodeOption(NodeType.AI_REPLY_GENERATOR);

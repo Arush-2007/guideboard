@@ -1,16 +1,16 @@
 "use client";
 
+import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import dynamic from "next/dynamic";
-
-import { type NodeProps, type Node, useReactFlow } from "@xyflow/react";
 import { memo, useState } from "react";
 import { toast } from "sonner";
-import { BaseTriggerNode } from "../base-trigger-node";
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
+import { BaseTriggerNode } from "../base-trigger-node";
 import { saveYoutubeCommentTriggerConfig } from "./actions";
 import type { YoutubeCommentTriggerFormValues } from "./dialog";
+
 const YoutubeCommentTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.YoutubeCommentTriggerDialog),
 );

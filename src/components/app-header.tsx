@@ -1,8 +1,8 @@
 import { SparklesIcon } from "lucide-react";
 import Link from "next/link";
+import { AppHeaderNotifications } from "@/components/app-header-notifications";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { AppHeaderNotifications } from "@/components/app-header-notifications";
 
 export const AppHeader = () => {
   return (

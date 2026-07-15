@@ -10,9 +10,7 @@ export function isAllowed(
   windowMs: number,
 ): boolean {
   const now = Date.now();
-  const timestamps = (store.get(key) ?? []).filter(
-    (t) => now - t < windowMs,
-  );
+  const timestamps = (store.get(key) ?? []).filter((t) => now - t < windowMs);
 
   if (timestamps.length >= limit) {
     store.set(key, timestamps);

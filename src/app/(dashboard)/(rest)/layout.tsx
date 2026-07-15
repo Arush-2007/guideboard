@@ -1,7 +1,7 @@
 import { AppHeader } from "@/components/app-header";
 import { DashboardRightRail } from "@/components/dashboard-right-rail";
 
-const Layout = ({ children }: { children: React.ReactNode; }) => {
+const Layout = ({ children }: { children: React.ReactNode }) => {
   return (
     // Fixed-height column: the header stays put while only the content scrolls,
     // so it never drifts or rubber-bands on trackpad/overscroll.

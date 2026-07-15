@@ -1,10 +1,12 @@
+import type { NodeProps } from "@xyflow/react";
 import dynamic from "next/dynamic";
-import { NodeProps } from "@xyflow/react";
 import { memo, useState } from "react";
 import { BaseTriggerNode } from "../base-trigger-node";
+
 const GmailTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GmailTriggerDialog),
 );
+
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";

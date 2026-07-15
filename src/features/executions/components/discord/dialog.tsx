@@ -1,5 +1,10 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -19,11 +24,6 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { VariableTextarea } from "@/components/variable-textarea";
-import z from "zod";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useForm } from "react-hook-form";
-import { useEffect } from "react";
-import { Button } from "@/components/ui/button";
 
 const formSchema = z.object({
   username: z.string().optional(),
@@ -44,7 +44,7 @@ interface Props {
   defaultValues?: Partial<DiscordFormValues>;
   currentNodeId: string;
   workflowId?: string;
-};
+}
 
 export const DiscordDialog = ({
   open,
@@ -120,24 +120,24 @@ export const DiscordDialog = ({
               control={form.control}
               name="content"
               render={({ field }) => (
-              <FormItem>
-                <FormLabel>Message Content</FormLabel>
-                <FormControl>
-                  <VariableTextarea
-                    placeholder="Summary: {{myGemini.text}}"
-                    className="min-h-[80px] font-mono text-sm"
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    {...field}
-                  />
-                </FormControl>
+                <FormItem>
+                  <FormLabel>Message Content</FormLabel>
+                  <FormControl>
+                    <VariableTextarea
+                      placeholder="Summary: {{myGemini.text}}"
+                      className="min-h-[80px] font-mono text-sm"
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      {...field}
+                    />
+                  </FormControl>
                   <FormDescription>
                     The message to send. Use {"{{variables}}"} for simple values
                     or {"{{json variable}}"} to stringify objects
                   </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
+                  <FormMessage />
+                </FormItem>
+              )}
             />
             <FormField
               control={form.control}

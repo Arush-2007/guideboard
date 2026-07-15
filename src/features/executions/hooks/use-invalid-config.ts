@@ -15,8 +15,7 @@ import { invalidNodeConfigAtom } from "@/features/editor/store/atoms";
  */
 export function useHasInvalidConfig(nodeId: string): boolean {
   const hasIssuesAtom = useMemo(
-    () =>
-      selectAtom(invalidNodeConfigAtom, (map): boolean => nodeId in map),
+    () => selectAtom(invalidNodeConfigAtom, (map): boolean => nodeId in map),
     [nodeId],
   );
 

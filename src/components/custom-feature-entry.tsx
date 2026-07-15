@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import type { CustomFeature } from "@/config/custom-features";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { CustomFeature } from "@/config/custom-features";
 import {
   encodeCustomFeatureToken,
   parseCustomFeatureToken,
@@ -34,7 +34,10 @@ export function CustomFeatureEntry({
     const saved = parseCustomFeatureToken(currentValue);
     const savedParams = saved?.featureId === feature.id ? saved.params : {};
     return Object.fromEntries(
-      feature.params.map((p) => [p.key, savedParams[p.key] ?? String(p.default)]),
+      feature.params.map((p) => [
+        p.key,
+        savedParams[p.key] ?? String(p.default),
+      ]),
     );
   });
 
@@ -111,6 +114,7 @@ function previewFor(
   if (featureId !== "serialNumber") return null;
   const start = params.start ?? 1;
   const pad = params.pad ?? 0;
-  const fmt = (n: number) => (pad > 0 ? String(n).padStart(pad, "0") : String(n));
+  const fmt = (n: number) =>
+    pad > 0 ? String(n).padStart(pad, "0") : String(n);
   return `${fmt(start)}, ${fmt(start + 1)}, ${fmt(start + 2)}, …`;
 }

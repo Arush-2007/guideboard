@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { useTRPC } from "@/trpc/client";
 
 const STORAGE_KEY = "notifications_last_seen";

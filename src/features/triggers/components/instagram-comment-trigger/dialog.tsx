@@ -1,5 +1,9 @@
 "use client";
 
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useEffect } from "react";
+import { useForm } from "react-hook-form";
+import z from "zod";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -19,10 +23,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect } from "react";
-import { useForm } from "react-hook-form";
-import z from "zod";
 
 const formSchema = z.object({
   postId: z.string().optional(),
@@ -75,8 +75,8 @@ export const InstagramCommentTriggerDialog = ({
         </DialogHeader>
 
         <p className="text-sm text-muted-foreground">
-          Make sure your Instagram account is connected under Credentials
-          before configuring this node.
+          Make sure your Instagram account is connected under Credentials before
+          configuring this node.
         </p>
 
         <Form {...form}>
