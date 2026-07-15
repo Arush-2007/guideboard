@@ -612,6 +612,15 @@ describe("googleSheetsActionExecutor — update_row", () => {
       { range: "'Ledger'!A2:ZZ2", values: [[null, 125, 65, null]] },
     ]);
 
+    // The plan (read+match) and the write are SEPARATE Inngest steps: on a retry
+    // of the idempotent write, the memoized plan is replayed rather than re-read,
+    // so the write can never re-match a DIFFERENT row against a sheet its own
+    // landed write already mutated.
+    expect(stepNames).toEqual([
+      "google-sheets-update-plan",
+      "google-sheets-update-write",
+    ]);
+
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.matched).toBe(true);
     expect(out.matchCount).toBe(1);
@@ -664,6 +673,8 @@ describe("googleSheetsActionExecutor — update_row", () => {
     // This action only overwrites rows that already exist. Adding the missing
     // row is a different action's job.
     expect(kyPostMock).not.toHaveBeenCalled();
+    // The plan step ran and found nothing; the write step never started.
+    expect(stepNames).toEqual(["google-sheets-update-plan"]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.matched).toBe(false);

@@ -248,10 +248,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
   };
 
   try {
-    // insert_row_adjacent lives OUTSIDE the single-step switch below because it
-    // is the one action that cannot be done in a single request: a row must be
-    // created before it can be filled, and Inngest steps are what make that
-    // pair safe (see the two `step.run`s).
+    // insert_row_adjacent and update_row live OUTSIDE the single-step switch
+    // below because each splits a read/plan from its write across two Inngest
+    // steps: insert_row_adjacent because a row must be created before it can be
+    // filled; update_row so a retry of its idempotent write replays the memoized
+    // target ranges instead of re-reading a sheet the landed write already
+    // mutated (which could re-match a DIFFERENT row). The paired `step.run`s are
+    // what make both safe.
     if (action === "insert_row_adjacent") {
       // The filter is what picks the group. With none active, matchRows is
       // vacuously true — every row "matches", so the group is the whole tab and
@@ -484,19 +487,25 @@ export const googleSheetsActionExecutor: NodeExecutor<
       if (!placed.written) {
         await step.run("google-sheets-insert-adjacent-write", async () => {
           try {
-            await sheetsWrite(sheetsValuesBatchUpdateUrl(spreadsheetId), {
-              headers: sheetsAuthHeaders(accessToken),
-              json: {
-                valueInputOption: "USER_ENTERED",
-                data: placed.rows.map((r) => ({
-                  range: sheetRange(
-                    sheetName,
-                    `A${r.rowIndex}:ZZ${r.rowIndex}`,
-                  ),
-                  values: [r.row],
-                })),
+            await sheetsWrite(
+              sheetsValuesBatchUpdateUrl(spreadsheetId),
+              {
+                headers: sheetsAuthHeaders(accessToken),
+                json: {
+                  valueInputOption: "USER_ENTERED",
+                  data: placed.rows.map((r) => ({
+                    range: sheetRange(
+                      sheetName,
+                      `A${r.rowIndex}:ZZ${r.rowIndex}`,
+                    ),
+                    values: [r.row],
+                  })),
+                },
               },
-            });
+              // Absolute-range fill: the structural insert ran in an EARLIER,
+              // memoized step, so a retry of this step rewrites the same cells.
+              { idempotent: true },
+            );
             return null;
           } catch (error) {
             throw await toSheetsError(error);
@@ -554,6 +563,210 @@ export const googleSheetsActionExecutor: NodeExecutor<
               itemNoun: "row",
             })
           : { ...context, [outputKey]: output };
+
+      await publish(
+        nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+      );
+      return outcome;
+    }
+
+    if (action === "update_row") {
+      // An empty filter makes matchRows vacuously true — it would select EVERY
+      // row and overwrite the whole sheet. The config schema rejects this too;
+      // re-checked here because the executor is what writes.
+      if (!hasActiveRowCondition(config.conditions)) {
+        throw new NonRetriableError(
+          `${ERROR_PREFIX}: updating rows needs at least one filter condition — ` +
+            `an empty filter would overwrite every row in "${sheetName}"`,
+        );
+      }
+
+      const mode = config.onMultipleMatches ?? "first";
+      // "each" fans out afterwards and a write cannot be un-written, so the
+      // nested-fan-out guard runs BEFORE the write, not in applyMultiMatchPolicy.
+      if (mode === "each") {
+        assertNoForeignFanOut(context, outputKey);
+      }
+
+      // STEP 1 — read the tab, match, and compute each target row's FINAL,
+      // absolute-range write. Checkpointed on its own so the write step below
+      // replays these exact ranges/values on a retry instead of re-reading a
+      // sheet the first (landed) write already changed — the same read-then-write
+      // split insert_row_adjacent makes, for the same retry-safety reason.
+      const planned = await step.run("google-sheets-update-plan", async () => {
+        try {
+          const table = await readSheetTable({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+          });
+          if (table.headers.length === 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
+            );
+          }
+
+          // Same row-matching as find_rows: one editor, one matcher.
+          const matchedIndexes = matchRows(
+            table.rowsByHeader,
+            config.conditions ?? [],
+            context,
+          ).map((m) => m.index);
+
+          // The policy decides WHICH rows the write lands on, and it must be
+          // settled BEFORE writing: the "error" check and the "each" cap run
+          // here, not in applyMultiMatchPolicy after the write.
+          if (matchedIndexes.length > 0) {
+            if (mode === "error" && matchedIndexes.length > 1) {
+              throw new NonRetriableError(
+                `${ERROR_PREFIX}: ${matchedIndexes.length} rows match the filter, but ` +
+                  `this step is set to fail when more than one does. Switch it to ` +
+                  `update every matching row, or narrow the filter.`,
+              );
+            }
+            if (mode === "each") {
+              assertFanOutCap(
+                matchedIndexes.length,
+                config.maxFanOutItems,
+                "row",
+              );
+            }
+          }
+
+          // Nothing matched ⇒ no targets ⇒ no write (a clean no-op success, so a
+          // Condition node can branch on `matched`). Otherwise "first" writes one
+          // row, "each" writes them all.
+          const targets =
+            matchedIndexes.length === 0
+              ? []
+              : mode === "each"
+                ? matchedIndexes
+                : [matchedIndexes[0]];
+
+          // The final value of every cell in each target row. Mapped columns are
+          // overwritten with the rendered value; everything else is `null`, which
+          // Sheets leaves untouched. Writing the full, final value (rather than a
+          // relative change) is what makes the retried write safe: it rewrites
+          // identical cells instead of applying an edit twice.
+          const writes = targets.map((rowIdx) => {
+            const existing = table.rows[rowIdx];
+            const finalRow = table.headers.map((rawHeader) => {
+              const header = rawHeader.trim();
+              const mapping = columnMappings[header];
+              // Unmapped ⇒ null ⇒ Sheets leaves the cell untouched.
+              if (!mapping?.trim()) return null;
+              // A serial is assigned once, at insert; updating a row must never
+              // reassign it (v4 decision #7).
+              if (
+                parseCustomFeatureToken(mapping)?.featureId === "serialNumber"
+              ) {
+                return null;
+              }
+              return coerceCellValue(renderTemplate(mapping, context));
+            });
+
+            // Sheet row number: +1 for the 1-based grid, +1 for the header row.
+            const sheetRow = rowIdx + 2;
+            // The row's resulting state — written cells where we wrote, the
+            // existing cell where we passed null — so `rowByHeader` reflects the
+            // whole row (W1's SWITCH reads unmapped columns off it too).
+            const mergedRow = table.headers.map((_h, col) => {
+              const written = finalRow[col];
+              return written === null ? (existing[col] ?? "") : String(written);
+            });
+
+            return {
+              rowIndex: sheetRow,
+              valueRange: {
+                range: sheetRange(sheetName, `A${sheetRow}:ZZ${sheetRow}`),
+                values: [finalRow],
+              },
+              // The row as it stood BEFORE this write — the execution page shows
+              // it next to the new state so a user can see what changed.
+              previousRow: buildRowByHeader(
+                table.headers,
+                existing,
+                columnMappings,
+              ),
+              rowByHeader: buildRowByHeader(
+                table.headers,
+                mergedRow,
+                columnMappings,
+              ),
+            };
+          });
+
+          return { matchCount: matchedIndexes.length, writes };
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      });
+
+      // Nothing matched — a clean no-op success (nothing to write, and a
+      // Condition node downstream branches on `matched` to add the missing row).
+      if (planned.writes.length === 0) {
+        await publish(
+          nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+        );
+        return {
+          ...context,
+          [outputKey]: {
+            action,
+            spreadsheetId,
+            sheetName,
+            matched: false,
+            matchCount: 0,
+          },
+        };
+      }
+
+      // STEP 2 — write in its OWN step. `planned.writes` is memoized above, so a
+      // retry replays the SAME absolute ranges + final values; idempotent:true
+      // lets Inngest retry a transient timeout instead of failing the run, with
+      // no whole-step re-read that could re-match a different row.
+      await step.run("google-sheets-update-write", async () => {
+        try {
+          await sheetsWrite(
+            sheetsValuesBatchUpdateUrl(spreadsheetId),
+            {
+              headers: sheetsAuthHeaders(accessToken),
+              json: {
+                valueInputOption: "USER_ENTERED",
+                data: planned.writes.map((w) => w.valueRange),
+              },
+            },
+            { idempotent: true },
+          );
+          return null;
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      });
+
+      const output: Record<string, unknown> = {
+        action,
+        spreadsheetId,
+        sheetName,
+        matched: true,
+        matchCount: planned.matchCount,
+        rowIndex: planned.writes[0].rowIndex,
+        previousRow: planned.writes[0].previousRow,
+        rowByHeader: planned.writes[0].rowByHeader,
+      };
+
+      // In "each" mode, fan out one child run per updated row. Applied OUTSIDE
+      // the step — the branded fan-out outcome carries a symbol that would not
+      // survive a step's JSON checkpoint. "first" keeps a single row.
+      const items = planned.writes.map((w) => w.rowByHeader);
+      const outcome = applyMultiMatchPolicy({
+        mode: config.onMultipleMatches,
+        maxItems: config.maxFanOutItems,
+        items,
+        context,
+        outputKey,
+        output,
+        itemNoun: "row",
+      });
 
       await publish(
         nodeStatusChannel(userId).status({ nodeId, status: "success" }),
@@ -745,161 +958,6 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       }
 
-      if (action === "update_row") {
-        try {
-          // An empty filter makes matchRows vacuously true — it would select
-          // EVERY row and overwrite the whole sheet. The config schema rejects
-          // this too; re-checked here because the executor is what writes.
-          if (!hasActiveRowCondition(config.conditions)) {
-            throw new NonRetriableError(
-              `${ERROR_PREFIX}: updating rows needs at least one filter condition — ` +
-                `an empty filter would overwrite every row in "${sheetName}"`,
-            );
-          }
-
-          const table = await readSheetTable({
-            accessToken,
-            spreadsheetId,
-            sheetName,
-          });
-          if (table.headers.length === 0) {
-            throw new NonRetriableError(
-              `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
-            );
-          }
-
-          // Same row-matching as find_rows: one editor, one matcher.
-          const matchedIndexes = matchRows(
-            table.rowsByHeader,
-            config.conditions ?? [],
-            context,
-          ).map((m) => m.index);
-
-          // This action ONLY updates rows that already exist. Nothing matched ⇒
-          // nothing to write: a clean no-op that succeeds, so a Condition node
-          // can branch on `matched` and hand the "row isn't there yet" case to
-          // a row-adding action instead.
-          if (matchedIndexes.length === 0) {
-            return {
-              ...context,
-              [outputKey]: {
-                action,
-                spreadsheetId,
-                sheetName,
-                matched: false,
-                matchCount: 0,
-              },
-            };
-          }
-
-          // Matched. The policy decides WHICH rows the write lands on, and it
-          // must be settled BEFORE writing — unlike find_rows (a pure read),
-          // an update cannot be un-written once the request goes out, so the
-          // "error" check, the nested-fan-out guard and the cap all run here
-          // rather than in applyMultiMatchPolicy after the step.
-          const mode = config.onMultipleMatches ?? "first";
-          if (mode === "error" && matchedIndexes.length > 1) {
-            throw new NonRetriableError(
-              `${ERROR_PREFIX}: ${matchedIndexes.length} rows match the filter, but ` +
-                `this step is set to fail when more than one does. Switch it to ` +
-                `update every matching row, or narrow the filter.`,
-            );
-          }
-          if (mode === "each") {
-            assertNoForeignFanOut(context, outputKey);
-            assertFanOutCap(
-              matchedIndexes.length,
-              config.maxFanOutItems,
-              "row",
-            );
-          }
-
-          const targets =
-            mode === "each" ? matchedIndexes : [matchedIndexes[0]];
-
-          // The final value of every cell in each target row. Mapped columns are
-          // overwritten with the rendered value; everything else is `null`, which
-          // Sheets leaves untouched. Writing the full, final value (rather than a
-          // relative change) is what makes a retried write safe: it rewrites
-          // identical cells instead of applying an edit twice.
-          const writes = targets.map((rowIdx) => {
-            const existing = table.rows[rowIdx];
-            const finalRow = table.headers.map((rawHeader) => {
-              const header = rawHeader.trim();
-              const mapping = columnMappings[header];
-              // Unmapped ⇒ null ⇒ Sheets leaves the cell untouched.
-              if (!mapping?.trim()) return null;
-              // A serial is assigned once, at insert; updating a row must never
-              // reassign it (v4 decision #7).
-              if (
-                parseCustomFeatureToken(mapping)?.featureId === "serialNumber"
-              ) {
-                return null;
-              }
-              return coerceCellValue(renderTemplate(mapping, context));
-            });
-
-            // Sheet row number: +1 for the 1-based grid, +1 for the header row.
-            const sheetRow = rowIdx + 2;
-            // The row's resulting state — written cells where we wrote, the
-            // existing cell where we passed null — so `rowByHeader` reflects
-            // the whole row (W1's SWITCH reads unmapped columns off it too).
-            const mergedRow = table.headers.map((_h, col) => {
-              const written = finalRow[col];
-              return written === null ? (existing[col] ?? "") : String(written);
-            });
-
-            return {
-              rowIndex: sheetRow,
-              valueRange: {
-                range: sheetRange(sheetName, `A${sheetRow}:ZZ${sheetRow}`),
-                values: [finalRow],
-              },
-              // The row as it stood BEFORE this write — the execution page shows
-              // it next to the new state so a user can see what changed.
-              previousRow: buildRowByHeader(
-                table.headers,
-                existing,
-                columnMappings,
-              ),
-              rowByHeader: buildRowByHeader(
-                table.headers,
-                mergedRow,
-                columnMappings,
-              ),
-            };
-          });
-
-          // ONE request for every target row ("first" writes a single-element
-          // batch — one write path, no branching).
-          await sheetsWrite(sheetsValuesBatchUpdateUrl(spreadsheetId), {
-            headers: sheetsAuthHeaders(accessToken),
-            json: {
-              valueInputOption: "USER_ENTERED",
-              data: writes.map((w) => w.valueRange),
-            },
-          });
-
-          return {
-            ...context,
-            [outputKey]: {
-              action,
-              spreadsheetId,
-              sheetName,
-              matched: true,
-              matchCount: matchedIndexes.length,
-              rowIndex: writes[0].rowIndex,
-              previousRow: writes[0].previousRow,
-              rowByHeader: writes[0].rowByHeader,
-              // "each" fans out on these below; harmless in the other modes.
-              updatedRows: writes.map((w) => w.rowByHeader),
-            },
-          };
-        } catch (error) {
-          throw await toSheetsError(error);
-        }
-      }
-
       // Exhaustiveness: the schema only admits append_row / find_rows /
       // update_row (the legacy read_rows action was removed — find_rows with
       // no conditions reads every row).
@@ -933,33 +991,6 @@ export const googleSheetsActionExecutor: NodeExecutor<
           rows.length > 100 ? { ...output, rows: rows.slice(0, 100) } : output,
         itemNoun: "row",
       });
-    } else if (action === "update_row") {
-      // The write already happened (and already obeyed the policy — the mode
-      // chose which rows it landed on). All that is left is the fan-out: in
-      // "each" mode, start one child run per row we updated. `updatedRows` is
-      // the internal carrier for those items; it is stripped from the recorded
-      // output, where `rowByHeader` + `matchCount` already tell the story.
-      const { updatedRows, ...output } = result[outputKey] as Record<
-        string,
-        unknown
-      >;
-      const items = Array.isArray(updatedRows) ? updatedRows : [];
-      // A no-match run wrote nothing, so it has nothing to fan out over — and
-      // fanning out ZERO children would make the engine skip the entire
-      // downstream sub-graph, which is exactly the branch that needs to run
-      // (it's what handles the missing row). So it threads through normally.
-      outcome =
-        items.length > 0
-          ? applyMultiMatchPolicy({
-              mode: config.onMultipleMatches,
-              maxItems: config.maxFanOutItems,
-              items,
-              context: result,
-              outputKey,
-              output,
-              itemNoun: "row",
-            })
-          : { ...result, [outputKey]: output };
     }
 
     await publish(
