@@ -1,9 +1,9 @@
 "use client";
 
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { XIcon } from "lucide-react";
 import type * as React from "react";
 
+import { OverlayCloseButton } from "@/components/ui/close-button";
 import { cn } from "@/lib/utils";
 
 function Dialog({
@@ -61,25 +61,33 @@ function DialogContent({
         data-slot="dialog-content"
         className={cn(
           // A single, consistent footprint for every dialog: fixed max width
-          // (sm:max-w-lg) and a max height capped to the viewport with internal
-          // scroll, so a content-tall dialog (many fields) never exceeds the
-          // screen — it scrolls instead. Short dialogs are unaffected (no
-          // scrollbar until content overflows). Selects/popovers portal out, so
-          // they're not clipped by overflow-y-auto.
-          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 themed-scrollbar fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] max-h-[80vh] translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-lg border border-primary/60 p-6 shadow-lg duration-200 sm:max-w-xl",
+          // (sm:max-w-lg) and a max height capped to the viewport, so a
+          // content-tall dialog (many fields) never exceeds the screen — the
+          // inner wrapper below scrolls instead. Short dialogs are unaffected
+          // (no scrollbar until content overflows).
+          //
+          // The scrolling lives on that inner wrapper rather than here on
+          // purpose: `overflow-y: auto` forces `overflow-x` to `auto` too, which
+          // would clip the close button where it overhangs the corner. Keep this
+          // element overflow-visible. Callers may still override `max-h-*`.
+          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 flex w-full max-w-[calc(100%-2rem)] max-h-[80vh] translate-x-[-50%] translate-y-[-50%] flex-col rounded-lg border border-primary/60 shadow-lg duration-200 sm:max-w-xl",
           className,
         )}
         {...props}
       >
-        {children}
+        {/* min-h-0 lets this shrink below its content inside the flex column, so
+            the max-h above binds and this scrolls. Selects/popovers portal out,
+            so they're not clipped by it. */}
+        <div className="themed-scrollbar grid min-h-0 gap-4 overflow-y-auto rounded-lg p-6">
+          {children}
+        </div>
         {showCloseButton && (
-          <DialogPrimitive.Close
+          // Centred on the dialog's rounded corner: inset by r(1-1/√2) ≈ 2px for
+          // the `rounded-lg` radius, then translated out by half its own size.
+          <OverlayCloseButton
             data-slot="dialog-close"
-            className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
-          >
-            <XIcon />
-            <span className="sr-only">Close</span>
-          </DialogPrimitive.Close>
+            className="top-[2px] right-[2px] -translate-y-1/2 translate-x-1/2"
+          />
         )}
       </DialogPrimitive.Content>
     </DialogPortal>

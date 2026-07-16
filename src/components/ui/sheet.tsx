@@ -1,9 +1,9 @@
 "use client";
 
 import * as SheetPrimitive from "@radix-ui/react-dialog";
-import { XIcon } from "lucide-react";
 import type * as React from "react";
 
+import { OverlayCloseButton } from "@/components/ui/close-button";
 import { cn } from "@/lib/utils";
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
@@ -48,9 +48,11 @@ function SheetContent({
   className,
   children,
   side = "right",
+  showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Content> & {
   side?: "top" | "right" | "bottom" | "left";
+  showCloseButton?: boolean;
 }) {
   return (
     <SheetPortal>
@@ -72,10 +74,14 @@ function SheetContent({
         {...props}
       >
         {children}
-        <SheetPrimitive.Close className="ring-offset-background focus:ring-ring data-[state=open]:bg-secondary absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
-          <XIcon className="size-4" />
-          <span className="sr-only">Close</span>
-        </SheetPrimitive.Close>
+        {showCloseButton && (
+          // Inset, NOT straddling the corner the way the dialog's does. A sheet
+          // is pinned to an edge of the viewport, so for the common side="right"
+          // case its right border and the screen's are the same line — a cross
+          // centred there would hang half off-screen, with half of its hit area
+          // unclickable. There is nowhere to overhang to, so it stays inside.
+          <OverlayCloseButton className="top-4 right-4" />
+        )}
       </SheetPrimitive.Content>
     </SheetPortal>
   );

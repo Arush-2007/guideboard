@@ -157,7 +157,7 @@ export const TypeformTriggerDialog = ({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-h-[85vh]">
           <DialogHeader>
             <DialogTitle>Typeform Trigger</DialogTitle>
             <DialogDescription>
@@ -302,7 +302,7 @@ export const TypeformTriggerDialog = ({
       {/* Fields open in their own wider window so long questions get a roomy,
           comfortable line. Closed via the built-in top-right X. */}
       <Dialog open={tableOpen} onOpenChange={setTableOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-3xl">
+        <DialogContent className="max-h-[80vh] sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Fields in {formTitle || "this form"}</DialogTitle>
             <DialogDescription>

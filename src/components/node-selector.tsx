@@ -4,8 +4,9 @@ import { createId } from "@paralleldrive/cuid2";
 import { useReactFlow } from "@xyflow/react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { OverlayCloseButton } from "@/components/ui/close-button";
 import {
   Sheet,
   SheetContent,
@@ -84,6 +85,7 @@ export function NodeSelector({
   const setStaged = useSetAtom(stagedNodesAtom);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<NodeType>>(new Set());
+  const searchRef = useRef<HTMLInputElement>(null);
 
   const query = search.trim().toLowerCase();
 
@@ -176,19 +178,44 @@ export function NodeSelector({
       <SheetTrigger asChild>{children}</SheetTrigger>
       <SheetContent
         side="right"
+        showCloseButton={false}
+        // The close badge sits in the header, ahead of the search field, so it
+        // would otherwise take the panel's opening focus and light up its ring
+        // before the user has touched anything. Keep focus on the search field.
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          searchRef.current?.focus();
+        }}
         className="top-editor-header h-[calc(100vh-var(--spacing-editor-header)-var(--spacing-editor-bar))] w-full gap-0 p-0 sm:max-w-md"
       >
         <SheetHeader className="border-b">
           <SheetTitle className="sr-only">Add nodes to workflow</SheetTitle>
-          <Button
-            className="w-full"
-            disabled={selected.size === 0}
-            onClick={handleAddSelected}
-          >
-            <PlusIcon className="size-4" />
-            Selected for workflow
-            {selected.size > 0 ? ` (${selected.size})` : ""}
-          </Button>
+          {/* The close badge straddles the button's top-right corner, so it
+              needs a positioned wrapper sized to the button rather than the
+              panel — the panel is flush to the viewport edge with no room. */}
+          <div className="relative">
+            <Button
+              className="peer w-full"
+              disabled={selected.size === 0}
+              onClick={handleAddSelected}
+            >
+              <PlusIcon className="size-4" />
+              Selected for workflow
+              {selected.size > 0 ? ` (${selected.size})` : ""}
+            </Button>
+            {/* The button's corner is rounded, so its painted edge cuts inside
+                the box corner by r(1-1/√2) ≈ 3px on each axis. Insetting by that
+                much lands the badge's centre on the curve itself rather than out
+                in the empty space past it. Kept whole-pixel so the badge doesn't
+                land on a fractional offset and render lopsided.
+
+                The button lifts 2px on hover (`hover:-translate-y-0.5` in
+                buttonVariants), so the badge tracks it via `peer-hover` — folded
+                into one translate, since a bare `-translate-y-0.5` would replace
+                the -50% rather than add to it and drop the badge onto the
+                button. Disabled buttons take no pointer events, so no lift. */}
+            <OverlayCloseButton className="top-[3px] right-[3px] -translate-y-1/2 translate-x-1/2 transition-[translate] duration-200 ease-out peer-hover:-translate-y-[calc(50%_+_2px)] peer-active:-translate-y-1/2" />
+          </div>
         </SheetHeader>
         <div className="flex-1 overflow-y-auto">
           {filteredTriggerNodes.length > 0 && (
@@ -227,6 +254,7 @@ export function NodeSelector({
           <div className="relative">
             <SearchIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              ref={searchRef}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search nodes"
