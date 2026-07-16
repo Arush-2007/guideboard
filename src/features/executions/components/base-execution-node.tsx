@@ -14,9 +14,14 @@ import {
   NodeStatusIndicator,
 } from "@/components/react-flow/node-status-indicator";
 import { WorkflowNode } from "@/components/workflow-node";
+import { readNodeRef } from "@/lib/node-ref";
 
 interface BaseExecutionNodeProps extends NodeProps {
   icon: LucideIcon | string;
+  /**
+   * The node type's static label ("AI Text"). Used as the image alt text and as
+   * the visible caption only until a ref exists — see the caption note below.
+   */
   name: string;
   description?: string;
   children?: ReactNode;
@@ -37,6 +42,7 @@ const DEFAULT_OUTPUTS = [{ id: "source-1" }];
 export const BaseExecutionNode = memo(
   ({
     id,
+    data,
     icon: Icon,
     name,
     description,
@@ -56,8 +62,21 @@ export const BaseExecutionNode = memo(
       void deleteElements({ nodes: [{ id }] });
     };
 
+    // The caption IS the ref (`AI_TEXT_1`) — the same string the variable picker
+    // groups by and the same one `@<AI_TEXT_1.output>@` names — so a node is
+    // identified by one token everywhere and two nodes of a type are never
+    // indistinguishable. Every non-trigger node renders through this component
+    // and every non-trigger type is ref-eligible, so the `name` fallback is only
+    // reached by a node whose ref hasn't been assigned yet (a pre-ref workflow
+    // still awaiting its first save).
+    const caption = readNodeRef(data) ?? name;
+
     return (
-      <WorkflowNode name={name} onDelete={handleDelete} onSettings={onSettings}>
+      <WorkflowNode
+        name={caption}
+        onDelete={handleDelete}
+        onSettings={onSettings}
+      >
         <NodeStatusIndicator
           status={status}
           variant="border"

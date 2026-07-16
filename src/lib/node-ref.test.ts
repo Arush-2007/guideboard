@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  collectNodeRefs,
   getOutputKeyForNode,
   legacyOutputKey,
   nextNodeRef,
   nodeTypeHasRef,
+  readNodeRef,
   rewriteRefsInJson,
+  stripRefFromData,
+  withAssignedRef,
 } from "./node-ref";
 
 describe("nextNodeRef", () => {
@@ -58,6 +62,127 @@ describe("nodeTypeHasRef", () => {
     expect(nodeTypeHasRef("WEBHOOK_TRIGGER")).toBe(false);
     expect(nodeTypeHasRef("GMAIL_TRIGGER")).toBe(false);
     expect(nodeTypeHasRef("INITIAL")).toBe(false);
+  });
+});
+
+describe("readNodeRef", () => {
+  it("reads a ref out of the data blob", () => {
+    expect(readNodeRef({ ref: "AI_TEXT_1", prompt: "hi" })).toBe("AI_TEXT_1");
+  });
+
+  it("returns null for absent, empty, or non-string refs", () => {
+    expect(readNodeRef({})).toBeNull();
+    expect(readNodeRef(null)).toBeNull();
+    expect(readNodeRef(undefined)).toBeNull();
+    expect(readNodeRef({ ref: "" })).toBeNull();
+    expect(readNodeRef({ ref: 7 } as unknown as Record<string, unknown>)).toBe(
+      null,
+    );
+  });
+});
+
+describe("collectNodeRefs", () => {
+  it("gathers refs from data, skipping ref-less nodes", () => {
+    const refs = collectNodeRefs([
+      { type: "AI_TEXT", data: { ref: "AI_TEXT_1" } },
+      { type: "TELEGRAM_TRIGGER", data: {} },
+      { type: "SLACK", data: { ref: "SLACK_1" } },
+    ]);
+    expect([...refs].sort()).toEqual(["AI_TEXT_1", "SLACK_1"]);
+  });
+});
+
+describe("withAssignedRef", () => {
+  it("stamps the first node of a type as _1", () => {
+    const node = withAssignedRef({ type: "AI_TEXT", data: {} }, new Set());
+    expect(node.data).toEqual({ ref: "AI_TEXT_1" });
+  });
+
+  it("numbers a second node of the same type _2", () => {
+    const used = collectNodeRefs([
+      { type: "AI_TEXT", data: { ref: "AI_TEXT_1" } },
+    ]);
+    expect(withAssignedRef({ type: "AI_TEXT", data: {} }, used).data).toEqual({
+      ref: "AI_TEXT_2",
+    });
+  });
+
+  it("numbers each type independently", () => {
+    const used = collectNodeRefs([
+      { type: "AI_TEXT", data: { ref: "AI_TEXT_1" } },
+    ]);
+    expect(withAssignedRef({ type: "SLACK", data: {} }, used).data).toEqual({
+      ref: "SLACK_1",
+    });
+  });
+
+  it("leaves triggers and INITIAL untouched", () => {
+    const trigger = { type: "TELEGRAM_TRIGGER", data: {} };
+    expect(withAssignedRef(trigger, new Set())).toBe(trigger);
+    const initial = { type: "INITIAL", data: {} };
+    expect(withAssignedRef(initial, new Set())).toBe(initial);
+  });
+
+  it("preserves existing data alongside the ref", () => {
+    const node = withAssignedRef(
+      { type: "AI_TEXT", data: { prompt: "summarize" } },
+      new Set(),
+    );
+    expect(node.data).toEqual({ prompt: "summarize", ref: "AI_TEXT_1" });
+  });
+
+  it("overwrites a copied ref rather than inheriting it (the duplicate case)", () => {
+    // A duplicated node deep-copies `data`, ref included; the clone must claim
+    // its own identity or two nodes answer to AI_TEXT_1.
+    const used = collectNodeRefs([
+      { type: "AI_TEXT", data: { ref: "AI_TEXT_1" } },
+    ]);
+    const clone = withAssignedRef(
+      { type: "AI_TEXT", data: { ref: "AI_TEXT_1", prompt: "x" } },
+      used,
+    );
+    expect(clone.data).toEqual({ ref: "AI_TEXT_2", prompt: "x" });
+  });
+
+  it("does not mutate the input node", () => {
+    const original = { type: "AI_TEXT", data: {} };
+    withAssignedRef(original, new Set());
+    expect(original.data).toEqual({});
+  });
+
+  it("threads one set across a batch so siblings never collide", () => {
+    const used = new Set<string>();
+    const a = withAssignedRef({ type: "AI_TEXT", data: {} }, used);
+    const b = withAssignedRef({ type: "AI_TEXT", data: {} }, used);
+    const c = withAssignedRef({ type: "AI_TEXT", data: {} }, used);
+    expect([a.data, b.data, c.data]).toEqual([
+      { ref: "AI_TEXT_1" },
+      { ref: "AI_TEXT_2" },
+      { ref: "AI_TEXT_3" },
+    ]);
+  });
+});
+
+describe("stripRefFromData", () => {
+  it("removes the canvas ref so the persisted blob never duplicates the column", () => {
+    expect(stripRefFromData({ ref: "AI_TEXT_1", prompt: "hi" })).toEqual({
+      prompt: "hi",
+    });
+  });
+
+  it("is a no-op for data that has no ref", () => {
+    expect(stripRefFromData({ prompt: "hi" })).toEqual({ prompt: "hi" });
+  });
+
+  it("returns an empty object for null/undefined data", () => {
+    expect(stripRefFromData(null)).toEqual({});
+    expect(stripRefFromData(undefined)).toEqual({});
+  });
+
+  it("does not mutate the input", () => {
+    const data = { ref: "AI_TEXT_1", prompt: "hi" };
+    stripRefFromData(data);
+    expect(data).toEqual({ ref: "AI_TEXT_1", prompt: "hi" });
   });
 });
 

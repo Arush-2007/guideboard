@@ -10,7 +10,9 @@ import {
   legacyOutputKey,
   nextNodeRef,
   nodeTypeHasRef,
+  readNodeRef,
   rewriteRefsInJson,
+  stripRefFromData,
 } from "@/lib/node-ref";
 import {
   assertNoEdgeIntoTrigger,
@@ -218,7 +220,8 @@ export const workflowsRouter = createTRPCRouter({
           z.object({
             id: z.string(),
             type: z.string().nullish(),
-            ref: z.string().nullish(),
+            // The canvas carries a node's ref inside `data.ref` (see `RefCarrier`
+            // in lib/node-ref.ts); there is no separate top-level ref field.
             position: z.object({ x: z.number(), y: z.number() }),
             data: z.record(z.string(), z.any()).optional(),
           }),
@@ -255,9 +258,14 @@ export const workflowsRouter = createTRPCRouter({
       });
       const refById = new Map(existingRefs.map((n) => [n.id, n.ref]));
 
+      // The ref the client claims for a node lives in `data.ref` (see
+      // `RefCarrier` in lib/node-ref.ts) and is authoritative over the stored
+      // value — so a rename the client sends wins over what the column currently
+      // says. `refById` is the fallback for a node whose payload carries no ref
+      // yet.
       const usedRefs = new Set<string>();
       for (const node of nodes) {
-        const known = node.ref ?? refById.get(node.id);
+        const known = readNodeRef(node.data) ?? refById.get(node.id);
         if (known) usedRefs.add(known);
       }
 
@@ -266,7 +274,7 @@ export const workflowsRouter = createTRPCRouter({
       const refByNodeId = new Map<string, string | null>();
       const legacyKeyToRef = new Map<string, string>();
       for (const node of nodes) {
-        let ref = node.ref ?? refById.get(node.id) ?? null;
+        let ref = readNodeRef(node.data) ?? refById.get(node.id) ?? null;
         if (!ref && node.type && nodeTypeHasRef(node.type)) {
           ref = nextNodeRef(node.type, usedRefs);
           usedRefs.add(ref);
@@ -290,8 +298,13 @@ export const workflowsRouter = createTRPCRouter({
         type: node.type as NodeType,
         ref: refByNodeId.get(node.id) ?? null,
         position: node.position,
+        // The ref rides in `data` only as the canvas's carrier; `stripRefFromData`
+        // keeps it out of the persisted blob so it can't drift from the column.
         data: JSON.parse(
-          rewriteRefsInJson(JSON.stringify(node.data ?? {}), legacyKeyToRef),
+          rewriteRefsInJson(
+            JSON.stringify(stripRefFromData(node.data)),
+            legacyKeyToRef,
+          ),
         ),
       }));
 
@@ -346,15 +359,21 @@ export const workflowsRouter = createTRPCRouter({
         include: { nodes: true, connections: true },
       });
 
-      // Transform server nodes to react-flow compatible nodes. `ref` is carried
-      // as a top-level field so the variable picker can show friendly names
-      // (e.g. AI_TEXT_1) for upstream nodes.
+      // Transform server nodes to react-flow compatible nodes. The `ref` is
+      // injected INTO `data` because that is the only field React Flow hands to
+      // a node component and the only one the editor's history preserves — see
+      // `RefCarrier` in lib/node-ref.ts. It is stored in its own `Node.ref`
+      // column (which carries the uniqueness constraint), never in the persisted
+      // `data` blob, so this is the one place the two views are joined; `update`
+      // lifts it back out on the way in.
       const nodes = workflow.nodes.map((node) => ({
         id: node.id,
         type: node.type,
-        ref: node.ref,
         position: node.position as { x: number; y: number },
-        data: (node.data as Record<string, unknown>) || {},
+        data: {
+          ...((node.data as Record<string, unknown>) || {}),
+          ...(node.ref ? { ref: node.ref } : {}),
+        },
       }));
 
       // Transform server connections to react-flow compatible edges

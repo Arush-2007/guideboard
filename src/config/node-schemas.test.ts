@@ -13,6 +13,19 @@ describe("node config schema registry", () => {
     }
   });
 
+  // The canvas carries a node's ref at `data.ref` (see `RefCarrier` in
+  // lib/node-ref.ts), and the editor runs `getNodeConfigIssues` over that same
+  // live `data` to decide whether to show the "needs config" badge. So a schema
+  // that rejected the extra `ref` key would brand every node misconfigured the
+  // moment it was created. No schema may be `.strict()`.
+  it("never treats a node's canvas ref as a config error", () => {
+    for (const type of Object.values(NodeType)) {
+      const issues = getNodeConfigIssues(type, { ref: `${type}_1` });
+      const withoutRef = getNodeConfigIssues(type, {});
+      expect(issues, `${type} regressed on the ref key`).toEqual(withoutRef);
+    }
+  });
+
   it("accepts a valid http request config", () => {
     expect(() =>
       parseNodeConfig(NodeType.HTTP_REQUEST, {

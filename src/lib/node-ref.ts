@@ -92,3 +92,76 @@ export function nextNodeRef(
   }
   return `${type}_${max + 1}`;
 }
+
+/**
+ * The canvas-side carrier of a ref.
+ *
+ * On a React Flow node the ref lives at `data.ref`, NOT as a top-level field.
+ * Three constraints force this and none of them are negotiable:
+ *   - React Flow only hands `data` (plus id/type/selected) to a node component,
+ *     so a top-level field is unreadable from the node that has to render it.
+ *   - `toSnapshot` (editor/lib/history.ts) rebuilds nodes from id/type/position/
+ *     data alone, so a top-level ref would be erased by the first undo.
+ *   - `serializeSnapshot` hashes `data`, so a ref change correctly marks the
+ *     editor dirty — which is what makes a rename (part 2) savable.
+ *
+ * The DB keeps `Node.ref` as its own column (it carries the
+ * `@@unique([workflowId, ref])` constraint); `workflows.getOne` injects it into
+ * `data` on read and `workflows.update` lifts it back out on write, so the
+ * persisted `data` blob never stores a duplicate copy that could drift.
+ */
+export type RefCarrier = {
+  type?: string | null;
+  data?: Record<string, unknown> | null;
+};
+
+/** Safely reads a node's ref out of its untyped React Flow `data` blob. */
+export function readNodeRef(data: RefCarrier["data"]): string | null {
+  const ref = (data as { ref?: unknown } | null | undefined)?.ref;
+  return typeof ref === "string" && ref.length > 0 ? ref : null;
+}
+
+/** Every ref currently in use on the canvas — the input to `nextNodeRef`. */
+export function collectNodeRefs(nodes: RefCarrier[]): Set<string> {
+  const refs = new Set<string>();
+  for (const node of nodes) {
+    const ref = readNodeRef(node.data);
+    if (ref) refs.add(ref);
+  }
+  return refs;
+}
+
+/**
+ * Stamps a freshly-created node with its ref, so it renders as `AI_TEXT_1` the
+ * instant it lands on the canvas rather than only after a save round-trip.
+ *
+ * Mutates nothing: returns a new node. `usedRefs` is READ AND WRITTEN — pass the
+ * same set across a batch (e.g. duplicating a multi-selection) so two nodes
+ * created in one tick can't be handed the same ref. Ref-less types (triggers,
+ * INITIAL) are returned untouched.
+ */
+export function withAssignedRef<T extends RefCarrier>(
+  node: T,
+  usedRefs: Set<string>,
+): T {
+  if (!node.type || !nodeTypeHasRef(node.type)) {
+    return node;
+  }
+  const ref = nextNodeRef(node.type, usedRefs);
+  usedRefs.add(ref);
+  return { ...node, data: { ...(node.data ?? {}), ref } };
+}
+
+/**
+ * Returns a node's `data` blob with any canvas-carried `ref` key removed, ready
+ * to persist. The ref belongs to the `Node.ref` column (which owns the
+ * `@@unique([workflowId, ref])` constraint), never the stored blob — so every
+ * write path strips it here rather than each one inlining the same destructure,
+ * and no blob can hold a second copy that drifts from the column.
+ */
+export function stripRefFromData(
+  data: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const { ref: _canvasRef, ...rest } = data ?? {};
+  return rest;
+}

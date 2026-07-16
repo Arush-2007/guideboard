@@ -11,6 +11,7 @@ import {
   nextNodeRef,
   nodeTypeHasRef,
   rewriteRefsInJson,
+  stripRefFromData,
 } from "@/lib/node-ref";
 import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
 
@@ -166,8 +167,14 @@ export async function persistGeneratedWorkflow(
         type: node.type as NodeType,
         ref: nodeRefById.get(node.id) ?? null,
         position: node.position,
+        // Same invariant as `workflows.update`: the ref lives in the column, not
+        // the blob. `stripRefFromData` is a no-op for the model's own output
+        // today, but keeps both write paths enforcing it identically.
         data: JSON.parse(
-          rewriteRefsInJson(JSON.stringify(node.data ?? {}), legacyKeyToRef),
+          rewriteRefsInJson(
+            JSON.stringify(stripRefFromData(node.data)),
+            legacyKeyToRef,
+          ),
         ),
       })),
     });

@@ -36,6 +36,7 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
+import { collectNodeRefs, withAssignedRef } from "@/lib/node-ref";
 import { useEditorShortcuts } from "../hooks/use-editor-shortcuts";
 import { invalidConnectionReason } from "../lib/connection-validation";
 import { unrunnableNodes } from "../lib/connectivity";
@@ -410,14 +411,24 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
           (node) => node.type === NodeType.INITIAL,
         );
 
-        const newNode: Node = {
-          id: createId(),
-          type: staged.type,
-          position,
-          data: {},
-        };
+        // Replacing the INITIAL placeholder wipes the canvas, so the surviving
+        // set — and therefore the refs the new node must not collide with — is
+        // empty in that case and `current` otherwise.
+        const survivors = hasInitialTrigger ? [] : current;
 
-        return hasInitialTrigger ? [newNode] : [...current, newNode];
+        // Stamp the ref here rather than letting the server assign it on save:
+        // the node has to render as AI_TEXT_1 the moment it's dropped.
+        const newNode: Node = withAssignedRef(
+          {
+            id: createId(),
+            type: staged.type,
+            position,
+            data: {},
+          },
+          collectNodeRefs(survivors),
+        );
+
+        return [...survivors, newNode];
       });
 
       setStaged((prev) => prev.filter((node) => node.id !== staged.id));

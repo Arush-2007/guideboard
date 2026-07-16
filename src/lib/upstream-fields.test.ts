@@ -21,6 +21,43 @@ describe("getUpstreamNodeIds", () => {
   });
 });
 
+describe("getUpstreamFields ref handling", () => {
+  // The canvas carries a node's ref at `data.ref` (React Flow only passes `data`
+  // to a node, and the editor's history preserves nothing else) — so the picker
+  // must read it from there, not from a top-level field.
+  const refNodes = [
+    { id: "t1", type: NodeType.TELEGRAM_TRIGGER, data: {} },
+    { id: "h1", type: NodeType.HTTP_REQUEST, data: { ref: "HTTP_REQUEST_1" } },
+    { id: "c1", type: NodeType.DISCORD, data: { ref: "DISCORD_1" } },
+  ];
+
+  it("heads the group with the ref from data and keys paths by it", () => {
+    const rows = getUpstreamFields("c1", refNodes, edges);
+    const fromHttp = rows.filter((r) => r.nodeId === "h1");
+
+    expect(fromHttp.length).toBeGreaterThan(0);
+    // Group header and inserted token are the SAME string the canvas shows.
+    expect(fromHttp.every((r) => r.nodeLabel === "HTTP_REQUEST_1")).toBe(true);
+    expect(
+      fromHttp.every((r) => r.insertText.startsWith("@<HTTP_REQUEST_1.")),
+    ).toBe(true);
+    // The legacy <type>_<id> key must not survive once a ref exists.
+    expect(rows.some((r) => r.insertText.includes("http_request_h1"))).toBe(
+      false,
+    );
+  });
+
+  it("still humanizes the type for a ref-less trigger", () => {
+    const rows = getUpstreamFields("c1", refNodes, edges);
+    const fromTrigger = rows.filter((r) => r.nodeId === "t1");
+
+    expect(fromTrigger.length).toBeGreaterThan(0);
+    expect(fromTrigger.every((r) => r.nodeLabel === "telegram trigger")).toBe(
+      true,
+    );
+  });
+});
+
 describe("getUpstreamFields", () => {
   it("expands a declared trigger into field-level @<path>@ entries", () => {
     const rows = getUpstreamFields("c1", nodes, edges);

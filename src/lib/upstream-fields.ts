@@ -1,7 +1,7 @@
 import type { Edge } from "@xyflow/react";
 import { nodeOutputs, resolveOutputPath } from "@/config/node-outputs";
 import type { NodeType } from "@/generated/prisma";
-import { getOutputKeyForNode } from "@/lib/node-ref";
+import { getOutputKeyForNode, readNodeRef } from "@/lib/node-ref";
 
 /**
  * Pure logic behind the variable picker (`<VariablePicker>`). Kept React-free so
@@ -49,14 +49,14 @@ export type UpstreamFieldRow = {
 type GraphNode = {
   id: string;
   type?: string | null;
-  ref?: string | null;
   /**
    * A node's saved config (kept loose so React Flow's `Node[]` is assignable).
-   * Read here only for `discoveredFields` — fields a node learned at config time
-   * (e.g. a Google Form's questions via "Load questions"), each carrying the
-   * exact `@<path>@` to reference it. This lets a node expose a dynamic,
-   * user-defined output schema on top of its static `node-outputs` descriptor,
-   * without baking domain-specific fields into the registry.
+   * Read here for the node's `ref` (via `readNodeRef`), and for
+   * `discoveredFields` — fields a node learned at config time (e.g. a Google
+   * Form's questions via "Load questions"), each carrying the exact `@<path>@`
+   * to reference it. This lets a node expose a dynamic, user-defined output
+   * schema on top of its static `node-outputs` descriptor, without baking
+   * domain-specific fields into the registry.
    */
   data?: Record<string, unknown> | null;
 };
@@ -93,10 +93,12 @@ export function getUpstreamFields(
     if (!node?.type) continue;
 
     const type = node.type as NodeType;
-    // Prefer the stable ref (e.g. "AI_TEXT_1") as the group header; fall back to
-    // the humanized type for nodes that don't carry a ref (triggers, etc.).
-    const nodeLabel =
-      node.ref ?? String(node.type).replace(/_/g, " ").toLowerCase();
+    // The ref (e.g. "AI_TEXT_1") is the node's identity: it heads the picker
+    // group AND is the exact token the inserted `@<AI_TEXT_1.output>@` names, so
+    // what the user picks here reads the same as what the canvas shows. Falls
+    // back to the humanized type for nodes that carry no ref (triggers).
+    const ref = readNodeRef(node.data);
+    const nodeLabel = ref ?? String(node.type).replace(/_/g, " ").toLowerCase();
     const descriptor = nodeOutputs[type];
 
     if (descriptor) {
@@ -104,7 +106,7 @@ export function getUpstreamFields(
         // Config-dependent fields (e.g. Sheets append vs find_rows) declare a
         // predicate over the node's saved data; hide the ones that don't apply.
         if (field.pickIf && !field.pickIf(node.data)) continue;
-        const path = resolveOutputPath(type, id, field.path, node.ref);
+        const path = resolveOutputPath(type, id, field.path, ref);
         if (!path) continue;
         rows.push({
           nodeId: id,
@@ -123,7 +125,7 @@ export function getUpstreamFields(
         nodeType: String(node.type),
         nodeLabel,
         fieldLabel: "Whole output",
-        insertText: `@<${getOutputKeyForNode(String(node.type), id, node.ref)}>@`,
+        insertText: `@<${getOutputKeyForNode(String(node.type), id, ref)}>@`,
       });
     }
 
