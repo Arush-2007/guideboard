@@ -52,6 +52,7 @@ vi.mock("@/inngest/channels/node-status", () => ({
 import {
   type FanOutOutcome,
   isFanOut,
+  isRouted,
   type NodeExecutorParams,
 } from "@/features/executions/types";
 import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
@@ -163,6 +164,23 @@ const run = (
     publish,
   } as unknown as NodeExecutorParams) as Promise<SheetsResult>;
 
+// find_rows and update_row now BRANCH: they return a routed outcome (Found /
+// Not-found, Updated / No-match) whose context holds the same output shape the
+// tests assert on, or a fan-out outcome in "each" mode. `ctx` unwraps either
+// back to the plain result the assertions expect; `outputs` reads the active
+// handle set off a routed outcome.
+function ctx(outcome: unknown): SheetsResult {
+  return (
+    isRouted(outcome) || isFanOut(outcome)
+      ? (outcome as { context: unknown }).context
+      : outcome
+  ) as SheetsResult;
+}
+function outputs(outcome: unknown): string[] {
+  if (!isRouted(outcome)) throw new Error("expected a routed outcome");
+  return outcome.outputs;
+}
+
 const serialToken = encodeCustomFeatureToken("serialNumber", {
   start: 1,
   pad: 4,
@@ -197,6 +215,10 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
     );
 
     expect(kyPostMock).toHaveBeenCalledOnce();
+    // append_row does NOT branch — it returns a plain context, not a routed
+    // outcome (only find_rows / update_row gained outputs).
+    expect(isRouted(result)).toBe(false);
+    expect(isFanOut(result)).toBe(false);
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.appendedRows).toBe(1);
     // serialAsText → '0002 written; rowByHeader strips the apostrophe + dot.
@@ -272,7 +294,11 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
     });
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // ≥1 match → routed down Found, with the legacy aliases for old workflows.
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["found", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(2); // Ada (10) and Cy (5)
     expect(out.columns).toEqual(["Name", "Buyer", "Pending"]);
     expect(out.rows).toEqual([
@@ -304,7 +330,7 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       range: "A1:B2",
     });
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.action).toBe("find_rows");
     // No conditions ⇒ every row matches — the closest surviving equivalent.
     expect(out.matchCount).toBe(2);
@@ -328,7 +354,9 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
     });
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // 0 matches → routed down Not-found (only — no legacy aliases on this path).
+    expect(outputs(result)).toEqual(["notfound"]);
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(0);
     expect(out.columns).toEqual(["Name", "Pending"]);
     expect(out.rows).toEqual([]);
@@ -369,7 +397,8 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
       onMultipleMatches: "error",
     });
-    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
+    expect(outputs(result)).toContain("found");
+    expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
   });
 
   it("ANDs conditions and resolves in_list from a templated value", async () => {
@@ -392,7 +421,7 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       { ctx: { buyers: JSON.stringify(["Acme"]) } },
     );
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(2);
     expect(out.rows).toEqual([
       { Name: "Ada", Buyer: "Acme" },
@@ -480,22 +509,26 @@ describe("googleSheetsActionExecutor — find_rows multi-match fan-out", () => {
     expect(publishedStatuses).toContain("error");
   });
 
-  it("'each' with zero matches fans out zero children", async () => {
+  it("'each' with zero matches routes Not-found instead of fanning out", async () => {
     mockRead([
       ["Name", "Buyer"],
       ["Ada", "Globex"],
     ]);
 
-    const outcome = (await run({
+    const outcome = await run({
       action: "find_rows",
       spreadsheetId: "s",
       sheetName: "Ledger",
       conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
       onMultipleMatches: "each",
-    })) as unknown as FanOutOutcome;
+    });
 
-    expect(isFanOut(outcome)).toBe(true);
-    expect(outcome.items).toEqual([]);
+    // A 0-match run must NOT fan out: zero children would mark the whole
+    // downstream sub-graph SKIPPED, when the Not-found branch is exactly what
+    // should run. So even in "each" mode, no matches routes Not-found.
+    expect(isFanOut(outcome)).toBe(false);
+    expect(outputs(outcome)).toEqual(["notfound"]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(0);
   });
 
   it("child run short-circuits on its seed: no Sheets call, first-match-shaped output", async () => {
@@ -519,7 +552,11 @@ describe("googleSheetsActionExecutor — find_rows multi-match fan-out", () => {
 
     expect(kyGetMock).not.toHaveBeenCalled();
     expect(refreshTokenMock).not.toHaveBeenCalled();
-    const out = result.GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>;
+    // A child carries a matched row, so it flows down Found (with legacy aliases).
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["found", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>;
     // Same reference shape as a single "first"-mode match — plus the kept
     // marker so retries still short-circuit and nested guards still trip.
     expect(out.firstRow).toEqual({ Name: "Bo", Buyer: "Acme" });
@@ -621,7 +658,11 @@ describe("googleSheetsActionExecutor — update_row", () => {
       "google-sheets-update-write",
     ]);
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // A row was written → routed down Updated, with the legacy aliases.
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["updated", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matched).toBe(true);
     expect(out.matchCount).toBe(1);
     expect(out.rowIndex).toBe(2);
@@ -676,14 +717,16 @@ describe("googleSheetsActionExecutor — update_row", () => {
     // The plan step ran and found nothing; the write step never started.
     expect(stepNames).toEqual(["google-sheets-update-plan"]);
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // Nothing matched → routed down No-match (only), so the branch that adds the
+    // missing row runs.
+    expect(outputs(result)).toEqual(["no_match"]);
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matched).toBe(false);
     expect(out.matchCount).toBe(0);
     // No row was touched, so there is nothing to show as before/after either.
     expect(out.rowByHeader).toBeUndefined();
     expect(out.previousRow).toBeUndefined();
-    // It is a SUCCESS, not a failure — a Condition node downstream branches on
-    // `matched` to handle the missing row.
+    // It is a SUCCESS, not a failure — the No-match branch handles the missing row.
     expect(publishedStatuses).toContain("success");
   });
 
@@ -778,7 +821,8 @@ describe("googleSheetsActionExecutor — update_row", () => {
       { range: "'Ledger'!A2:ZZ2", values: [[null, 5]] },
     ]);
     // matchCount still reports the truth, so a workflow can branch on it.
-    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
+    expect(outputs(result)).toContain("updated");
+    expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
   });
 
   it("'each' mode writes EVERY matched row in one request and fans out one child run per row", async () => {
@@ -851,9 +895,11 @@ describe("googleSheetsActionExecutor — update_row", () => {
     });
 
     // Fanning out zero children would skip everything downstream — which is
-    // precisely the branch that has to run to handle the missing row.
-    expect(isFanOut(outcome as unknown as FanOutOutcome)).toBe(false);
-    expect(outcome.GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
+    // precisely the branch that has to run to handle the missing row. Instead a
+    // 0-match "each" run routes No-match, in any mode.
+    expect(isFanOut(outcome)).toBe(false);
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
   });
 
   it("a fan-out CHILD run reshapes its seed and touches Sheets not at all (the parent already wrote every row)", async () => {
@@ -877,7 +923,11 @@ describe("googleSheetsActionExecutor — update_row", () => {
     expect(kyGetMock).not.toHaveBeenCalled();
     expect(kyPostMock).not.toHaveBeenCalled();
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // A child represents one updated row, so it flows down Updated.
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["updated", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.action).toBe("update_row");
     expect(out.matched).toBe(true);
     expect(out.matchCount).toBe(1);
@@ -949,6 +999,8 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
       "google-sheets-insert-adjacent-write",
     ]);
 
+    // insert_row_adjacent does NOT branch — it keeps the single default output.
+    expect(isRouted(result)).toBe(false);
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.insertedUnderGroup).toBe(true);
     expect(out.matchCount).toBe(2); // the group's size, not a dilemma

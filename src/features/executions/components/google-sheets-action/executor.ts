@@ -6,10 +6,13 @@ import {
   assertFanOutCap,
   assertNoForeignFanOut,
 } from "@/features/executions/lib/multi-match-policy";
-import type {
-  FanOutOutcome,
-  NodeExecutor,
-  WorkflowContext,
+import {
+  type FanOutOutcome,
+  isFanOut,
+  type NodeExecutor,
+  type NodeOutcome,
+  routed,
+  type WorkflowContext,
 } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
 import { nodeStatusChannel } from "@/inngest/channels/node-status";
@@ -38,6 +41,11 @@ import {
   findBlankRequired,
 } from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
+import {
+  FIND_ROWS_OUTPUTS,
+  LEGACY_MAIN_OUTPUTS,
+  UPDATE_ROW_OUTPUTS,
+} from "./handles";
 
 type SheetsAction =
   | "append_row"
@@ -97,6 +105,21 @@ function parseValuesJson(raw: string): string[][] {
   }
 
   return [(parsed as unknown[]).map((cell) => String(cell ?? ""))];
+}
+
+/**
+ * Route a `find_rows` / `update_row` result down its HAPPY branch (Found /
+ * Updated), carrying the legacy single-output aliases so pre-branching workflows
+ * keep flowing. A fan-out outcome ("each" mode with matches) is returned
+ * unchanged — it activates no edge in this run, dispatching children instead,
+ * and each child reshapes its own seed onto the happy branch below.
+ */
+function routeHappy(
+  outcome: WorkflowContext | FanOutOutcome,
+  happyHandle: string,
+): WorkflowContext | FanOutOutcome | NodeOutcome {
+  if (isFanOut(outcome)) return outcome;
+  return routed(outcome, [happyHandle, ...LEGACY_MAIN_OUTPUTS]);
 }
 
 export const googleSheetsActionExecutor: NodeExecutor<
@@ -172,20 +195,25 @@ export const googleSheetsActionExecutor: NodeExecutor<
     };
 
     if (action === "update_row") {
-      return {
-        ...context,
-        [outputKey]: {
-          action,
-          spreadsheetId,
-          sheetName,
-          matched: true,
-          matchCount: 1,
-          // The item IS the row the parent wrote, header-keyed — the same
-          // `rowByHeader.<col>` reference works in "first" and "each" mode.
-          rowByHeader: item,
-          ...lineage,
+      // A child run represents one row the parent already updated — so it flows
+      // only down the Updated branch (with the legacy aliases).
+      return routeHappy(
+        {
+          ...context,
+          [outputKey]: {
+            action,
+            spreadsheetId,
+            sheetName,
+            matched: true,
+            matchCount: 1,
+            // The item IS the row the parent wrote, header-keyed — the same
+            // `rowByHeader.<col>` reference works in "first" and "each" mode.
+            rowByHeader: item,
+            ...lineage,
+          },
         },
-      };
+        UPDATE_ROW_OUTPUTS.UPDATED,
+      );
     }
 
     if (action === "insert_row_adjacent") {
@@ -214,20 +242,25 @@ export const googleSheetsActionExecutor: NodeExecutor<
     for (const [key, value] of Object.entries(item)) {
       columnValues[key] = JSON.stringify([value]);
     }
-    return {
-      ...context,
-      [outputKey]: {
-        action: "find_rows",
-        spreadsheetId,
-        sheetName,
-        matchCount: 1,
-        columns: Object.keys(item),
-        rows: [item],
-        columnValues,
-        firstRow: item,
-        ...lineage,
+    // A child run always carries a matched row, so it flows down the Found
+    // branch (with the legacy aliases).
+    return routeHappy(
+      {
+        ...context,
+        [outputKey]: {
+          action: "find_rows",
+          spreadsheetId,
+          sheetName,
+          matchCount: 1,
+          columns: Object.keys(item),
+          rows: [item],
+          columnValues,
+          firstRow: item,
+          ...lineage,
+        },
       },
-    };
+      FIND_ROWS_OUTPUTS.FOUND,
+    );
   }
 
   // Range is only needed for the legacy values-based append.
@@ -702,22 +735,26 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       });
 
-      // Nothing matched — a clean no-op success (nothing to write, and a
-      // Condition node downstream branches on `matched` to add the missing row).
+      // Nothing matched — a clean no-op success (nothing written). Route the
+      // No-match branch so the downstream that handles the missing row runs
+      // (e.g. an Append). This covers every mode: a 0-match run never fans out.
       if (planned.writes.length === 0) {
         await publish(
           nodeStatusChannel(userId).status({ nodeId, status: "success" }),
         );
-        return {
-          ...context,
-          [outputKey]: {
-            action,
-            spreadsheetId,
-            sheetName,
-            matched: false,
-            matchCount: 0,
+        return routed(
+          {
+            ...context,
+            [outputKey]: {
+              action,
+              spreadsheetId,
+              sheetName,
+              matched: false,
+              matchCount: 0,
+            },
           },
-        };
+          [UPDATE_ROW_OUTPUTS.NO_MATCH],
+        );
       }
 
       // STEP 2 — write in its OWN step. `planned.writes` is memoized above, so a
@@ -771,7 +808,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
       await publish(
         nodeStatusChannel(userId).status({ nodeId, status: "success" }),
       );
-      return outcome;
+      // Past the no-match early return, so ≥1 row was written — route the
+      // Updated branch ("each" mode's fan-out passes through untouched).
+      return routeHappy(outcome, UPDATE_ROW_OUTPUTS.UPDATED);
     }
 
     const result = await step.run("google-sheets-action", async () => {
@@ -969,28 +1008,43 @@ export const googleSheetsActionExecutor: NodeExecutor<
     // Apply the multi-match policy OUTSIDE the step — the branded fan-out
     // outcome carries a symbol that would NOT survive the step's JSON
     // checkpoint round-trip.
-    let outcome: WorkflowContext | FanOutOutcome = result;
+    let outcome: WorkflowContext | FanOutOutcome | NodeOutcome = result;
 
     if (action === "find_rows") {
-      // `output.rows` already respects the policy ("each" kept every matched
-      // row as a fan-out item, cap enforced in-step; other modes store ≤ 100).
-      // The SUMMARY recorded for the parent is capped back to 100 rows so a
-      // large fan-out can't bloat the run record — the full list still reaches
-      // the children via `items`.
       const output = result[outputKey] as Record<string, unknown>;
-      const rows = Array.isArray(output.rows) ? output.rows : [];
-      outcome = applyMultiMatchPolicy({
-        mode: config.onMultipleMatches,
-        maxItems: config.maxFanOutItems,
-        items: rows,
-        totalCount:
-          typeof output.matchCount === "number" ? output.matchCount : undefined,
-        context: result,
-        outputKey,
-        output:
-          rows.length > 100 ? { ...output, rows: rows.slice(0, 100) } : output,
-        itemNoun: "row",
-      });
+      const matchCount =
+        typeof output.matchCount === "number" ? output.matchCount : 0;
+
+      if (matchCount === 0) {
+        // Nothing matched — route the Not-found branch. This bypasses the
+        // multi-match policy entirely: in "each" mode a 0-match run would
+        // otherwise fan out zero children and mark the whole downstream SKIPPED,
+        // when the Not-found branch is exactly what should run.
+        outcome = routed(result, [FIND_ROWS_OUTPUTS.NOT_FOUND]);
+      } else {
+        // `output.rows` already respects the policy ("each" kept every matched
+        // row as a fan-out item, cap enforced in-step; other modes store ≤ 100).
+        // The SUMMARY recorded for the parent is capped back to 100 rows so a
+        // large fan-out can't bloat the run record — the full list still reaches
+        // the children via `items`.
+        const rows = Array.isArray(output.rows) ? output.rows : [];
+        const policyOutcome = applyMultiMatchPolicy({
+          mode: config.onMultipleMatches,
+          maxItems: config.maxFanOutItems,
+          items: rows,
+          totalCount: matchCount,
+          context: result,
+          outputKey,
+          output:
+            rows.length > 100
+              ? { ...output, rows: rows.slice(0, 100) }
+              : output,
+          itemNoun: "row",
+        });
+        // ≥1 match → route the Found branch ("each" mode's fan-out passes
+        // through untouched).
+        outcome = routeHappy(policyOutcome, FIND_ROWS_OUTPUTS.FOUND);
+      }
     }
 
     await publish(

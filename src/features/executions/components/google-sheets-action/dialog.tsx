@@ -470,6 +470,20 @@ export const GoogleSheetsActionDialog = ({
                       </SelectItem>
                     </SelectContent>
                   </Select>
+                  {action === "find_rows" ? (
+                    <FormDescription>
+                      This step has two outputs — <strong>Found</strong> and{" "}
+                      <strong>Not found</strong>. Connect each to the branch
+                      that should run when a matching row does or doesn&apos;t
+                      exist.
+                    </FormDescription>
+                  ) : action === "update_row" ? (
+                    <FormDescription>
+                      This step has two outputs — <strong>Updated</strong> and{" "}
+                      <strong>No match</strong>. Connect each to the branch that
+                      should run when a row is or isn&apos;t updated.
+                    </FormDescription>
+                  ) : null}
                   <FormMessage />
                 </FormItem>
               )}
