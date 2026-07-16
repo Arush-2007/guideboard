@@ -1,11 +1,11 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Sparkles } from "lucide-react";
 import Image from "next/image";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -13,7 +13,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -60,6 +59,7 @@ interface Props {
   onOpenChange: (open: boolean) => void;
   onSubmit: (values: AiReplyGeneratorFormValues) => void;
   defaultValues?: Partial<AiReplyGeneratorFormValues>;
+  currentNodeId: string;
 }
 
 export const AiReplyGeneratorDialog = ({
@@ -67,6 +67,7 @@ export const AiReplyGeneratorDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
 }: Props) => {
   const { data: xaiCredentials, isLoading: isLoadingXai } =
     useCredentialsByType(CredentialType.XAI);
@@ -133,12 +134,7 @@ export const AiReplyGeneratorDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <span className="flex size-7 items-center justify-center rounded-lg bg-foreground/10">
-              <Sparkles className="size-4" />
-            </span>
-            AI Reply Generator
-          </DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Automatically generate contextual replies using AI based on keyword
             routing and your account settings. Downstream nodes can use{" "}

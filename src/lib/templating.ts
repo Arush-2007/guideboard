@@ -1,4 +1,5 @@
 import Handlebars from "handlebars";
+import { PLACEHOLDER_RE } from "@/lib/template-token";
 
 /**
  * Single source of truth for rendering user-authored template strings against a
@@ -24,8 +25,6 @@ import Handlebars from "handlebars";
 Handlebars.registerHelper("json", (value) => {
   return new Handlebars.SafeString(JSON.stringify(value, null, 2));
 });
-
-const PLACEHOLDER_RE = /@<\s*([^>]+?)\s*>@/g;
 
 function getByPath(obj: unknown, path: string): unknown {
   const keys = path

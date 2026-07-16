@@ -7,6 +7,7 @@ import { useReactFlow } from "@xyflow/react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { FieldMapping } from "@/components/field-mapping";
 import {
   FanOutCapInput,
@@ -20,7 +21,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -439,7 +439,7 @@ export const GoogleSheetsActionDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Google Sheets</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Add, find or update rows in a connected spreadsheet.
           </DialogDescription>

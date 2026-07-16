@@ -36,7 +36,11 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
-import { collectNodeRefs, withAssignedRef } from "@/lib/node-ref";
+import {
+  clearRefsForRemovedNodes,
+  collectNodeRefs,
+  withAssignedRef,
+} from "@/lib/node-ref";
 import { useEditorShortcuts } from "../hooks/use-editor-shortcuts";
 import { invalidConnectionReason } from "../lib/connection-validation";
 import { unrunnableNodes } from "../lib/connectivity";
@@ -340,7 +344,25 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) =>
-      setNodes((nodesSnapshot) => applyNodeChanges(changes, nodesSnapshot)),
+      setNodes((nodesSnapshot) => {
+        const next = applyNodeChanges(changes, nodesSnapshot);
+
+        // Deletions funnel through here (both the trash button via
+        // `deleteElements` and the Delete key), so it's the one authoritative
+        // place to clean up references to a removed node — blanking any
+        // `@<deletedRef…>@` in the survivors so it can't silently re-point at a
+        // future node that reclaims the same ref. Cheap guard first so the hot
+        // drag/select path (no removals) never allocates.
+        if (!changes.some((c) => c.type === "remove")) return next;
+
+        // Read the removed nodes from the pre-change snapshot, since `next` no
+        // longer contains them.
+        const removedIds = new Set(
+          changes.flatMap((c) => (c.type === "remove" ? [c.id] : [])),
+        );
+        const removed = nodesSnapshot.filter((n) => removedIds.has(n.id));
+        return clearRefsForRemovedNodes(removed, next);
+      }),
     [],
   );
   const onEdgesChange = useCallback(

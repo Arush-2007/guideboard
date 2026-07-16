@@ -3,13 +3,13 @@
 import { CopyIcon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,9 +17,14 @@ import { Label } from "@/components/ui/label";
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
 }
 
-export const TelegramTriggerDialog = ({ open, onOpenChange }: Props) => {
+export const TelegramTriggerDialog = ({
+  open,
+  onOpenChange,
+  currentNodeId,
+}: Props) => {
   const params = useParams();
   const workflowId = params.workflowId as string;
 
@@ -39,7 +44,7 @@ export const TelegramTriggerDialog = ({ open, onOpenChange }: Props) => {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Telegram Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             When someone messages your Telegram bot, this workflow fires. Make
             sure your bot token credential is added under Credentials first.

@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +12,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -71,7 +71,7 @@ export const InstagramReplyDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Instagram Reply</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Configure the reply to post on an Instagram comment. Uses the
             Instagram account connected in Credentials. Use{" "}

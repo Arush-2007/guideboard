@@ -24,7 +24,11 @@ export const WebhookTriggerNode = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <WebhookTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <WebhookTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

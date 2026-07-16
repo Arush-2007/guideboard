@@ -23,7 +23,11 @@ export const TelegramTrigger = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <TelegramTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <TelegramTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

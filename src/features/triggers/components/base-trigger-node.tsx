@@ -14,9 +14,11 @@ import {
   NodeStatusIndicator,
 } from "@/components/react-flow/node-status-indicator";
 import { WorkflowNode } from "@/components/workflow-node";
+import { readNodeRef } from "@/lib/node-ref";
 
 interface BaseTriggerNodeProps extends NodeProps {
   icon: LucideIcon | string;
+  /** The trigger's type label (e.g. "Telegram Trigger"), shown until renamed. */
   name: string;
   description?: string;
   children?: ReactNode;
@@ -28,6 +30,7 @@ interface BaseTriggerNodeProps extends NodeProps {
 export const BaseTriggerNode = memo(
   ({
     id,
+    data,
     icon: Icon,
     name,
     description,
@@ -46,8 +49,18 @@ export const BaseTriggerNode = memo(
       void deleteElements({ nodes: [{ id }] });
     };
 
+    // Triggers get no auto-assigned ref (their output is keyed by a fixed name
+    // like `telegram`, not a ref), but a user CAN rename one — that custom name
+    // lands in `data.ref` via `<EditableNodeTitle>`. Show it once set, else the
+    // type label.
+    const caption = readNodeRef(data) ?? name;
+
     return (
-      <WorkflowNode name={name} onDelete={handleDelete} onSettings={onSettings}>
+      <WorkflowNode
+        name={caption}
+        onDelete={handleDelete}
+        onSettings={onSettings}
+      >
         <NodeStatusIndicator
           status={status}
           variant="border"

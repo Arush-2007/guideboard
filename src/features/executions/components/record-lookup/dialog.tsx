@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,7 +13,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -164,7 +164,7 @@ export const RecordLookupDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Record Lookup</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Check whether a value exists in a spreadsheet column or a Notion
             database property. Outputs <span className="font-mono">exists</span>{" "}

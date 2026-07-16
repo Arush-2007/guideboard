@@ -23,7 +23,11 @@ export const GmailTriggerNode = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <GmailTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <GmailTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

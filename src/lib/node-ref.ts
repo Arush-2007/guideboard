@@ -8,6 +8,8 @@
  * picker, the editor, and the conversational builder all share one definition.
  */
 
+import { PLACEHOLDER_RE } from "@/lib/template-token";
+
 /**
  * Trigger (and placeholder) node types that DON'T get a ref. Triggers seed
  * fixed context keys (e.g. `telegram`, `webhook`) — renaming those is a separate
@@ -164,4 +166,170 @@ export function stripRefFromData(
 ): Record<string, unknown> {
   const { ref: _canvasRef, ...rest } = data ?? {};
   return rest;
+}
+
+/**
+ * Maximum length of a ref, so a runaway rename can't produce a caption that
+ * blows out the canvas or an unwieldy context key.
+ */
+export const MAX_REF_LENGTH = 48;
+
+/**
+ * Turns a user-typed node name into a token-safe ref slug.
+ *
+ * The ref is embedded literally inside `@<REF.path>@` context-key tokens, so it
+ * must contain only `[A-Za-z0-9_]` — a space, dot, `>` or `@` would break the
+ * placeholder grammar or the dot-path split. Runs of any other character
+ * collapse to a single `_` ("Summarize resume!" -> "Summarize_resume"), edge
+ * underscores are trimmed, and the result is capped. Returns `""` for input
+ * that has no usable characters (e.g. all punctuation) — callers treat an empty
+ * slug as an invalid name.
+ */
+export function toRefSlug(input: string): string {
+  return input
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+/, "")
+    .slice(0, MAX_REF_LENGTH)
+    .replace(/_+$/, "");
+}
+
+/**
+ * The shared token walk behind every ref-aware rewrite. Visits each `@<path>@`
+ * placeholder and calls `transform` with the path's FIRST dot-segment (the
+ * producing node's ref) and the remaining segments. `transform` returns the
+ * replacement token text, or `null` to leave the token untouched.
+ *
+ * Matching on the first segment — never a raw substring — is what lets a rename
+ * of `AI_TEXT_1` leave `AI_TEXT_10` (and an unrelated `SLACK_1`) alone, unlike
+ * the blind `.split().join()` `rewriteRefsInJson` can use only because cuids are
+ * globally unique.
+ */
+function mapRefTokens(
+  text: string,
+  transform: (firstSegment: string, restSegments: string[]) => string | null,
+): string {
+  return text.replace(PLACEHOLDER_RE, (match, path: string) => {
+    const segments = path.split(".");
+    const first = segments[0]?.trim() ?? "";
+    const replaced = transform(first, segments.slice(1));
+    return replaced ?? match;
+  });
+}
+
+/**
+ * Rewrites `@<oldRef>@` / `@<oldRef.path>@` placeholders in a single template
+ * string to use `newRef`, preserving the rest of the path verbatim.
+ */
+export function renameRefInTemplate(
+  template: string,
+  oldRef: string,
+  newRef: string,
+): string {
+  return mapRefTokens(template, (first, rest) =>
+    first === oldRef ? `@<${[newRef, ...rest].join(".")}>@` : null,
+  );
+}
+
+/**
+ * Removes every `@<ref…>@` placeholder whose ref is in `refs` (replacing the
+ * whole token with the empty string). Used when the producing nodes are deleted:
+ * the reference is already dead, and blanking it stops a later node that reclaims
+ * the same ref number from silently inheriting the dangling reference.
+ */
+export function removeRefsInTemplate(
+  template: string,
+  refs: ReadonlySet<string>,
+): string {
+  return mapRefTokens(template, (first) => (refs.has(first) ? "" : null));
+}
+
+/**
+ * JSON-blob wrappers around the template rewriters: serialize the blob so a
+ * reference is caught wherever it sits — a top-level field, a mapping value, a
+ * nested array — then reparse. Both return a new object; the input is untouched.
+ */
+export function renameRefInData(
+  data: Record<string, unknown> | null | undefined,
+  oldRef: string,
+  newRef: string,
+): Record<string, unknown> {
+  return JSON.parse(
+    renameRefInTemplate(JSON.stringify(data ?? {}), oldRef, newRef),
+  );
+}
+
+export function removeRefsInData(
+  data: Record<string, unknown> | null | undefined,
+  refs: ReadonlySet<string>,
+): Record<string, unknown> {
+  return JSON.parse(removeRefsInTemplate(JSON.stringify(data ?? {}), refs));
+}
+
+/**
+ * Strips references to just-removed nodes out of the surviving nodes' data.
+ *
+ * Called from the editor's `onNodesChange` — the single choke point both delete
+ * paths (the node's trash button via `deleteElements`, and the Delete key) flow
+ * through — so a dangling `@<deletedRef…>@` can never outlive its producer and
+ * later re-point at a new node that reclaims the same ref. Pure: returns a new
+ * array, or the same `survivors` reference when nothing needs changing.
+ */
+export function clearRefsForRemovedNodes<T extends RefCarrier>(
+  removed: RefCarrier[],
+  survivors: T[],
+): T[] {
+  const refs = collectNodeRefs(removed);
+  if (refs.size === 0) return survivors;
+  return survivors.map((node) => ({
+    ...node,
+    data: removeRefsInData(node.data, refs),
+  }));
+}
+
+/** The outcome of validating a rename before it is applied. */
+export type RenameCheck =
+  | { ok: true; slug: string }
+  | { ok: false; reason: "empty" | "unchanged" | "duplicate" };
+
+/**
+ * Validates a typed node name against the rest of the graph and, if valid,
+ * applies the rename across a node array: the target node's `data.ref` becomes
+ * the sanitized slug, and every OTHER node's `data` has its `@<oldRef…>@`
+ * references rewritten to the slug (token-aware). Pure — returns a new array —
+ * so the editor's `setNodes` and unit tests share one definition of what a
+ * rename does.
+ *
+ * `check` reports why a rename was rejected (empty/all-punctuation, unchanged,
+ * or a duplicate of another node's ref) so the caller can surface the right
+ * message; `nodes` is the unchanged input when `check.ok` is false.
+ */
+export function applyNodeRename<T extends { id: string } & RefCarrier>(
+  nodes: T[],
+  targetId: string,
+  typed: string,
+): { nodes: T[]; check: RenameCheck } {
+  const slug = toRefSlug(typed);
+  if (!slug) return { nodes, check: { ok: false, reason: "empty" } };
+
+  const target = nodes.find((node) => node.id === targetId);
+  const oldRef = readNodeRef(target?.data);
+  if (slug === oldRef) {
+    return { nodes, check: { ok: false, reason: "unchanged" } };
+  }
+
+  const taken = collectNodeRefs(
+    nodes.filter((node) => node.id !== targetId),
+  ).has(slug);
+  if (taken) return { nodes, check: { ok: false, reason: "duplicate" } };
+
+  const next = nodes.map((node) => {
+    if (node.id === targetId) {
+      return { ...node, data: { ...(node.data ?? {}), ref: slug } };
+    }
+    // Nothing to rewrite until the target has had a ref to be referenced by.
+    if (!oldRef) return node;
+    return { ...node, data: renameRefInData(node.data, oldRef, slug) };
+  });
+
+  return { nodes: next, check: { ok: true, slug } };
 }

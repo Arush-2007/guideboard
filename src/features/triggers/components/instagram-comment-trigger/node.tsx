@@ -67,6 +67,7 @@ export const InstagramCommentTriggerNode = memo(
           <InstagramCommentTriggerDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            currentNodeId={props.id}
             onSubmit={handleSubmit}
             defaultValues={nodeData}
           />

@@ -59,6 +59,7 @@ export const GoogleSheetsTriggerNode = memo(
           <GoogleSheetsTriggerDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            currentNodeId={props.id}
             onSubmit={handleSubmit}
             defaultValues={props.data}
           />

@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,7 +13,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -43,6 +43,7 @@ export type GoogleSheetsTriggerFormValues = z.infer<typeof formSchema>;
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
   onSubmit: (values: GoogleSheetsTriggerFormValues) => void;
   defaultValues?: Partial<GoogleSheetsTriggerFormValues>;
 }
@@ -50,6 +51,7 @@ interface Props {
 export const GoogleSheetsTriggerDialog = ({
   open,
   onOpenChange,
+  currentNodeId,
   onSubmit,
   defaultValues = {},
 }: Props) => {
@@ -84,7 +86,7 @@ export const GoogleSheetsTriggerDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Google Sheets Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Trigger this workflow when a new row is added to a sheet.
           </DialogDescription>

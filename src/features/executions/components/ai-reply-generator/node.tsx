@@ -60,6 +60,7 @@ export const AiReplyGeneratorNode = memo(
             onOpenChange={setDialogOpen}
             onSubmit={handleSubmit}
             defaultValues={nodeData}
+            currentNodeId={props.id}
           />
         )}
         <BaseExecutionNode

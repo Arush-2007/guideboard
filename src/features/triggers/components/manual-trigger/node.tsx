@@ -23,7 +23,11 @@ export const ManualTriggerNode = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <ManualTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <ManualTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

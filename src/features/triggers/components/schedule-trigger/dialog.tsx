@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,7 +10,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -37,6 +37,7 @@ export type ScheduleTriggerFormValues = {
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
   onSubmit: (values: ScheduleTriggerFormValues) => void;
   defaultValues?: Partial<ScheduleTriggerFormValues>;
 }
@@ -70,6 +71,7 @@ const formatInZone = (iso: string, timezone: string): string => {
 export const ScheduleTriggerDialog = ({
   open,
   onOpenChange,
+  currentNodeId,
   onSubmit,
   defaultValues = {},
 }: Props) => {
@@ -134,7 +136,7 @@ export const ScheduleTriggerDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Schedule Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Run this workflow automatically on a recurring schedule.
           </DialogDescription>

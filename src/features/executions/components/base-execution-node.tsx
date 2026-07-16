@@ -65,10 +65,11 @@ export const BaseExecutionNode = memo(
     // The caption IS the ref (`AI_TEXT_1`) — the same string the variable picker
     // groups by and the same one `@<AI_TEXT_1.output>@` names — so a node is
     // identified by one token everywhere and two nodes of a type are never
-    // indistinguishable. Every non-trigger node renders through this component
-    // and every non-trigger type is ref-eligible, so the `name` fallback is only
-    // reached by a node whose ref hasn't been assigned yet (a pre-ref workflow
-    // still awaiting its first save).
+    // indistinguishable. Renaming lives in the node's settings dialog (its
+    // `<EditableNodeTitle>`), not here. Every non-trigger node renders through
+    // this component and every non-trigger type is ref-eligible, so the `name`
+    // fallback is only reached by a node whose ref hasn't been assigned yet (a
+    // pre-ref workflow still awaiting its first save).
     const caption = readNodeRef(data) ?? name;
 
     return (

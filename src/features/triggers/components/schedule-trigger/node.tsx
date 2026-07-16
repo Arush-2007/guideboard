@@ -53,6 +53,7 @@ export const ScheduleTriggerNode = memo(
           <ScheduleTriggerDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            currentNodeId={props.id}
             onSubmit={handleSubmit}
             defaultValues={props.data}
           />
