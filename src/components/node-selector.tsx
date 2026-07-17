@@ -3,7 +3,7 @@
 import { createId } from "@paralleldrive/cuid2";
 import { useReactFlow } from "@xyflow/react";
 import { useAtomValue, useSetAtom } from "jotai";
-import { CheckIcon, PlusIcon, SearchIcon } from "lucide-react";
+import { MinusIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { OverlayCloseButton } from "@/components/ui/close-button";
@@ -26,16 +26,95 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Separator } from "./ui/separator";
 
+// How many of one node type may be staged in a single trip through the selector.
+// Only bounds the manual input — nothing about the engine cares.
+const MAX_PER_TYPE = 99;
+
+// The count control on a selected row: minus, an editable count, plus.
+//
+// Every control stops propagation because the row it sits in toggles selection
+// on click, which would otherwise fire on top of each stepper press.
+function NodeCountStepper({
+  count,
+  max,
+  onChange,
+}: {
+  count: number;
+  max: number;
+  onChange: (next: number) => void;
+}) {
+  // Non-null only while the field is being typed in, so the input can sit
+  // transiently empty without the count snapping to 0 under the cursor.
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const commit = (raw: string) => {
+    setDraft(null);
+    const parsed = Number.parseInt(raw, 10);
+    onChange(Number.isNaN(parsed) ? count : parsed);
+  };
+
+  return (
+    <div className="ml-auto flex shrink-0 items-center gap-1">
+      <Button
+        type="button"
+        size="icon"
+        variant="outline"
+        aria-label="Remove one"
+        className="size-7"
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange(count - 1);
+        }}
+      >
+        <MinusIcon className="size-3.5" />
+      </Button>
+      <Input
+        value={draft ?? String(count)}
+        inputMode="numeric"
+        aria-label="Count"
+        className="h-7 w-10 px-1 text-center"
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => setDraft(e.target.value.replace(/\D/g, ""))}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <Button
+        type="button"
+        size="icon"
+        variant="outline"
+        aria-label="Add one"
+        className="size-7"
+        disabled={count >= max}
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange(count + 1);
+        }}
+      >
+        <PlusIcon className="size-3.5" />
+      </Button>
+    </div>
+  );
+}
+
 function NodeOptionRow({
   nodeType,
-  selected,
+  count,
+  max,
   onSelect,
+  onCountChange,
 }: {
   nodeType: NodeOption;
-  selected: boolean;
+  count: number;
+  max: number;
   onSelect: (nodeType: NodeOption) => void;
+  onCountChange: (nodeType: NodeOption, next: number) => void;
 }) {
   const Icon = nodeType.icon;
+  const selected = count > 0;
 
   return (
     <div
@@ -61,8 +140,14 @@ function NodeOptionRow({
             {nodeType.description}
           </span>
         </div>
+        {/* The row's left border and tint already read as "selected", so the
+            count replaces the tick rather than sitting beside it. */}
         {selected && (
-          <CheckIcon className="ml-auto size-4 shrink-0 text-primary" />
+          <NodeCountStepper
+            count={count}
+            max={max}
+            onChange={(next) => onCountChange(nodeType, next)}
+          />
         )}
       </div>
     </div>
@@ -84,7 +169,9 @@ export function NodeSelector({
   const staged = useAtomValue(stagedNodesAtom);
   const setStaged = useSetAtom(stagedNodesAtom);
   const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<Set<NodeType>>(new Set());
+  // type -> how many to stage. A type absent from the map is unselected; a count
+  // is never stored as 0.
+  const [selected, setSelected] = useState<Map<NodeType, number>>(new Map());
   const searchRef = useRef<HTMLInputElement>(null);
 
   const query = search.trim().toLowerCase();
@@ -112,60 +199,99 @@ export function NodeSelector({
   const hasResults =
     filteredTriggerNodes.length > 0 || filteredExecutionNodes.length > 0;
 
-  // Toggle a node's selection. Selected nodes are sent to the staging tray when
-  // "Selected for workflow" is clicked, so the user can pick several at once
-  // without reopening the selector.
-  const toggleNodeSelect = useCallback(
-    (selection: NodeOption) => {
-      setSelected((prev) => {
-        const next = new Set(prev);
+  // The ceiling for a type's count. Only one manual trigger is allowed per
+  // workflow, so it caps at 1 — or 0 once one exists on the canvas or is already
+  // waiting in the staging tray. Drives both the clamp in `setCount` and the
+  // stepper's plus-disabled state, so the rule lives in one place.
+  const maxForType = useCallback(
+    (type: NodeType) => {
+      if (type !== NodeType.MANUAL_TRIGGER) {
+        return MAX_PER_TYPE;
+      }
 
-        if (next.has(selection.type)) {
-          next.delete(selection.type);
-          return next;
-        }
+      const hasManualTrigger =
+        getNodes().some((node) => node.type === NodeType.MANUAL_TRIGGER) ||
+        staged.some((node) => node.type === NodeType.MANUAL_TRIGGER);
 
-        // Only one manual trigger is allowed per workflow — count both the
-        // canvas and anything already waiting in the staging tray.
-        if (selection.type === NodeType.MANUAL_TRIGGER) {
-          const hasManualTrigger =
-            getNodes().some((node) => node.type === NodeType.MANUAL_TRIGGER) ||
-            staged.some((node) => node.type === NodeType.MANUAL_TRIGGER);
-
-          if (hasManualTrigger) {
-            toast.error("Only one manual trigger is allowed per workflow");
-            return prev;
-          }
-        }
-
-        next.add(selection.type);
-        return next;
-      });
+      return hasManualTrigger ? 0 : 1;
     },
     [getNodes, staged],
   );
 
+  // The single writer for selection counts — row clicks, the stepper, and typed
+  // input all funnel through here so clamping and the trigger rule can't drift.
+  const setCount = useCallback(
+    (type: NodeType, next: number) => {
+      const max = maxForType(type);
+      const desired = Math.max(0, Math.trunc(next) || 0);
+
+      // Only speak up when the *manual trigger* rule is what blocked them;
+      // clamping at MAX_PER_TYPE is a guard rail, not something to announce.
+      if (desired > max && type === NodeType.MANUAL_TRIGGER) {
+        toast.error("Only one manual trigger is allowed per workflow");
+      }
+
+      const clamped = Math.min(desired, max);
+
+      setSelected((prev) => {
+        const map = new Map(prev);
+
+        if (clamped === 0) {
+          map.delete(type);
+        } else {
+          map.set(type, clamped);
+        }
+
+        return map;
+      });
+    },
+    [maxForType],
+  );
+
+  // Clicking the row toggles between unselected and one. Counts beyond that come
+  // from the stepper.
+  const toggleNodeSelect = useCallback(
+    (selection: NodeOption) => {
+      setCount(selection.type, selected.has(selection.type) ? 0 : 1);
+    },
+    [selected, setCount],
+  );
+
+  const handleCountChange = useCallback(
+    (selection: NodeOption, next: number) => {
+      setCount(selection.type, next);
+    },
+    [setCount],
+  );
+
+  // Total nodes to stage, not distinct types — this is the number of chips the
+  // tray will show.
+  const totalSelected = useMemo(
+    () => [...selected.values()].reduce((sum, count) => sum + count, 0),
+    [selected],
+  );
+
   const handleAddSelected = useCallback(() => {
-    if (selected.size === 0) {
+    if (totalSelected === 0) {
       return;
     }
 
     // Stage the chosen nodes; they only become real canvas nodes once the user
-    // drags them out of the tray onto the canvas.
-    const newStaged = [...selected].map((type) => ({
-      id: createId(),
-      type,
-    }));
+    // drags them out of the tray onto the canvas. Each copy gets its own id —
+    // the tray and the canvas drop handler both key off it.
+    const newStaged = [...selected].flatMap(([type, count]) =>
+      Array.from({ length: count }, () => ({ id: createId(), type })),
+    );
 
     setStaged((prev) => [...prev, ...newStaged]);
-    setSelected(new Set());
+    setSelected(new Map());
     onOpenChange(false);
-  }, [selected, setStaged, onOpenChange]);
+  }, [selected, totalSelected, setStaged, onOpenChange]);
 
   const handleOpenChange = useCallback(
     (next: boolean) => {
       if (!next) {
-        setSelected(new Set());
+        setSelected(new Map());
         setSearch("");
       }
       onOpenChange(next);
@@ -196,12 +322,12 @@ export function NodeSelector({
           <div className="relative">
             <Button
               className="peer w-full"
-              disabled={selected.size === 0}
+              disabled={totalSelected === 0}
               onClick={handleAddSelected}
             >
               <PlusIcon className="size-4" />
               Selected for workflow
-              {selected.size > 0 ? ` (${selected.size})` : ""}
+              {totalSelected > 0 ? ` (${totalSelected})` : ""}
             </Button>
             {/* The button's corner is rounded, so its painted edge cuts inside
                 the box corner by r(1-1/√2) ≈ 3px on each axis. Insetting by that
@@ -224,8 +350,10 @@ export function NodeSelector({
                 <NodeOptionRow
                   key={nodeType.type}
                   nodeType={nodeType}
-                  selected={selected.has(nodeType.type)}
+                  count={selected.get(nodeType.type) ?? 0}
+                  max={maxForType(nodeType.type)}
                   onSelect={toggleNodeSelect}
+                  onCountChange={handleCountChange}
                 />
               ))}
             </div>
@@ -238,8 +366,10 @@ export function NodeSelector({
                 <NodeOptionRow
                   key={nodeType.type}
                   nodeType={nodeType}
-                  selected={selected.has(nodeType.type)}
+                  count={selected.get(nodeType.type) ?? 0}
+                  max={maxForType(nodeType.type)}
                   onSelect={toggleNodeSelect}
+                  onCountChange={handleCountChange}
                 />
               ))}
             </div>
