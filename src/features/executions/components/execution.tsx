@@ -817,7 +817,13 @@ const NodeRow = ({
       const childTotal = typeof root?.total === "number" ? root.total : null;
       const isChildRun = root?.__fanOut === true && childIndex !== null;
 
-      if (root?.action === "append_row") {
+      // A bottom append. A non-bottom append (position under_*) renders as an
+      // insert below — the two used to be separate actions and keep separate
+      // summaries. `?? "bottom"` covers pre-position append records too.
+      if (
+        root?.action === "append_row" &&
+        (root.position ?? "bottom") === "bottom"
+      ) {
         // Header-keyed row, in sheet-column order. The legacy raw-values path
         // emits none, so that falls back to the count alone.
         const appendedRow = (root.rowByHeader ?? {}) as Record<string, string>;
@@ -931,8 +937,14 @@ const NodeRow = ({
         );
       }
 
-      if (root?.action === "insert_row_adjacent") {
-        // This action ALWAYS writes — there is no no-op outcome. What varies is
+      // A non-bottom append (position under_*), or a historical run recorded
+      // under the old `insert_row_adjacent` action before the two were merged.
+      if (
+        root?.action === "insert_row_adjacent" ||
+        (root?.action === "append_row" &&
+          (root.position ?? "bottom") !== "bottom")
+      ) {
+        // This path ALWAYS writes — there is no no-op outcome. What varies is
         // how many rows it wrote and where they went, so every line below states
         // both. The cases: nothing matched (one row starts a new group at the
         // bottom); one row went below the group; one row went below EACH match
@@ -943,7 +955,6 @@ const NodeRow = ({
         const joinedGroup = root.insertedUnderGroup === true;
         const rowNumber =
           typeof root.rowIndex === "number" ? root.rowIndex : null;
-        const separated = root.blankSeparatorAdded === true;
         // Present only in "below every matching row" mode, and only on the
         // PARENT run — a child's reshaped output carries just its own row.
         const addedRows = Array.isArray(root.insertedRows)
@@ -962,9 +973,7 @@ const NodeRow = ({
           ? // Nothing matched. Still a success — and in "per match" mode the
             // fan-out did NOT happen, which the user has to be told: they chose
             // "once per row", and the steps after this one ran exactly once.
-            `No rows in ${tab} matched the filter, so there was no group to add to. One new row was added at the bottom of the tab${
-              separated ? ", after a blank separator row" : ""
-            }, starting a group of its own.${at}${
+            `No rows in ${tab} matched the filter, so there was no group to add to. One new row was added at the bottom of the tab, starting a group of its own.${at}${
               addedRows !== null
                 ? " No rows matched, so nothing was fanned out — the steps after this one ran once."
                 : ""

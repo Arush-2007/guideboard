@@ -33,27 +33,26 @@ DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
 
-GOOGLE_SHEETS_ACTION supports four actions in its data: "append_row",
-"find_rows", "update_row" and "insert_row_adjacent". The last three select rows
-with the same AND-ed "conditions" array. find_rows with no conditions reads
-every row of the tab; every column is always returned. update_row overwrites the
-mapped columns of every row matching its conditions; unmapped columns keep their
-current value. update_row REQUIRES at least one condition (an empty filter would
-overwrite the whole sheet), and it never adds a row — when nothing matches it
-does nothing and reports "matched": false.
+GOOGLE_SHEETS_ACTION supports three actions in its data: "append_row",
+"find_rows" and "update_row". find_rows and update_row select rows with an AND-ed
+"conditions" array. find_rows with no conditions reads every row of the tab;
+every column is always returned. update_row overwrites the mapped columns of
+every row matching its conditions; unmapped columns keep their current value.
+update_row REQUIRES at least one condition (an empty filter would overwrite the
+whole sheet), and it never adds a row — when nothing matches it does nothing and
+reports "matched": false.
 
-insert_row_adjacent adds a new row INSIDE a group instead of at the bottom of the
-tab. Use it for a tab whose rows are grouped (every job for a customer kept
-together). It REQUIRES at least one condition — the conditions are what pick the
-group. "insertUnder" chooses where the row lands: "group" (the default) adds ONE
-row directly under the LAST matching row, i.e. below the group as a whole;
-"each_row" adds one row below EVERY matching row and then runs the steps after it
-once per added row (capped by "maxFanOutItems"). When nothing matches, one row
-starts a new group at the bottom of the tab (set "blankSeparators": true to leave
-one blank row above it). It takes no "onMultipleMatches" — several matches are
-its normal case, not a dilemma.
+append_row adds a new row. Its "position" field chooses WHERE: "bottom" (the
+default) adds the row at the bottom of the tab; "under_group" and "under_each"
+add the row INSIDE a group instead — use these for a tab whose rows are grouped
+(every job for a customer kept together). Both "under_*" positions REQUIRE at
+least one condition — the conditions pick the group. "under_group" adds ONE row
+directly under the LAST matching row, i.e. below the group as a whole;
+"under_each" adds one row below EVERY matching row and then runs the steps after
+it once per added row (capped by "maxFanOutItems"). When nothing matches, one row
+starts a new group at the bottom of the tab.
 
-In insert_row_adjacent's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
+In an "under_*" append's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
 cell of the row the new row is placed under, so a new row can copy values from
 the row above it (e.g. "Service Buyer": "@<anchorRow.Service Buyer>@").
 

@@ -19,9 +19,9 @@ export function sanitizeHeaderKey(header: string): string {
 }
 
 /**
- * Context key under which the Sheets `insert_row_adjacent` action exposes the
- * row a new row is being attached to — the LAST row of the matched group, or in
- * "below every match" mode the specific row that new row sits under.
+ * Context key under which a non-bottom append (position "under_group" /
+ * "under_each") exposes the row a new row is being attached to — the LAST row of
+ * the matched group, or in "below every match" mode the specific row it sits under.
  *
  * It is injected into the render context per inserted row and is NOT part of the
  * workflow context afterwards, so a column can be filled from the row above it

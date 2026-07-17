@@ -1,10 +1,10 @@
 /**
- * Output-handle contract for the Google Sheets action node. Two of its four
+ * Output-handle contract for the Google Sheets action node. Two of its three
  * actions branch, so the handle set depends on the selected action — this file
  * is the single source both the canvas node (handle ids become each edge's
  * stored `fromOutput`) and the executor (which emits one set via `routed(...)`)
- * read, so the two sides can never drift. The other two actions (`append_row`,
- * `insert_row_adjacent`) keep the single default output and appear nowhere here.
+ * read, so the two sides can never drift. `append_row` keeps the single default
+ * output (in every position) and appears nowhere here.
  */
 
 /** `find_rows`: routed by whether any row matched the filter. */

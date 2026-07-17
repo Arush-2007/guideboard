@@ -59,18 +59,34 @@ export type NodeOutputDescriptor =
   | { rootKind: "topLevel"; fields: NodeOutputField[] };
 
 // The Sheets action's pickable fields depend on the node's selected `action`
-// (append_row is the historical default when unset).
+// (append_row is the historical default when unset). The picker reads a node's
+// RAW saved config, which is coerced only at exec time / when the dialog opens —
+// so the retired `insert_row_adjacent` action is normalized here too (mirroring
+// coerceLegacySheetsAction in node-schemas.ts), or a node saved before the merge
+// would lose its output fields until re-saved.
+const isLegacyInsert = (data: Record<string, unknown> | null | undefined) =>
+  (data?.action as string | undefined) === "insert_row_adjacent";
 const sheetsAction = (data: Record<string, unknown> | null | undefined) =>
-  (data?.action as string | undefined) ?? "append_row";
+  isLegacyInsert(data)
+    ? "append_row"
+    : ((data?.action as string | undefined) ?? "append_row");
 const isSheetsAppend = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "append_row";
 const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "find_rows";
 const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "update_row";
-const isSheetsInsertAdjacent = (
+// A non-bottom append (formerly the insert_row_adjacent action) — an append_row
+// whose `position` drops the row under a matched group / rows. It emits the
+// group/anchor fields a plain bottom append does not. A legacy insert node was
+// ALWAYS an under-append (either insertUnder value), so it qualifies regardless
+// of `position`, which it predates.
+const isSheetsAppendUnder = (
   data: Record<string, unknown> | null | undefined,
-) => sheetsAction(data) === "insert_row_adjacent";
+) =>
+  isLegacyInsert(data) ||
+  (sheetsAction(data) === "append_row" &&
+    ((data?.position as string | undefined) ?? "bottom") !== "bottom");
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
 // here simply contribute no mappable fields yet (the `raw`/templating escape
@@ -161,16 +177,15 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       {
         path: "rowByHeader",
         label: "The row this step wrote (all columns)",
-        pickIf: (data) =>
-          isSheetsAppend(data) ||
-          isSheetsUpdate(data) ||
-          isSheetsInsertAdjacent(data),
+        // isSheetsAppend already covers every append position.
+        pickIf: (data) => isSheetsAppend(data) || isSheetsUpdate(data),
       },
       {
         path: "appendedRows",
         label: "How many rows were added",
         example: "1",
-        pickIf: isSheetsAppend,
+        // Only a bottom append emits this; the under-append reports matchCount.
+        pickIf: (data) => isSheetsAppend(data) && !isSheetsAppendUnder(data),
       },
       // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
       // the first match in "first"/"error" mode, and — in "each" (fan-out)
@@ -181,7 +196,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "The row this run matched (all columns)",
         pickIf: isSheetsFindRows,
       },
-      // find_rows: rows returned. update_row: rows overwritten. insert_row_adjacent:
+      // find_rows: rows returned. update_row: rows overwritten. under-append:
       // the size of the group the new row joined (0 ⇒ it started a new one).
       {
         path: "matchCount",
@@ -190,7 +205,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         pickIf: (data) =>
           isSheetsFindRows(data) ||
           isSheetsUpdate(data) ||
-          isSheetsInsertAdjacent(data),
+          isSheetsAppendUnder(data),
       },
       // update_row only.
       {
@@ -206,13 +221,13 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         example: "true",
         pickIf: isSheetsUpdate,
       },
-      // insert_row_adjacent only. False ⇒ nothing matched, so the row started a
-      // new group at the bottom instead of joining one.
+      // under-append only. False ⇒ nothing matched, so the row started a new
+      // group at the bottom instead of joining one.
       {
         path: "insertedUnderGroup",
         label: "Whether the row joined an existing group (true/false)",
         example: "true",
-        pickIf: isSheetsInsertAdjacent,
+        pickIf: isSheetsAppendUnder,
       },
       // The row the new one was attached to: the group's last row, or — in
       // "below every match" mode — the specific row this one sits under (each
@@ -220,7 +235,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       {
         path: "anchorRow",
         label: "The row the new row was placed under (all columns)",
-        pickIf: isSheetsInsertAdjacent,
+        pickIf: isSheetsAppendUnder,
       },
       // Where the row landed. update_row emits this too (the row it overwrote),
       // so the label reads correctly for both — one entry, one path.
@@ -228,7 +243,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "rowIndex",
         label: "The sheet row number this step wrote",
         example: "7",
-        pickIf: (data) => isSheetsInsertAdjacent(data) || isSheetsUpdate(data),
+        pickIf: (data) => isSheetsAppendUnder(data) || isSheetsUpdate(data),
       },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],

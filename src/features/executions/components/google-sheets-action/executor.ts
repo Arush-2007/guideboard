@@ -47,14 +47,14 @@ import {
   UPDATE_ROW_OUTPUTS,
 } from "./handles";
 
-type SheetsAction =
-  | "append_row"
-  | "find_rows"
-  | "update_row"
-  | "insert_row_adjacent";
+type SheetsAction = "append_row" | "find_rows" | "update_row";
+
+type RowPosition = "bottom" | "under_group" | "under_each";
 
 type GoogleSheetsActionData = {
   action?: SheetsAction;
+  // Where an appended row lands (append_row only). Absent ⇒ "bottom".
+  position?: RowPosition;
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -65,22 +65,15 @@ type GoogleSheetsActionData = {
   // be blank" off).
   requiredColumns?: string[];
   // AND-ed row filter, shared by find_rows (which returns the matches),
-  // update_row (which writes them) and insert_row_adjacent (for which they are
-  // the GROUP the new row joins). Both write actions require at least one.
+  // update_row (which writes them) and a non-bottom append (for which they are
+  // the GROUP the new row joins). Both write cases require at least one.
   conditions?: RowMatchCondition[];
   // Multi-match policy for find_rows / update_row (see src/lib/multi-match.ts).
-  // insert_row_adjacent has none — for it, several matches are a GROUP, not
-  // candidates to choose between, so `insertUnder` decides where the row lands
-  // instead. It still honours the fan-out cap in "each_row" mode.
+  // A non-bottom append has none — for it, several matches are a GROUP, not
+  // candidates to choose between, so `position` decides where the row lands
+  // instead. It still honours the fan-out cap in "under_each" mode.
   onMultipleMatches?: MultiMatchMode;
   maxFanOutItems?: number;
-  // insert_row_adjacent: separate a brand-new group from the one above it with
-  // a blank row (only on the no-match path, and only if the tab has data).
-  blankSeparators?: boolean;
-  // insert_row_adjacent: ONE row below the whole group ("group", the default),
-  // or one row below EVERY matching row ("each_row", which then fans out one
-  // child run per inserted row, capped by maxFanOutItems).
-  insertUnder?: "group" | "each_row";
 };
 
 const ERROR_PREFIX = "Google Sheets Action";
@@ -150,6 +143,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
     );
   }
   const action = config.action ?? "append_row";
+  // append_row only: where the row lands. The two "under_*" positions run the
+  // group-insert path below; "bottom" (the default) is a plain append.
+  const position: RowPosition = config.position ?? "bottom";
   const spreadsheetId = decode(
     renderTemplate(config.spreadsheetId ?? "", context),
   ).trim();
@@ -216,7 +212,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       );
     }
 
-    if (action === "insert_row_adjacent") {
+    if (action === "append_row" && position === "under_each") {
       // The parent already inserted every row (one per matched row) — a child
       // must not insert again. Its item carries the row it handled, where that
       // row landed, and the row it was placed under, so siblings are
@@ -225,11 +221,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
         ...context,
         [outputKey]: {
           action,
+          position,
           spreadsheetId,
           sheetName,
           matchCount: 1,
           insertedUnderGroup: true,
-          blankSeparatorAdded: false,
           rowIndex: item.rowIndex,
           rowByHeader: item.row ?? {},
           anchorRow: item.anchorRow ?? {},
@@ -263,14 +259,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
     );
   }
 
-  // Range is only needed for the legacy values-based append.
-  // find_rows reads the whole tab and needs neither a mapping nor a range.
-  if (action !== "find_rows" && !hasMappings && !range) {
+  // update_row needs a mapping to know what to change. find_rows reads the whole
+  // tab, and append_row (any position) can always write — with no mapping it
+  // appends a BLANK row (every column empty), which is a legitimate operation.
+  // (update_row never uses `range`, so there is nothing to exempt for it.)
+  if (action === "update_row" && !hasMappings) {
     await publish(
       nodeStatusChannel(userId).status({ nodeId, status: "error" }),
     );
     throw new NonRetriableError(
-      `${ERROR_PREFIX}: a column mapping or a range is required`,
+      `${ERROR_PREFIX}: a column mapping is required`,
     );
   }
 
@@ -281,26 +279,29 @@ export const googleSheetsActionExecutor: NodeExecutor<
   };
 
   try {
-    // insert_row_adjacent and update_row live OUTSIDE the single-step switch
+    // A non-bottom append and update_row live OUTSIDE the single-step switch
     // below because each splits a read/plan from its write across two Inngest
-    // steps: insert_row_adjacent because a row must be created before it can be
+    // steps: the under-append because a row must be created before it can be
     // filled; update_row so a retry of its idempotent write replays the memoized
     // target ranges instead of re-reading a sheet the landed write already
     // mutated (which could re-match a DIFFERENT row). The paired `step.run`s are
     // what make both safe.
-    if (action === "insert_row_adjacent") {
+    if (action === "append_row" && position !== "bottom") {
+      // "under_each" fans out one run per inserted row; "under_group" (and any
+      // other non-bottom value) drops one row below the whole group. Derived
+      // from `position` — the old `insertUnder` field it superseded.
+      const insertUnder = position === "under_each" ? "each_row" : "group";
+
       // The filter is what picks the group. With none active, matchRows is
       // vacuously true — every row "matches", so the group is the whole tab and
       // the insert degenerates into an append. The schema rejects that; this is
       // the executor's own check, because the executor is what writes.
       if (!hasActiveRowCondition(config.conditions)) {
         throw new NonRetriableError(
-          `${ERROR_PREFIX}: inserting a row needs at least one filter condition — ` +
-            `it selects the group the new row joins in "${sheetName}"`,
+          `${ERROR_PREFIX}: adding a row under a group needs at least one filter ` +
+            `condition — it selects the group the new row joins in "${sheetName}"`,
         );
       }
-
-      const insertUnder = config.insertUnder ?? "group";
 
       // "each_row" fans out afterwards, and a write cannot be un-written — so
       // the nested-fan-out guard runs BEFORE anything is written, not inside
@@ -421,28 +422,22 @@ export const googleSheetsActionExecutor: NodeExecutor<
               (only.anchorIdx === null ||
                 only.anchorIdx === table.rows.length - 1)
             ) {
-              const separator =
-                only.anchorIdx === null &&
-                config.blankSeparators === true &&
-                table.rows.length > 0;
               await sheetsWrite(
                 `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
                 {
                   headers: sheetsAuthHeaders(accessToken),
                   searchParams: { valueInputOption: "USER_ENTERED" },
-                  json: { values: separator ? [[""], only.row] : [only.row] },
+                  json: { values: [only.row] },
                 },
               );
               return {
                 ...base,
                 written: true,
-                blankSeparatorAdded: separator,
                 rows: [
                   {
                     ...only,
-                    // Sheet row = header + data rows + 1, past the separator if
-                    // one was written.
-                    rowIndex: table.rows.length + 2 + (separator ? 1 : 0),
+                    // Sheet row = header + data rows + 1.
+                    rowIndex: table.rows.length + 2,
                   },
                 ],
               };
@@ -499,7 +494,6 @@ export const googleSheetsActionExecutor: NodeExecutor<
             return {
               ...base,
               written: false,
-              blankSeparatorAdded: false,
               rows: built.map((b, k) => ({
                 ...b,
                 // Sheet row = the anchor's row + 1, pushed down one more for each
@@ -560,11 +554,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
       }));
       const output: Record<string, unknown> = {
         action,
+        // Stamped so the execution view and variable picker tell an under-append
+        // apart from a bottom append without re-deriving it from the config.
+        position,
         spreadsheetId,
         sheetName,
         matchCount: placed.matchCount,
         insertedUnderGroup: placed.insertedUnderGroup,
-        blankSeparatorAdded: placed.blankSeparatorAdded,
         rowIndex: first.rowIndex,
         rowByHeader: first.rowByHeader,
         anchorRow: first.anchorRow,
@@ -625,7 +621,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // absolute-range write. Checkpointed on its own so the write step below
       // replays these exact ranges/values on a retry instead of re-reading a
       // sheet the first (landed) write already changed — the same read-then-write
-      // split insert_row_adjacent makes, for the same retry-safety reason.
+      // split the under-append makes, for the same retry-safety reason.
       const planned = await step.run("google-sheets-update-plan", async () => {
         try {
           const table = await readSheetTable({
@@ -816,8 +812,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
     const result = await step.run("google-sheets-action", async () => {
       if (action === "append_row") {
         // Preferred path: map upstream data onto the sheet's live columns. All
-        // Sheets REST plumbing routes through src/lib/google-sheets.ts.
-        if (hasMappings) {
+        // Sheets REST plumbing routes through src/lib/google-sheets.ts. Taken
+        // whenever there is no legacy `range` — including when NOTHING is mapped,
+        // in which case `buildSheetRow` yields an all-empty row (a blank row).
+        if (hasMappings || !range) {
           try {
             const table = await readSheetTable({
               accessToken,

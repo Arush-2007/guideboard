@@ -172,11 +172,16 @@ describe("getUpstreamFields", () => {
     expect(updateLabels).not.toContain(ROW_MATCHED);
     expect(updateLabels).not.toContain(JOINED_GROUP);
 
-    // insert_row_adjacent writes ONE new row, so it shares `rowByHeader` with
-    // the other writers and `matchCount` with the other matchers (there the
-    // count is the size of the group it joined), and adds `insertedUnderGroup`.
-    // It never updates a row, so update's `matched` / `previousRow` are absent.
-    const insertLabels = labelsFor({ action: "insert_row_adjacent" });
+    // A non-bottom append (position under_*) writes ONE new row, so it shares
+    // `rowByHeader` with the other writers and `matchCount` with the other
+    // matchers (there the count is the size of the group it joined), and adds
+    // `insertedUnderGroup`. It never updates a row, so update's `matched` /
+    // `previousRow` are absent, and it is not a bottom append so ROWS_ADDED is
+    // absent too.
+    const insertLabels = labelsFor({
+      action: "append_row",
+      position: "under_group",
+    });
     expect(insertLabels).toContain(ROW_WRITTEN);
     expect(insertLabels).toContain(MATCH_COUNT);
     expect(insertLabels).toContain(JOINED_GROUP);
@@ -186,5 +191,19 @@ describe("getUpstreamFields", () => {
     expect(insertLabels).not.toContain(ROW_BEFORE);
     expect(insertLabels).not.toContain(ROWS_ADDED);
     expect(insertLabels).not.toContain(ROW_MATCHED);
+
+    // A node saved before the insert_row_adjacent → append_row merge keeps the
+    // old action until re-saved. The picker reads that raw config, so it must
+    // normalize it and offer the SAME fields as a modern under-append (not the
+    // bottom-append counter).
+    const legacyInsertLabels = labelsFor({
+      action: "insert_row_adjacent",
+      insertUnder: "group",
+    });
+    expect(legacyInsertLabels).toContain(ROW_WRITTEN);
+    expect(legacyInsertLabels).toContain(MATCH_COUNT);
+    expect(legacyInsertLabels).toContain(JOINED_GROUP);
+    expect(legacyInsertLabels).toContain(ANCHOR_ROW);
+    expect(legacyInsertLabels).not.toContain(ROWS_ADDED);
   });
 });

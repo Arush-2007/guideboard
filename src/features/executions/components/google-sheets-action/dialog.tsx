@@ -68,20 +68,14 @@ const rowConditionFormSchema = z.object({
 
 const formSchema = z
   .object({
-    action: z.enum([
-      "append_row",
-      "find_rows",
-      "update_row",
-      "insert_row_adjacent",
-    ]),
+    action: z.enum(["append_row", "find_rows", "update_row"]),
+    // append_row only: where the new row lands.
+    position: z.enum(["bottom", "under_group", "under_each"]).optional(),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Tab name is required"),
     columnMappings: z.record(z.string(), z.string()).optional(),
     requiredColumns: z.array(z.string()).optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
-    // insert_row_adjacent only.
-    blankSeparators: z.boolean().optional(),
-    insertUnder: z.enum(["group", "each_row"]).optional(),
     // Multi-match fields, built from the shared constants (see the NOTE on
     // multiMatchConfigFields for why the fragment itself can't be spread here).
     onMultipleMatches: z.enum(MULTI_MATCH_MODES).optional(),
@@ -96,27 +90,29 @@ const formSchema = z
     // find_rows needs only a spreadsheet + tab (already required).
     if (data.action === "find_rows") return;
 
+    const isUnderAppend =
+      data.action === "append_row" && (data.position ?? "bottom") !== "bottom";
+
     const hasMappings = data.columnMappings
       ? Object.values(data.columnMappings).some((v) => v.trim())
       : false;
-    if (!hasMappings) {
+
+    // update_row must map at least one column — with none it writes nothing.
+    // append_row needs NO mapping in any position: leaving every column blank
+    // appends a blank row, which is allowed.
+    if (data.action === "update_row" && !hasMappings) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message:
-          data.action === "update_row"
-            ? "Map at least one column to update"
-            : data.action === "insert_row_adjacent"
-              ? "Map at least one column to fill the new row"
-              : "Map at least one column to append a row",
+        message: "Map at least one column to update",
         path: ["columnMappings"],
       });
     }
 
-    // Both write actions need a real filter: with none, every row "matches" —
-    // update_row would overwrite the whole sheet, and insert_row_adjacent would
-    // have no meaningful group to join. Mirrors the config schema's rule.
+    // Both write cases need a real filter: with none, every row "matches" —
+    // update_row would overwrite the whole sheet, and an under-append would have
+    // no meaningful group to join. Mirrors the config schema's rule.
     if (
-      (data.action === "update_row" || data.action === "insert_row_adjacent") &&
+      (data.action === "update_row" || isUnderAppend) &&
       !hasActiveRowCondition(data.conditions)
     ) {
       ctx.addIssue({
@@ -195,10 +191,10 @@ function ColumnsNotice({
 
 /**
  * The "match the columns" overlay, shared by every action that writes columns.
- * append_row and insert_row_adjacent CREATE a row, so they also get the "may be
- * blank" toggle and the Serial Number hint (pass `requiredColumns` +
- * `onRequiredChange`); update_row overwrites an existing row, where neither
- * applies — an unmapped column there simply keeps its value.
+ * append_row (any position) CREATES a row, so it also gets the "may be blank"
+ * toggle and the Serial Number hint (pass `requiredColumns` + `onRequiredChange`);
+ * update_row overwrites an existing row, where neither applies — an unmapped
+ * column there simply keeps its value.
  */
 function ColumnMappingPanel({
   open,
@@ -295,33 +291,49 @@ export const GoogleSheetsActionDialog = ({
     trpc.credentials.getGoogleSheets.queryOptions(),
   );
 
-  const buildDefaults = (): GoogleSheetsActionFormValues => ({
-    // Legacy read_rows nodes open as find_rows — with no conditions it reads
-    // every row of the tab, which is the closest surviving equivalent.
-    action:
-      (defaultValues.action as string) === "read_rows"
+  const buildDefaults = (): GoogleSheetsActionFormValues => {
+    // Saved data may still carry the retired `read_rows` / `insert_row_adjacent`
+    // actions (and the latter's `insertUnder`). Coerce them the same way the
+    // config schema does so an old node re-opens as its modern equivalent:
+    //   read_rows            → find_rows
+    //   insert_row_adjacent  → append_row + position (from insertUnder)
+    const legacy = defaultValues as unknown as {
+      action?: string;
+      insertUnder?: "group" | "each_row";
+      position?: GoogleSheetsActionFormValues["position"];
+    };
+    const action: GoogleSheetsActionFormValues["action"] =
+      legacy.action === "read_rows"
         ? "find_rows"
-        : (defaultValues.action ?? "append_row"),
-    spreadsheetId: defaultValues.spreadsheetId ?? "",
-    sheetName: defaultValues.sheetName ?? "Sheet1",
-    columnMappings: defaultValues.columnMappings ?? {},
-    requiredColumns: defaultValues.requiredColumns ?? [],
-    // Backfill a stable UI id on saved conditions (older saves lacked one).
-    conditions: (defaultValues.conditions ?? []).map((c) => ({
-      ...c,
-      id: c.id ?? createId(),
-    })),
-    // Off by default: a blank separator row changes the SHAPE of the sheet, so
-    // it is opted into, never assumed.
-    blankSeparators: defaultValues.blankSeparators ?? false,
-    // One row below the whole group — the conservative default: it writes one
-    // row, exactly as it did before "each_row" existed.
-    insertUnder: defaultValues.insertUnder ?? "group",
-    onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
-    // Left undefined when unset — the control shows the default as a
-    // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
-    maxFanOutItems: defaultValues.maxFanOutItems,
-  });
+        : legacy.action === "insert_row_adjacent"
+          ? "append_row"
+          : ((legacy.action as GoogleSheetsActionFormValues["action"]) ??
+            "append_row");
+    const position: GoogleSheetsActionFormValues["position"] =
+      legacy.position ??
+      (legacy.action === "insert_row_adjacent"
+        ? legacy.insertUnder === "each_row"
+          ? "under_each"
+          : "under_group"
+        : "bottom");
+    return {
+      action,
+      position,
+      spreadsheetId: defaultValues.spreadsheetId ?? "",
+      sheetName: defaultValues.sheetName ?? "Sheet1",
+      columnMappings: defaultValues.columnMappings ?? {},
+      requiredColumns: defaultValues.requiredColumns ?? [],
+      // Backfill a stable UI id on saved conditions (older saves lacked one).
+      conditions: (defaultValues.conditions ?? []).map((c) => ({
+        ...c,
+        id: c.id ?? createId(),
+      })),
+      onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
+      // Left undefined when unset — the control shows the default as a
+      // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
+      maxFanOutItems: defaultValues.maxFanOutItems,
+    };
+  };
 
   const form = useForm<GoogleSheetsActionFormValues>({
     resolver: zodResolver(formSchema),
@@ -334,7 +346,7 @@ export const GoogleSheetsActionDialog = ({
   const columnMappings = form.watch("columnMappings") ?? {};
   const requiredColumns = form.watch("requiredColumns") ?? [];
   const conditions = form.watch("conditions") ?? [];
-  const insertUnder = form.watch("insertUnder") ?? "group";
+  const position = form.watch("position") ?? "bottom";
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: buildDefaults reads props/defaultValues, re-run only on open/defaults change.
   useEffect(() => {
@@ -465,9 +477,6 @@ export const GoogleSheetsActionDialog = ({
                       <SelectItem value="append_row">Append row</SelectItem>
                       <SelectItem value="find_rows">Find rows</SelectItem>
                       <SelectItem value="update_row">Update row</SelectItem>
-                      <SelectItem value="insert_row_adjacent">
-                        Insert row under matching rows
-                      </SelectItem>
                     </SelectContent>
                   </Select>
                   {action === "find_rows" ? (
@@ -543,55 +552,194 @@ export const GoogleSheetsActionDialog = ({
             />
 
             {action === "append_row" ? (
-              <div className="space-y-2">
-                <Label>Match the columns</Label>
-                <ColumnsNotice
-                  isLoading={columnsQuery.isLoading}
-                  isError={columnsQuery.isError}
-                  hasSpreadsheet={Boolean(spreadsheetId)}
-                  headerCount={headers.length}
-                />
-                {headers.length > 0 ? (
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Position</Label>
                   <div className="flex items-center justify-between gap-3">
                     <p className="text-sm text-muted-foreground">
-                      {mappedCount} of {headers.length} mapped
-                      {requiredColumns.length > 0
-                        ? ` · ${requiredColumns.length} required`
+                      {position === "under_each"
+                        ? "Under every matching row"
+                        : position === "under_group"
+                          ? "Under a matching group"
+                          : "Bottom of the tab"}
+                      {position !== "bottom"
+                        ? ` · ${conditions.length} condition${
+                            conditions.length === 1 ? "" : "s"
+                          }`
                         : ""}
                     </p>
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
-                      onClick={() => setMappingOpen(true)}
+                      onClick={() => setFilterOpen(true)}
                     >
-                      Configure columns
+                      Configure position
                     </Button>
                   </div>
-                ) : null}
-                {form.formState.errors.columnMappings?.message ? (
-                  <p className="text-sm text-destructive">
-                    {String(form.formState.errors.columnMappings.message)}
-                  </p>
-                ) : null}
+                  {form.formState.errors.conditions?.message ? (
+                    <p className="text-sm text-destructive">
+                      {String(form.formState.errors.conditions.message)}
+                    </p>
+                  ) : null}
 
-                <ColumnMappingPanel
-                  open={mappingOpen}
-                  onOpenChange={setMappingOpen}
-                  title="Match the columns"
-                  description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
-                  headers={headers}
-                  value={columnMappings}
-                  onChange={(next) =>
-                    form.setValue("columnMappings", next, {
-                      shouldValidate: true,
-                    })
-                  }
-                  currentNodeId={currentNodeId}
-                  workflowId={workflowId}
-                  requiredColumns={requiredColumns}
-                  onRequiredChange={setRequired}
-                />
+                  <WideOverlayPanel
+                    open={filterOpen}
+                    onOpenChange={setFilterOpen}
+                    title="Where the row goes"
+                    description="Add the row at the bottom of the tab, or place it under the rows that match a filter."
+                  >
+                    <div className="space-y-6">
+                      <FormField
+                        control={form.control}
+                        name="position"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Where the row goes</FormLabel>
+                            <Select
+                              onValueChange={field.onChange}
+                              value={field.value ?? "bottom"}
+                            >
+                              <FormControl>
+                                <SelectTrigger className="w-full">
+                                  <SelectValue />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="bottom">
+                                  Bottom of the tab
+                                </SelectItem>
+                                <SelectItem value="under_group">
+                                  Under a particular group of rows or row
+                                </SelectItem>
+                                <SelectItem value="under_each">
+                                  Under multiple particular rows
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormDescription>
+                              {position === "under_each"
+                                ? "One new row under each matching row. The steps after this one then run once per inserted row."
+                                : position === "under_group"
+                                  ? "One new row, directly under the last matching row — so it joins the bottom of the group."
+                                  : "The new row is added at the bottom of the tab."}
+                            </FormDescription>
+                          </FormItem>
+                        )}
+                      />
+
+                      {position !== "bottom" ? (
+                        <>
+                          <div className="space-y-2">
+                            <Label>Match rows where…</Label>
+                            <ColumnsNotice
+                              isLoading={columnsQuery.isLoading}
+                              isError={columnsQuery.isError}
+                              hasSpreadsheet={Boolean(spreadsheetId)}
+                              headerCount={headers.length}
+                            />
+                            <RowMatchConditions
+                              value={conditions}
+                              onChange={(next) =>
+                                form.setValue("conditions", next)
+                              }
+                              currentNodeId={currentNodeId}
+                              workflowId={workflowId}
+                              columnOptions={headers}
+                              anchorClassName="ml-96"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              At least one condition is required — it is what
+                              picks the group. If no row matches, the new row
+                              starts a new group at the bottom of the tab.
+                            </p>
+                          </div>
+
+                          {position === "under_each" ? (
+                            <FanOutCapInput
+                              itemNoun="row"
+                              maxItems={form.watch("maxFanOutItems")}
+                              onMaxItemsChange={(n) =>
+                                form.setValue("maxFanOutItems", n)
+                              }
+                            />
+                          ) : null}
+                        </>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-6 flex justify-end">
+                      <Button
+                        type="button"
+                        onClick={() => setFilterOpen(false)}
+                      >
+                        Done
+                      </Button>
+                    </div>
+                  </WideOverlayPanel>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>
+                    {position === "bottom"
+                      ? "Match the columns"
+                      : "Columns to fill"}
+                  </Label>
+                  <ColumnsNotice
+                    isLoading={columnsQuery.isLoading}
+                    isError={columnsQuery.isError}
+                    hasSpreadsheet={Boolean(spreadsheetId)}
+                    headerCount={headers.length}
+                  />
+                  {headers.length > 0 ? (
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm text-muted-foreground">
+                        {mappedCount} of {headers.length} mapped
+                        {requiredColumns.length > 0
+                          ? ` · ${requiredColumns.length} required`
+                          : ""}
+                      </p>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setMappingOpen(true)}
+                      >
+                        Configure columns
+                      </Button>
+                    </div>
+                  ) : null}
+                  {form.formState.errors.columnMappings?.message ? (
+                    <p className="text-sm text-destructive">
+                      {String(form.formState.errors.columnMappings.message)}
+                    </p>
+                  ) : null}
+
+                  <ColumnMappingPanel
+                    open={mappingOpen}
+                    onOpenChange={setMappingOpen}
+                    title={
+                      position === "bottom"
+                        ? "Match the columns"
+                        : "Columns to fill"
+                    }
+                    description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
+                    headers={headers}
+                    value={columnMappings}
+                    onChange={(next) =>
+                      form.setValue("columnMappings", next, {
+                        shouldValidate: true,
+                      })
+                    }
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
+                    requiredColumns={requiredColumns}
+                    onRequiredChange={setRequired}
+                    extraGroups={
+                      position !== "bottom" ? anchorGroups : undefined
+                    }
+                  />
+                </div>
               </div>
             ) : action === "find_rows" ? (
               <div className="space-y-2">
@@ -775,184 +923,6 @@ export const GoogleSheetsActionDialog = ({
                     }
                     currentNodeId={currentNodeId}
                     workflowId={workflowId}
-                  />
-                </WideOverlayPanel>
-              </div>
-            ) : action === "insert_row_adjacent" ? (
-              <div className="space-y-2">
-                <Label>Find the group</Label>
-                <ColumnsNotice
-                  isLoading={columnsQuery.isLoading}
-                  isError={columnsQuery.isError}
-                  hasSpreadsheet={Boolean(spreadsheetId)}
-                  headerCount={headers.length}
-                />
-                {headers.length > 0 ? (
-                  <div className="flex items-center justify-between gap-3">
-                    <p className="text-sm text-muted-foreground">
-                      {conditions.length} condition
-                      {conditions.length === 1 ? "" : "s"} ·{" "}
-                      {insertUnder === "each_row"
-                        ? "one row per match"
-                        : "one row below the group"}{" "}
-                      · {mappedCount} of {headers.length} columns filled
-                    </p>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setFilterOpen(true)}
-                    >
-                      Configure filter
-                    </Button>
-                  </div>
-                ) : null}
-                {form.formState.errors.conditions?.message ? (
-                  <p className="text-sm text-destructive">
-                    {String(form.formState.errors.conditions.message)}
-                  </p>
-                ) : null}
-                {form.formState.errors.columnMappings?.message ? (
-                  <p className="text-sm text-destructive">
-                    {String(form.formState.errors.columnMappings.message)}
-                  </p>
-                ) : null}
-
-                <WideOverlayPanel
-                  open={filterOpen}
-                  onOpenChange={setFilterOpen}
-                  title="Find the group"
-                  description="The matching rows are the group. A new row is placed under it — below the group as a whole, or below every matching row."
-                >
-                  <div className="space-y-6">
-                    <div className="space-y-2">
-                      <Label>Match rows where…</Label>
-                      <RowMatchConditions
-                        value={conditions}
-                        onChange={(next) => form.setValue("conditions", next)}
-                        currentNodeId={currentNodeId}
-                        workflowId={workflowId}
-                        columnOptions={headers}
-                        anchorClassName="ml-96"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        At least one condition is required — it is what picks
-                        the group. If no row matches, the new row starts a new
-                        group at the bottom of the tab.
-                      </p>
-                    </div>
-
-                    <FormField
-                      control={form.control}
-                      name="insertUnder"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Where the new row goes</FormLabel>
-                          <Select
-                            onValueChange={field.onChange}
-                            value={field.value ?? "group"}
-                          >
-                            <FormControl>
-                              <SelectTrigger className="w-full">
-                                <SelectValue />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                              <SelectItem value="group">
-                                Below the group (one new row)
-                              </SelectItem>
-                              <SelectItem value="each_row">
-                                Below every matching row (one new row each)
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <FormDescription>
-                            {insertUnder === "each_row"
-                              ? "One new row under each matching row. The steps after this one then run once per inserted row."
-                              : "One new row, directly under the last matching row — so it joins the bottom of the group."}
-                          </FormDescription>
-                        </FormItem>
-                      )}
-                    />
-
-                    {insertUnder === "each_row" ? (
-                      <FanOutCapInput
-                        itemNoun="row"
-                        maxItems={form.watch("maxFanOutItems")}
-                        onMaxItemsChange={(n) =>
-                          form.setValue("maxFanOutItems", n)
-                        }
-                      />
-                    ) : null}
-
-                    <FormField
-                      control={form.control}
-                      name="blankSeparators"
-                      render={({ field }) => (
-                        <FormItem className="flex items-center justify-between gap-4 rounded-md border p-3">
-                          <div className="space-y-0.5">
-                            <FormLabel>Separate new groups</FormLabel>
-                            <FormDescription>
-                              Leave one blank row above a group that is starting
-                              for the first time. Rows joining an existing group
-                              are never separated.
-                            </FormDescription>
-                          </div>
-                          <FormControl>
-                            <Switch
-                              checked={field.value ?? false}
-                              onCheckedChange={field.onChange}
-                            />
-                          </FormControl>
-                        </FormItem>
-                      )}
-                    />
-
-                    <div className="space-y-2">
-                      <Label>Columns to fill</Label>
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="text-sm text-muted-foreground">
-                          {mappedCount} of {headers.length} mapped
-                          {requiredColumns.length > 0
-                            ? ` · ${requiredColumns.length} required`
-                            : ""}
-                        </p>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setMappingOpen(true)}
-                        >
-                          Configure columns
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-6 flex justify-end">
-                    <Button type="button" onClick={() => setFilterOpen(false)}>
-                      Done
-                    </Button>
-                  </div>
-
-                  {/* Layered ON TOP of the filter overlay, same width. */}
-                  <ColumnMappingPanel
-                    open={mappingOpen}
-                    onOpenChange={setMappingOpen}
-                    title="Columns to fill"
-                    description="Map each column of the new row to a value, an upstream field, or a cell of the row it is placed under. Turn off “May be blank” to require a column."
-                    headers={headers}
-                    value={columnMappings}
-                    onChange={(next) =>
-                      form.setValue("columnMappings", next, {
-                        shouldValidate: true,
-                      })
-                    }
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    requiredColumns={requiredColumns}
-                    onRequiredChange={setRequired}
-                    extraGroups={anchorGroups}
                   />
                 </WideOverlayPanel>
               </div>

@@ -399,104 +399,117 @@ const rowConditionSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
-const googleSheetsActionSchema = z
-  .object({
-    // read_rows (raw A1-range grid) was removed — find_rows with no conditions
-    // reads every row of the tab, header-keyed. Saved read_rows nodes are
-    // coerced here (not just in the dialog) so scheduled/triggered workflows
-    // that were never re-opened keep running instead of permafailing.
-    action: z.preprocess(
-      (v) => (v === "read_rows" ? "find_rows" : v),
-      z.enum(["append_row", "find_rows", "update_row", "insert_row_adjacent"]),
-    ),
-    spreadsheetId: z.string().min(1, "Spreadsheet is required"),
-    sheetName: z.string().min(1, "Sheet Name is required"),
-    range: z.string().optional(),
-    values: z.string().optional(),
-    columnMappings: mappingSchema.optional(),
-    // Headers that may NOT be blank on the row-creating actions (append_row,
-    // insert_row_adjacent) — the accessory "may be blank" toggle turned off.
-    // Enforced after the row is built.
-    requiredColumns: z.array(z.string()).optional(),
-    // AND-ed filter conditions, selecting rows for find_rows, update_row and
-    // insert_row_adjacent alike (one row-matching mechanism, one editor, one
-    // `matchRows`).
-    // find_rows: no conditions reads every row (an old saved `selectedColumns`
-    // key rides through harmlessly via .passthrough()).
-    // update_row: the rows to overwrite. At least one condition is REQUIRED.
-    // insert_row_adjacent: the GROUP the new row joins — `insertUnder` decides
-    // whether it lands below the group or below each of its rows. At least one
-    // condition is REQUIRED.
-    conditions: z.array(rowConditionSchema).optional(),
-    // insert_row_adjacent only: when the filter matches nothing, the new row
-    // starts a new group at the bottom of the tab — separated from the group
-    // above it by one blank row when this is on (and the tab already has data).
-    blankSeparators: z.boolean().optional(),
-    // insert_row_adjacent only: WHERE the new row(s) land when several rows
-    // match. Deliberately NOT `onMultipleMatches` — that field's "first" means
-    // "keep the first match and drop the rest", which is not a thing this action
-    // can do: it always writes, and the matches are a group, not candidates.
-    //  - "group" (default): ONE row, below the LAST matching row — i.e. below
-    //    the whole group.
-    //  - "each_row": one row below EVERY matching row, and (via the shared
-    //    fan-out) the steps after this one run once per inserted row, capped by
-    //    `maxFanOutItems`.
-    insertUnder: z.enum(["group", "each_row"]).optional(),
-    // Multi-match policy (shared fragment) for the list-producing actions:
-    // "first" (default), "each" (fan out one child run per matched row, capped
-    // by maxFanOutItems), or "error" (fail when more than one matches).
-    // find_rows: which matched row downstream continues with.
-    // update_row: which matched row(s) the write lands on.
-    ...multiMatchConfigFields,
-  })
-  .superRefine((data, ctx) => {
-    // find_rows needs only spreadsheet + tab (already required above).
-    if (data.action === "find_rows") return;
+// The old `insert_row_adjacent` action is now `append_row` with a non-bottom
+// `position`. Coerce saved nodes at the schema (not just the dialog) — the same
+// reason `read_rows → find_rows` is coerced below: `parseNodeConfig` is what the
+// executor calls at runtime, so scheduled/triggered workflows that were never
+// re-opened keep running with no data migration.
+function coerceLegacySheetsAction(raw: unknown): unknown {
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const r = raw as Record<string, unknown>;
+    if (r.action === "insert_row_adjacent") {
+      return {
+        ...r,
+        action: "append_row",
+        position:
+          r.position ??
+          (r.insertUnder === "each_row" ? "under_each" : "under_group"),
+      };
+    }
+  }
+  return raw;
+}
 
-    // append_row: a column mapping (preferred) or a legacy values array.
-    // update_row / insert_row_adjacent: a column mapping is the only supported form.
-    const hasMappings = data.columnMappings
-      ? Object.values(data.columnMappings).some((v) => v.trim())
-      : false;
+const googleSheetsActionSchema = z.preprocess(
+  coerceLegacySheetsAction,
+  z
+    .object({
+      // read_rows (raw A1-range grid) was removed — find_rows with no conditions
+      // reads every row of the tab, header-keyed. Saved read_rows nodes are
+      // coerced here (not just in the dialog) so scheduled/triggered workflows
+      // that were never re-opened keep running instead of permafailing.
+      action: z.preprocess(
+        (v) => (v === "read_rows" ? "find_rows" : v),
+        z.enum(["append_row", "find_rows", "update_row"]),
+      ),
+      // Where an appended row lands: the bottom of the tab (default), below a
+      // matched GROUP, or below EVERY matched row (which fans out one run per
+      // inserted row). The last two use `conditions` to pick the group — what
+      // used to be the separate `insert_row_adjacent` action.
+      position: z.enum(["bottom", "under_group", "under_each"]).optional(),
+      spreadsheetId: z.string().min(1, "Spreadsheet is required"),
+      sheetName: z.string().min(1, "Sheet Name is required"),
+      range: z.string().optional(),
+      values: z.string().optional(),
+      columnMappings: mappingSchema.optional(),
+      // Headers that may NOT be blank on the row-creating action (append_row,
+      // any position) — the accessory "may be blank" toggle turned off.
+      // Enforced after the row is built.
+      requiredColumns: z.array(z.string()).optional(),
+      // AND-ed filter conditions, selecting rows for find_rows, update_row and a
+      // non-bottom append alike (one row-matching mechanism, one editor, one
+      // `matchRows`).
+      // find_rows: no conditions reads every row (an old saved `selectedColumns`
+      // key rides through harmlessly via .passthrough()).
+      // update_row: the rows to overwrite. At least one condition is REQUIRED.
+      // append_row under_*: the GROUP the new row joins — `position` decides
+      // whether it lands below the group or below each of its rows. At least one
+      // condition is REQUIRED.
+      conditions: z.array(rowConditionSchema).optional(),
+      // Legacy field, superseded by `position` (coerced above). Kept optional so
+      // inbound saved data validates; the executor reads `position` now.
+      insertUnder: z.enum(["group", "each_row"]).optional(),
+      // Multi-match policy (shared fragment) for the list-producing actions:
+      // "first" (default), "each" (fan out one child run per matched row, capped
+      // by maxFanOutItems), or "error" (fail when more than one matches).
+      // find_rows: which matched row downstream continues with.
+      // update_row: which matched row(s) the write lands on.
+      ...multiMatchConfigFields,
+    })
+    .superRefine((data, ctx) => {
+      // find_rows needs only spreadsheet + tab (already required above).
+      if (data.action === "find_rows") return;
 
-    if (data.action === "update_row" || data.action === "insert_row_adjacent") {
-      const isUpdate = data.action === "update_row";
-      if (!hasMappings) {
+      const hasMappings = data.columnMappings
+        ? Object.values(data.columnMappings).some((v) => v.trim())
+        : false;
+      const isUnderAppend =
+        data.action === "append_row" &&
+        (data.position ?? "bottom") !== "bottom";
+
+      // update_row must map at least one column — with none it writes nothing.
+      // append_row needs NO mapping in any position: a row with every column
+      // unmapped is a blank row, which is a legitimate thing to append.
+      if (data.action === "update_row" && !hasMappings) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: isUpdate
-            ? "Map at least one column to update"
-            : "Map at least one column to fill the new row",
+          message: "Map at least one column to update",
           path: ["columnMappings"],
         });
       }
+
       // An empty filter matches EVERY row (matchRows is vacuously true with no
       // conditions). Harmless for find_rows — it just reads the tab — but both
-      // write actions need a real filter: update_row would overwrite the entire
-      // sheet, and insert_row_adjacent would "join" a group spanning every row,
-      // which is just an append wearing a filter's clothes. Enforced in the
-      // executor too — that is what actually writes.
-      if (!hasActiveRowCondition(data.conditions)) {
+      // write cases need a real filter: update_row would overwrite the entire
+      // sheet, and a non-bottom append would "join" a group spanning every row,
+      // which is just a bottom append wearing a filter's clothes. Enforced in
+      // the executor too — that is what actually writes.
+      if (
+        (data.action === "update_row" || isUnderAppend) &&
+        !hasActiveRowCondition(data.conditions)
+      ) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: isUpdate
-            ? "Add at least one condition — an empty filter would overwrite every row"
-            : "Add at least one condition — it picks the group the new row joins",
+          message:
+            data.action === "update_row"
+              ? "Add at least one condition — an empty filter would overwrite every row"
+              : "Add at least one condition — it picks the group the new row joins",
           path: ["conditions"],
         });
       }
-      return;
-    }
-
-    if (!hasMappings && !data.values?.trim()) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Map at least one column to append a row",
-        path: ["columnMappings"],
-      });
-    }
-  })
-  .passthrough();
+    })
+    .passthrough(),
+);
 
 const compareOperatorEnum = z.enum([
   "contains",

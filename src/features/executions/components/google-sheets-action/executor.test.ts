@@ -59,7 +59,7 @@ import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
 import { googleSheetsActionExecutor } from "./executor";
 
 // Records the step names the executor checkpoints under. Which work lands in
-// WHICH step is a correctness property here (insert_row_adjacent splits its
+// WHICH step is a correctness property here (an under-group append splits its
 // insert from its write so an Inngest retry of the write replays the memoized
 // insert instead of opening a second row), so the tests can assert on it.
 let stepNames: string[];
@@ -81,7 +81,7 @@ function mockRead(values: unknown[][]) {
 }
 
 // As mockRead, but also answers getSheetGrid's metadata GET (same ky.get, a
-// different URL). insert_row_adjacent needs both: the tab's numeric sheetId to
+// different URL). An under-group append needs both: the tab's numeric sheetId to
 // address it in a structural batchUpdate, and its grid HEIGHT to know whether
 // the row it wants to insert into even exists yet.
 function mockReadWithGrid(
@@ -144,7 +144,6 @@ type SheetsResult = Record<
     rowIndex?: number;
     previousRow?: Record<string, string>;
     insertedUnderGroup?: boolean;
-    blankSeparatorAdded?: boolean;
     anchorRow?: Record<string, string>;
     insertedRows?: Record<string, string>[];
   }
@@ -224,6 +223,31 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
     // serialAsText → '0002 written; rowByHeader strips the apostrophe + dot.
     expect(out.row).toEqual(["'0002", "Ada"]);
     expect(out.rowByHeader).toEqual({ "Job No": "0002", Name: "Ada" });
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("appends a BLANK row when no column is mapped (every cell empty)", async () => {
+    mockRead([
+      ["Job No.", "Name"],
+      ["0001", "X"],
+    ]);
+
+    const result = await run({
+      action: "append_row",
+      spreadsheetId: "s",
+      sheetName: "Master",
+      // No columnMappings at all — a deliberately blank row.
+    });
+
+    // One append, a row with an empty cell per header (a blank row).
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const append = postBody(0);
+    expect(append.url).toContain(":append");
+    expect(append.values).toEqual([["", ""]]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.appendedRows).toBe(1);
+    expect(out.rowByHeader).toEqual({ "Job No": "", Name: "" });
     expect(publishedStatuses).toContain("success");
   });
 
@@ -937,7 +961,7 @@ describe("googleSheetsActionExecutor — update_row", () => {
   });
 });
 
-describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
+describe("googleSheetsActionExecutor — append under a group", () => {
   // A "Grouped"-style tab: rows kept together by buyer, so a new job card has to
   // land INSIDE its buyer's block rather than at the bottom of the sheet.
   const grouped = [
@@ -948,7 +972,8 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
   ];
 
   const baseConfig = {
-    action: "insert_row_adjacent",
+    action: "append_row",
+    position: "under_group",
     spreadsheetId: "s",
     sheetName: "Grouped",
     columnMappings: { "Service Buyer": "Acme", Status: "Open" },
@@ -957,6 +982,29 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
   const matchAcme = [
     { column: "Service Buyer", operator: "equals", value: "Acme" },
   ];
+
+  it("coerces a legacy insert_row_adjacent node to an under-append and still inserts", async () => {
+    mockReadWithGrid(grouped);
+
+    // A node saved before the merge: the retired action + its `insertUnder`.
+    // parseNodeConfig (inside the executor) rewrites it to append_row +
+    // position, so it runs exactly like a modern under_group append.
+    const result = await run({
+      action: "insert_row_adjacent",
+      insertUnder: "group",
+      spreadsheetId: "s",
+      sheetName: "Grouped",
+      columnMappings: { "Service Buyer": "Acme", Status: "Open" },
+      conditions: matchAcme,
+    });
+
+    expect(postBody(0).url).toContain("/s:batchUpdate");
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.action).toBe("append_row");
+    expect(out.insertedUnderGroup).toBe(true);
+    expect(out.rowIndex).toBe(4);
+    expect(isRouted(result)).toBe(false); // append never branches
+  });
 
   it("inserts a row directly under the LAST row of the matching group, then fills it", async () => {
     mockReadWithGrid(grouped);
@@ -1037,10 +1085,9 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.insertedUnderGroup).toBe(true);
     expect(out.rowIndex).toBe(5); // 3 data rows + header + 1
-    expect(out.blankSeparatorAdded).toBe(false);
   });
 
-  it("starts a new group at the bottom when nothing matches, separated by a blank row", async () => {
+  it("starts a new group at the bottom when nothing matches", async () => {
     mockReadWithGrid(grouped);
 
     const result = await run({
@@ -1049,36 +1096,31 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
       conditions: [
         { column: "Service Buyer", operator: "equals", value: "Initech" },
       ],
-      blankSeparators: true,
     });
 
-    // A brand-new buyer: no group to join, so one blank separator row then the
-    // row itself — both in the SAME append, so the separator can never be left
-    // behind on its own.
+    // A brand-new buyer: no group to join, so the row is simply appended at the
+    // bottom of the tab, starting a group of its own.
     expect(kyPostMock).toHaveBeenCalledOnce();
-    expect(postBody(0).values).toEqual([[""], ["Initech", "", "Open"]]);
+    expect(postBody(0).values).toEqual([["Initech", "", "Open"]]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     // Matching nothing is a normal outcome here — a row is still written.
     expect(out.insertedUnderGroup).toBe(false);
     expect(out.matchCount).toBe(0);
-    expect(out.blankSeparatorAdded).toBe(true);
-    expect(out.rowIndex).toBe(6); // 3 data rows + header + separator + 1
+    expect(out.rowIndex).toBe(5); // 3 data rows + header + 1
     expect(publishedStatuses).toContain("success");
   });
 
-  it("adds no separator to a tab that has only a header row (nothing to separate from)", async () => {
+  it("appends to a tab that has only a header row (no data yet)", async () => {
     mockReadWithGrid([["Service Buyer", "Job No", "Status"]]);
 
     const result = await run({
       ...baseConfig,
       conditions: matchAcme,
-      blankSeparators: true,
     });
 
     expect(postBody(0).values).toEqual([["Acme", "", "Open"]]);
     const out = result.GOOGLE_SHEETS_ACTION_1;
-    expect(out.blankSeparatorAdded).toBe(false);
     expect(out.rowIndex).toBe(2);
   });
 
@@ -1169,7 +1211,7 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
   });
 });
 
-describe("googleSheetsActionExecutor — insert_row_adjacent, one row per match", () => {
+describe("googleSheetsActionExecutor — append under each matching row", () => {
   // Acme's rows are NOT contiguous here, so each match anchors its own new row
   // at a different depth — which is what makes the bottom-up insert order and
   // the row-number shifting load-bearing.
@@ -1182,10 +1224,10 @@ describe("googleSheetsActionExecutor — insert_row_adjacent, one row per match"
   ];
 
   const eachRow = {
-    action: "insert_row_adjacent",
+    action: "append_row",
+    position: "under_each",
     spreadsheetId: "s",
     sheetName: "Grouped",
-    insertUnder: "each_row",
     conditions: [
       { column: "Service Buyer", operator: "equals", value: "Acme" },
     ],

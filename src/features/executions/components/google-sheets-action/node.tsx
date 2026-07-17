@@ -26,7 +26,8 @@ import { NodeType } from "@/generated/prisma";
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
-  action?: "append_row" | "find_rows" | "update_row" | "insert_row_adjacent";
+  action?: "append_row" | "find_rows" | "update_row";
+  position?: "bottom" | "under_group" | "under_each";
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -36,8 +37,6 @@ type GoogleSheetsActionNodeData = {
   conditions?: RowMatchCondition[];
   onMultipleMatches?: MultiMatchMode;
   maxFanOutItems?: number;
-  blankSeparators?: boolean;
-  insertUnder?: "group" | "each_row";
   discoveredFields?: { path: string; label: string }[];
 };
 
@@ -88,16 +87,30 @@ export const GoogleSheetsActionNode = memo(
       updateNodeInternals(props.id);
     }, [handleKey, props.id, updateNodeInternals]);
 
+    // A node saved before the insert_row_adjacent → append_row merge keeps the
+    // old action + `insertUnder` until re-saved (this label reads the raw config,
+    // which is only coerced at exec time / when the dialog opens). Normalize it to
+    // a `position` so a legacy insert node still reads as "Insert…", not "Append".
+    const legacy = nodeData as
+      | { action?: string; insertUnder?: string }
+      | undefined;
+    const position =
+      legacy?.action === "insert_row_adjacent"
+        ? legacy.insertUnder === "each_row"
+          ? "under_each"
+          : "under_group"
+        : nodeData?.position;
+
     const description = nodeData?.sheetName
       ? nodeData.action === "find_rows"
         ? `Find rows in ${nodeData.sheetName}`
         : nodeData.action === "update_row"
           ? `Update a row in ${nodeData.sheetName}`
-          : nodeData.action === "insert_row_adjacent"
-            ? nodeData.insertUnder === "each_row"
-              ? `Insert rows into ${nodeData.sheetName}`
-              : `Insert a row into ${nodeData.sheetName}`
-            : `Append to ${nodeData.sheetName}`
+          : position === "under_each"
+            ? `Insert rows into ${nodeData.sheetName}`
+            : position === "under_group"
+              ? `Insert a row into ${nodeData.sheetName}`
+              : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (
