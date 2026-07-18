@@ -32,6 +32,8 @@ import { useSuspenseExecution } from "@/features/executions/hooks/use-executions
 import {
   COMPARE_OPERATOR_LABELS,
   type CompareOperator,
+  describeCompareOptions,
+  pickCompareOptions,
 } from "@/features/executions/lib/compare";
 import { formatDuration } from "@/features/executions/lib/format-duration";
 import {
@@ -431,6 +433,9 @@ type DisplayCondition = {
   operator?: string;
   value?: string;
   enabled?: boolean;
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 const CONDITION_TONES = {
@@ -504,6 +509,7 @@ const RowConditionsTable = ({
               ? VALUELESS_ROW_MATCH_OPERATORS.has(op)
               : false;
             const resolved = valueless ? "—" : renderReferences(c.value, input);
+            const optsNote = describeCompareOptions(pickCompareOptions(c), op);
             return (
               <tr
                 key={c.id ?? `${c.column}-${c.operator}`}
@@ -512,7 +518,14 @@ const RowConditionsTable = ({
                 <td className="break-words px-2 py-1 font-medium">
                   {c.column}
                 </td>
-                <td className="px-2 py-1">{opLabel}</td>
+                <td className="px-2 py-1">
+                  {opLabel}
+                  {optsNote ? (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {optsNote}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="break-words px-2 py-1">{resolved}</td>
               </tr>
             );
@@ -581,18 +594,28 @@ const SourceTables = ({
 // Condition, or one Switch case). Each operand is labeled by where it came from —
 // the upstream field's name if referenced, or "Entered by user" for a literal.
 const criteriaRows = (
-  cfg: { field?: unknown; operator?: unknown; value?: unknown },
+  cfg: {
+    field?: unknown;
+    operator?: unknown;
+    value?: unknown;
+    ignoreCase?: boolean;
+    ignoreChars?: string;
+    numeric?: boolean;
+  },
   input: unknown,
   producers: Producer[],
   runNodeTypes: string[],
 ): { label: string; value: unknown }[] => {
   const operator = typeof cfg.operator === "string" ? cfg.operator : "";
   const field = describeConfigValue(cfg.field, input, producers, runNodeTypes);
+  const opLabel =
+    COMPARE_OPERATOR_LABELS[operator as CompareOperator] ?? operator;
+  const optsNote = describeCompareOptions(pickCompareOptions(cfg), operator);
   const rows = [
     { label: field.label, value: field.value },
     {
       label: "Operator",
-      value: COMPARE_OPERATOR_LABELS[operator as CompareOperator] ?? operator,
+      value: optsNote ? `${opLabel} — ${optsNote}` : opLabel,
     },
   ];
   // is_empty / is_not_empty take no comparison value.

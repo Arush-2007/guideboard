@@ -3,6 +3,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import {
   type CompareOperator,
   evaluateCondition,
+  pickCompareOptions,
 } from "@/features/executions/lib/compare";
 import { type NodeExecutor, routed } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
@@ -14,6 +15,9 @@ type ConditionData = {
   field?: string;
   operator?: CompareOperator;
   value?: string;
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 export const conditionExecutor: NodeExecutor<ConditionData> = async ({
@@ -63,7 +67,12 @@ export const conditionExecutor: NodeExecutor<ConditionData> = async ({
       // previous node's output (e.g. comparing two node outputs).
       const fieldValue = renderTemplate(field, context);
       const compareValue = renderTemplate(config.value ?? "", context);
-      return evaluateCondition(operator, fieldValue, compareValue);
+      return evaluateCondition(
+        operator,
+        fieldValue,
+        compareValue,
+        pickCompareOptions(config),
+      );
     });
 
     await publish(

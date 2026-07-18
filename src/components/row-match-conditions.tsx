@@ -2,6 +2,7 @@
 
 import { createId } from "@paralleldrive/cuid2";
 import { Plus, Trash2 } from "lucide-react";
+import { MatchingOptions } from "@/components/matching-options";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -166,6 +167,15 @@ export function RowMatchConditions({
                 />
               ) : null}
             </div>
+
+            <MatchingOptions
+              operator={condition.operator}
+              ignoreCase={condition.ignoreCase}
+              ignoreChars={condition.ignoreChars}
+              numeric={condition.numeric}
+              onChange={(patch) => update(index, patch)}
+              idPrefix={`row-cond-${condition.id ?? index}`}
+            />
           </div>
         );
       })}

@@ -1,6 +1,7 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
 import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
+import { compareOptionsSchemaFields as compareOptionFields } from "@/lib/compare-options-schema";
 // `http-budget`, NOT `http` — this module runs in the browser (the dialogs validate
 // against it), and `http.ts` imports ky.
 import { MAX_USER_TIMEOUT_SECONDS } from "@/lib/http-budget";
@@ -73,6 +74,7 @@ const conditionSchema = z
       "is_not_empty",
     ]),
     value: z.string().optional(),
+    ...compareOptionFields,
   })
   .passthrough();
 
@@ -94,6 +96,7 @@ const switchSchema = z
             "is_not_empty",
           ]),
           value: z.string().optional(),
+          ...compareOptionFields,
         }),
       )
       .optional(),
@@ -397,6 +400,7 @@ const rowConditionSchema = z.object({
   operator: rowMatchOperatorEnum,
   value: z.string().optional(),
   enabled: z.boolean().optional(),
+  ...compareOptionFields,
 });
 
 // The old `insert_row_adjacent` action is now `append_row` with a non-bottom
@@ -556,6 +560,7 @@ const candidateScoringSchema = z
           value: z.string().optional(),
           points: z.coerce.number(),
           required: z.boolean().optional(),
+          ...compareOptionFields,
         }),
       )
       .optional(),

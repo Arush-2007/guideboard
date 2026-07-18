@@ -22,6 +22,9 @@ type ConditionNodeData = {
   field?: string;
   operator?: ConditionFormValues["operator"];
   value?: string;
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 type ConditionNodeType = Node<ConditionNodeData>;

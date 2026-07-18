@@ -1,4 +1,7 @@
-import { evaluateCondition } from "@/features/executions/lib/compare";
+import {
+  evaluateCondition,
+  pickCompareOptions,
+} from "@/features/executions/lib/compare";
 import {
   isActiveRowCondition,
   type RowMatchOperator,
@@ -28,6 +31,12 @@ export type RowMatchCondition = {
   value?: string;
   /** Defaults to enabled; only `enabled === false` is skipped. */
   enabled?: boolean;
+  // Matching options (see `CompareOptions`) — relax the base string operators
+  // per-condition. Ignored by the selection-only operators (in_list already
+  // lowercases; the date operators are numeric).
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 export type RowMatch = { index: number; row: Record<string, string> };
@@ -123,7 +132,12 @@ export function evaluateRowCondition(
     case "in_list":
       return isInList(cell, rendered);
     default:
-      return evaluateCondition(condition.operator, cell, rendered);
+      return evaluateCondition(
+        condition.operator,
+        cell,
+        rendered,
+        pickCompareOptions(condition),
+      );
   }
 }
 

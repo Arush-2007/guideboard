@@ -44,6 +44,7 @@ import { Switch } from "@/components/ui/switch";
 import type { PickerExtraGroup } from "@/components/variable-picker";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
+import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
 import { MAX_FAN_OUT_ITEMS_LIMIT, MULTI_MATCH_MODES } from "@/lib/multi-match";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 import {
@@ -64,6 +65,10 @@ const rowConditionFormSchema = z.object({
   ),
   value: z.string().optional(),
   enabled: z.boolean().optional(),
+  // Matching restraints — spread from the ONE shared fragment so this dialog's
+  // resolver can't drop them on submit (a plain z.object() strips undeclared
+  // keys), which is what made them fail to persist.
+  ...compareOptionsSchemaFields,
 });
 
 const formSchema = z

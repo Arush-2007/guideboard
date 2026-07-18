@@ -7,6 +7,10 @@ import { useEffect } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import z from "zod";
 import { EditableNodeTitle } from "@/components/editable-node-title";
+import {
+  MatchingOptions,
+  makeMatchingOptionsHandler,
+} from "@/components/matching-options";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -31,6 +35,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { VariableInput } from "@/components/variable-input";
+import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
 
 const operatorEnum = z.enum([
   "contains",
@@ -48,6 +53,7 @@ const caseSchema = z.object({
   field: z.string().min(1, { message: "Field is required" }),
   operator: operatorEnum,
   value: z.string(),
+  ...compareOptionsSchemaFields,
 });
 
 const formSchema = z.object({
@@ -84,6 +90,9 @@ const toFormValues = (
           field: c.field ?? "",
           operator: c.operator ?? "equals",
           value: c.value ?? "",
+          ignoreCase: c.ignoreCase ?? false,
+          ignoreChars: c.ignoreChars ?? "",
+          numeric: c.numeric ?? false,
         }))
       : [newCase()],
 });
@@ -238,6 +247,18 @@ export const SwitchDialog = ({
                       )}
                     />
                   )}
+
+                  <MatchingOptions
+                    operator={operator}
+                    ignoreCase={form.watch(`cases.${index}.ignoreCase`)}
+                    ignoreChars={form.watch(`cases.${index}.ignoreChars`)}
+                    numeric={form.watch(`cases.${index}.numeric`)}
+                    onChange={makeMatchingOptionsHandler(
+                      form,
+                      `cases.${index}.`,
+                    )}
+                    idPrefix={`switch-${fieldItem.id}`}
+                  />
                 </div>
               );
             })}

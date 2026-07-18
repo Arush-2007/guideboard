@@ -5,6 +5,10 @@ import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
 import { EditableNodeTitle } from "@/components/editable-node-title";
+import {
+  MatchingOptions,
+  makeMatchingOptionsHandler,
+} from "@/components/matching-options";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -30,6 +34,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { VariableInput } from "@/components/variable-input";
+import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
 
 const operatorEnum = z.enum([
   "contains",
@@ -46,6 +51,7 @@ const formSchema = z.object({
   field: z.string().min(1, { message: "Field is required" }),
   operator: operatorEnum,
   value: z.string(),
+  ...compareOptionsSchemaFields,
 });
 
 export type ConditionFormValues = z.infer<typeof formSchema>;
@@ -73,6 +79,9 @@ export const ConditionDialog = ({
       field: defaultValues.field ?? "",
       operator: defaultValues.operator ?? "equals",
       value: defaultValues.value ?? "",
+      ignoreCase: defaultValues.ignoreCase ?? false,
+      ignoreChars: defaultValues.ignoreChars ?? "",
+      numeric: defaultValues.numeric ?? false,
     },
   });
 
@@ -82,6 +91,9 @@ export const ConditionDialog = ({
         field: defaultValues.field ?? "",
         operator: defaultValues.operator ?? "equals",
         value: defaultValues.value ?? "",
+        ignoreCase: defaultValues.ignoreCase ?? false,
+        ignoreChars: defaultValues.ignoreChars ?? "",
+        numeric: defaultValues.numeric ?? false,
       });
     }
   }, [open, defaultValues, form]);
@@ -190,6 +202,15 @@ export const ConditionDialog = ({
                 )}
               />
             )}
+
+            <MatchingOptions
+              operator={watchOperator}
+              ignoreCase={form.watch("ignoreCase")}
+              ignoreChars={form.watch("ignoreChars")}
+              numeric={form.watch("numeric")}
+              onChange={makeMatchingOptionsHandler(form, "")}
+              idPrefix="condition"
+            />
 
             <DialogFooter className="mt-4">
               <Button type="submit">Save</Button>

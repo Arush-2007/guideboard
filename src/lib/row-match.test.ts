@@ -39,6 +39,24 @@ describe("matchRows — base operators (delegated to evaluateCondition)", () => 
     );
     expect(m.map((r) => r.index)).toEqual([0]);
   });
+
+  it("passes matching options through to the comparator", () => {
+    // Exact/case-sensitive: no match for the lowercased value.
+    expect(
+      run([{ column: "Buyer Type", operator: "equals", value: "private" }])
+        .length,
+    ).toBe(0);
+    // With ignoreCase the same value now matches both Private rows.
+    const m = run([
+      {
+        column: "Buyer Type",
+        operator: "equals",
+        value: "private",
+        ignoreCase: true,
+      },
+    ]);
+    expect(m.map((r) => r.index)).toEqual([1, 2]);
+  });
 });
 
 describe("matchRows — AND semantics and enabled flag", () => {
