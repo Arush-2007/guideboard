@@ -457,9 +457,10 @@ export const credentialsRouter = createTRPCRouter({
       .filter((file) => file.id.length > 0);
   }),
   // Reads a form's questions via the Forms API (needs the forms.body.readonly
-  // scope). Each question's title is exactly the key the Apps Script webhook
-  // uses in `responses`, so a discovered field maps 1:1 to a reference like
-  // `@<googleForm.responses.<title>>@`.
+  // scope). Titles are TRIMMED here, and the webhook trims the incoming response
+  // keys to match (`normalizeResponseKeys`) — that pairing is what makes a
+  // discovered field map 1:1 to `@<googleForm.responses.<title>>@`. Trimming on
+  // only one side is exactly how a title with a stray space used to render empty.
   getGoogleFormQuestions: protectedProcedure
     .input(z.object({ formId: z.string().min(1) }))
     .query(async ({ ctx, input }) => {

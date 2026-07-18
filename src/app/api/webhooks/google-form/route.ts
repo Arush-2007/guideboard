@@ -11,6 +11,7 @@
 
 import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
+import { normalizeResponseKeys } from "@/lib/form-responses";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { googleFormIdempotencyKey } from "@/lib/webhook-idempotency";
@@ -64,7 +65,10 @@ export async function POST(request: NextRequest) {
       responseId: body.responseId,
       timestamp: body.timestamp,
       respondentEmail: body.respondentEmail,
-      responses: body.responses,
+      // Keys are trimmed to match the picker's paths, which are built from the
+      // question title trimmed — the Apps Script keys them raw, so a title with
+      // a stray space produced an unreachable key. `raw` keeps the original.
+      responses: normalizeResponseKeys(body.responses),
       raw: body,
     };
 
