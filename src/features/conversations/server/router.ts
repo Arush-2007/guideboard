@@ -33,8 +33,8 @@ DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
 
-GOOGLE_SHEETS_ACTION supports three actions in its data: "append_row",
-"find_rows" and "update_row". find_rows and update_row select rows with an AND-ed
+GOOGLE_SHEETS_ACTION supports four actions in its data: "append_row",
+"find_rows", "update_row" and "color_rows". find_rows and update_row select rows with an AND-ed
 "conditions" array. find_rows with no conditions reads every row of the tab;
 every column is always returned. update_row overwrites the mapped columns of
 every row matching its conditions; unmapped columns keep their current value.
@@ -55,6 +55,15 @@ starts a new group at the bottom of the tab.
 In an "under_*" append's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
 cell of the row the new row is placed under, so a new row can copy values from
 the row above it (e.g. "Service Buyer": "@<anchorRow.Service Buyer>@").
+
+color_rows paints matching rows a background color — use it when the user wants
+rows flagged, highlighted or color-coded. It does NOT use "conditions" or
+"columnMappings". Instead it takes "colorRules": an ORDERED array of
+{ "color": "#RRGGBB", "conditions": [...] }. Every row is checked against the
+rules top to bottom and the FIRST matching rule wins, so a row is colored once
+however many rules it matches. Every rule REQUIRES at least one condition (a rule
+with an empty filter would color the whole tab). Rows are colored across their
+used columns, up to the last header. It branches "colored" / "no_match".
 
 find_rows and update_row both accept "onMultipleMatches": "first" (default —
 find_rows continues with the first matching row; update_row updates it),

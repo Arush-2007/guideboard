@@ -158,6 +158,9 @@ type SheetsResult = Record<
     insertedUnderGroup?: boolean;
     anchorRow?: Record<string, string>;
     insertedRows?: Record<string, string>[];
+    // color_rows
+    rowIndexes?: number[];
+    colors?: string[];
   }
 >;
 
@@ -1543,6 +1546,230 @@ describe("googleSheetsActionExecutor — append under each matching row", () => 
       run(eachRow, {
         OTHER_SHEETS_1: { item: { x: 1 }, index: 1, total: 2, __fanOut: true },
       }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("googleSheetsActionExecutor — color_rows", () => {
+  // Row 2 is Done, row 3 Blocked, row 4 Done — and row 5 is BOTH, which is what
+  // makes "first rule wins" observable.
+  const statuses = [
+    ["Job", "Status"],
+    ["A", "Done"],
+    ["B", "Blocked"],
+    ["C", "Done"],
+    ["D", "Done Blocked"],
+  ];
+
+  const rule = (color: string, value: string, operator = "equals") => ({
+    color,
+    conditions: [{ column: "Status", operator, value, enabled: true }],
+  });
+
+  const twoRules = {
+    action: "color_rows",
+    spreadsheetId: "sheet1",
+    sheetName: "Grouped",
+    colorRules: [rule("#22c55e", "Done"), rule("#ef4444", "Blocked")],
+  };
+
+  /** The repeatCell requests of the single structural batchUpdate. */
+  function paintRequests(index = 0) {
+    const body = postBody(index);
+    return (body.requests ?? []) as Array<{
+      repeatCell: {
+        range: {
+          sheetId: number;
+          startRowIndex: number;
+          endRowIndex: number;
+          startColumnIndex?: number;
+          endColumnIndex?: number;
+        };
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: number; green: number; blue: number };
+          };
+        };
+        fields: string;
+      };
+    }>;
+  }
+
+  it("paints every matched row in ONE batchUpdate, across the used columns", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run(twoRules);
+
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    expect(postBody(0).url).toContain(":batchUpdate");
+    expect(postBody(0).url).not.toContain("values:batchUpdate");
+
+    const requests = paintRequests();
+    // 3 of the 4 data rows: these rules use `equals`, so "Done Blocked" matches
+    // neither and is left alone — an unmatched row must never be repainted.
+    expect(requests).toHaveLength(3);
+
+    for (const r of requests) {
+      expect(r.repeatCell.range.sheetId).toBe(42);
+      expect(r.repeatCell.fields).toBe("userEnteredFormat.backgroundColor");
+      // Bounded to the USED columns: the fixture's header row is
+      // ["Job", "Status"], so the paint spans exactly columns A–B and stops
+      // there rather than banding across the empty rest of the grid.
+      expect(r.repeatCell.range.startColumnIndex).toBe(0);
+      expect(r.repeatCell.range.endColumnIndex).toBe(2);
+    }
+
+    // Data row i is grid row i + 1 (the header occupies grid row 0), and each
+    // request spans exactly one row. Emitted in ascending sheet order.
+    expect(requests.map((r) => r.repeatCell.range.startRowIndex)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(requests.map((r) => r.repeatCell.range.endRowIndex)).toEqual([
+      2, 3, 4,
+    ]);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(3);
+    // Sheet row numbers (1-based, past the header), ascending.
+    expect(out.rowIndexes).toEqual([2, 3, 4]);
+  });
+
+  it("gives a row matching two rules the FIRST rule's color", async () => {
+    mockReadWithGrid(statuses);
+
+    // "Done Blocked" (row 5) contains both — matched by rule 1 and rule 2.
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [
+        rule("#22c55e", "Done", "contains"),
+        rule("#ef4444", "Blocked", "contains"),
+      ],
+    });
+
+    const green = { red: 34 / 255, green: 197 / 255, blue: 94 / 255 };
+    const red = { red: 239 / 255, green: 68 / 255, blue: 68 / 255 };
+    const painted = paintRequests().map(
+      (r) => r.repeatCell.cell.userEnteredFormat.backgroundColor,
+    );
+
+    // Rows: A Done→green, B Blocked→red, C Done→green, D BOTH→green (rule 1).
+    expect(painted).toEqual([green, red, green, green]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.colors).toEqual([
+      "#22c55e",
+      "#ef4444",
+      "#22c55e",
+      "#22c55e",
+    ]);
+  });
+
+  it("writes NOTHING and routes No-match when no row matches any rule", async () => {
+    mockReadWithGrid(statuses);
+
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Shipped")],
+    });
+
+    // A colouring run that matched nothing must not touch the sheet at all.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    // Columns are still recorded so the run view can render its headers.
+    expect(out.columns).toEqual(["Job", "Status"]);
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("routes Colored (with the legacy aliases) when rows were painted", async () => {
+    mockReadWithGrid(statuses);
+
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Blocked")],
+    });
+
+    // The happy branch carries main/source-1 so a pre-branching edge still fires.
+    expect(outputs(outcome)).toEqual(["colored", "main", "source-1"]);
+  });
+
+  it("refuses a rule whose filter is empty — it would color every row", async () => {
+    mockReadWithGrid(statuses);
+
+    await expect(
+      run({
+        ...twoRules,
+        colorRules: [
+          rule("#22c55e", "Done"),
+          { color: "#ef4444", conditions: [] },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a run with no rules at all", async () => {
+    mockReadWithGrid(statuses);
+
+    await expect(run({ ...twoRules, colorRules: [] })).rejects.toBeInstanceOf(
+      NonRetriableError,
+    );
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to paint more rows than one run may color", async () => {
+    // 1,001 data rows all matching one rule — one repeatCell each would build a
+    // batchUpdate too large to send, so the run must fail BEFORE writing rather
+    // than after committing the user's whole tab to a request Sheets rejects.
+    const many = [
+      ["Job", "Status"],
+      ...Array.from({ length: 1001 }, (_, i) => [`J${i}`, "Done"]),
+    ];
+    mockReadWithGrid(many);
+
+    await expect(
+      run({ ...twoRules, colorRules: [rule("#22c55e", "Done")] }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("skips the grid lookup entirely when nothing matches", async () => {
+    mockReadWithGrid(statuses);
+
+    await run({ ...twoRules, colorRules: [rule("#22c55e", "Shipped")] });
+
+    // Only the values read — the sheetId is needed solely to build the write,
+    // so a no-op run must not pay for the metadata round-trip.
+    expect(kyGetMock).toHaveBeenCalledOnce();
+    expect(kyGetMock.mock.calls[0][0]).toContain("/values/");
+  });
+
+  it("refuses a tab with no header row instead of painting a zero-width range", async () => {
+    // No header row: every row reads as an empty object, so an `is_empty`
+    // condition would "match" everything — and the paint would have no width.
+    mockReadWithGrid([[], ["A"], ["B"]]);
+
+    await expect(
+      run({
+        ...twoRules,
+        colorRules: [
+          {
+            color: "#22c55e",
+            conditions: [
+              { column: "Status", operator: "is_empty", enabled: true },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a malformed color instead of writing a partial repaint", async () => {
+    mockReadWithGrid(statuses);
+
+    await expect(
+      run({ ...twoRules, colorRules: [rule("not-a-color", "Done")] }),
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(kyPostMock).not.toHaveBeenCalled();
   });

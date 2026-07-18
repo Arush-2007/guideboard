@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { createId } from "@paralleldrive/cuid2";
 import { useQuery } from "@tanstack/react-query";
 import { useReactFlow } from "@xyflow/react";
+import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
@@ -13,7 +14,10 @@ import {
   FanOutCapInput,
   MultiMatchSelect,
 } from "@/components/multi-match-select";
-import { RowMatchConditions } from "@/components/row-match-conditions";
+import {
+  newRowCondition,
+  RowMatchConditions,
+} from "@/components/row-match-conditions";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -71,9 +75,18 @@ const rowConditionFormSchema = z.object({
   ...compareOptionsSchemaFields,
 });
 
+// One color_rows rule. `conditions` reuses rowConditionFormSchema so the
+// per-condition matching restraints survive submit here too (a plain z.object()
+// would strip them — the dual-schema gotcha).
+const colorRuleFormSchema = z.object({
+  id: z.string().optional(),
+  color: z.string().regex(/^#[0-9a-f]{6}$/i, "Pick a color"),
+  conditions: z.array(rowConditionFormSchema),
+});
+
 const formSchema = z
   .object({
-    action: z.enum(["append_row", "find_rows", "update_row"]),
+    action: z.enum(["append_row", "find_rows", "update_row", "color_rows"]),
     // append_row only: where the new row lands.
     position: z.enum(["bottom", "under_group", "under_each"]).optional(),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
@@ -83,6 +96,8 @@ const formSchema = z
     // append_row + bottom only: also write a blank separator row above the new one.
     blankRowAbove: z.boolean().optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
+    // color_rows only: the ordered rule list (first match wins).
+    colorRules: z.array(colorRuleFormSchema).optional(),
     // Multi-match fields, built from the shared constants (see the NOTE on
     // multiMatchConfigFields for why the fragment itself can't be spread here).
     onMultipleMatches: z.enum(MULTI_MATCH_MODES).optional(),
@@ -96,6 +111,31 @@ const formSchema = z
   .superRefine((data, ctx) => {
     // find_rows needs only a spreadsheet + tab (already required).
     if (data.action === "find_rows") return;
+
+    // color_rows uses neither columnMappings nor the shared `conditions` —
+    // every rule carries its own filter. Mirrors the config schema's rule.
+    if (data.action === "color_rows") {
+      const rules = data.colorRules ?? [];
+      if (rules.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Add at least one color rule",
+          path: ["colorRules"],
+        });
+        return;
+      }
+      rules.forEach((rule, i) => {
+        if (!hasActiveRowCondition(rule.conditions)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              "Add at least one condition — a rule with an empty filter would color every row",
+            path: ["colorRules", i, "conditions"],
+          });
+        }
+      });
+      return;
+    }
 
     const isUnderAppend =
       data.action === "append_row" && (data.position ?? "bottom") !== "bottom";
@@ -134,6 +174,21 @@ const formSchema = z
   });
 
 export type GoogleSheetsActionFormValues = z.infer<typeof formSchema>;
+
+type ColorRuleValue = z.infer<typeof colorRuleFormSchema>;
+
+/**
+ * Defaults offered as each new rule's color, cycled so consecutive rules never
+ * start out identical. Tailwind's green/red/amber/blue/violet 500s — readable as
+ * a sheet background, and familiar as status colors.
+ */
+const DEFAULT_RULE_COLORS = [
+  "#22c55e",
+  "#ef4444",
+  "#f59e0b",
+  "#3b82f6",
+  "#a855f7",
+];
 
 /** A pickable field the node exposes for its appended-row columns. */
 type DiscoveredField = { path: string; label: string };
@@ -279,6 +334,152 @@ function ColumnMappingPanel({
   );
 }
 
+/**
+ * The shape react-hook-form gives `errors.colorRules`: an array-like with a
+ * per-index entry for each failing rule (plus an optional array-level
+ * `message`). Typed narrowly here because RHF's own FieldErrors generic doesn't
+ * index cleanly through an array of objects.
+ */
+type ColorRuleErrors = {
+  [index: number]:
+    | { color?: { message?: string }; conditions?: { message?: string } }
+    | undefined;
+};
+
+/** A fresh color rule, with a stable UI id for React keys. */
+const newColorRule = (): ColorRuleValue => ({
+  id: createId(),
+  color: DEFAULT_RULE_COLORS[0],
+  conditions: [newRowCondition()],
+});
+
+/**
+ * The color_rules editor: N ordered rule cards, each a color + its own row
+ * filter. Rules are applied top-to-bottom and the FIRST match wins, so order is
+ * meaningful and the cards are numbered.
+ *
+ * Controlled like `FieldMapping` / `RowMatchConditions` — the parent owns the
+ * array — and it composes `RowMatchConditions` per rule rather than restating
+ * any of the condition UI.
+ */
+function ColorRulesEditor({
+  value,
+  onChange,
+  currentNodeId,
+  workflowId,
+  columnOptions,
+  errors,
+}: {
+  value: ColorRuleValue[];
+  onChange: (next: ColorRuleValue[]) => void;
+  currentNodeId: string;
+  workflowId?: string;
+  columnOptions?: string[];
+  /**
+   * Per-rule validation messages, indexed alongside `value`. Zod reports a bad
+   * color / empty filter at `["colorRules", i, ...]`, which never lands on the
+   * array-level `errors.colorRules.message` the collapsed summary reads — so
+   * without rendering them HERE a rejected save shows the user nothing at all.
+   */
+  errors?: ColorRuleErrors;
+}) {
+  const update = (index: number, patch: Partial<ColorRuleValue>) =>
+    onChange(value.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+
+  return (
+    <div className="space-y-4">
+      {value.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No rules yet — add one to choose which rows get colored.
+        </p>
+      ) : null}
+
+      {value.map((rule, index) => {
+        const ruleError = errors?.[index];
+        return (
+          <div key={rule.id} className="space-y-3 rounded-md border p-3">
+            <div className="flex items-center gap-3">
+              <span className="text-xs font-medium text-muted-foreground">
+                Rule {index + 1}
+              </span>
+              {/* Native color input + hex text, kept in sync — either can drive
+                  the value, and the text field is what makes a brand hex
+                  pasteable. */}
+              <input
+                type="color"
+                aria-label={`Rule ${index + 1} color`}
+                value={rule.color}
+                onChange={(e) => update(index, { color: e.target.value })}
+                className="size-8 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
+              />
+              <Input
+                aria-label={`Rule ${index + 1} color hex`}
+                value={rule.color}
+                onChange={(e) => update(index, { color: e.target.value })}
+                placeholder="#22c55e"
+                className="w-32 font-mono text-xs"
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="ml-auto text-muted-foreground"
+                aria-label={`Remove rule ${index + 1}`}
+                onClick={() => onChange(value.filter((_, i) => i !== index))}
+              >
+                <Trash2 className="size-4" />
+              </Button>
+            </div>
+            {ruleError?.color?.message ? (
+              <p className="text-sm text-destructive">
+                {ruleError.color.message} — use a hex value like #22c55e.
+              </p>
+            ) : null}
+
+            <div className="space-y-2">
+              <Label className="text-xs">Color a row when…</Label>
+              <RowMatchConditions
+                value={rule.conditions}
+                onChange={(next) => update(index, { conditions: next })}
+                currentNodeId={currentNodeId}
+                workflowId={workflowId}
+                columnOptions={columnOptions}
+                anchorClassName="ml-96"
+              />
+              {ruleError?.conditions?.message ? (
+                <p className="text-sm text-destructive">
+                  {ruleError.conditions.message}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() =>
+          onChange([
+            ...value,
+            {
+              ...newColorRule(),
+              // Cycle the palette so a second rule doesn't default to the same
+              // color as the first.
+              color:
+                DEFAULT_RULE_COLORS[value.length % DEFAULT_RULE_COLORS.length],
+            },
+          ])
+        }
+      >
+        <Plus className="size-4" />
+        Add rule
+      </Button>
+    </div>
+  );
+}
+
 export const GoogleSheetsActionDialog = ({
   open,
   onOpenChange,
@@ -336,6 +537,16 @@ export const GoogleSheetsActionDialog = ({
         ...c,
         id: c.id ?? createId(),
       })),
+      // Backfill stable UI ids on saved rules and their conditions, as the
+      // shared `conditions` list above does.
+      colorRules: (defaultValues.colorRules ?? []).map((r) => ({
+        ...r,
+        id: r.id ?? createId(),
+        conditions: (r.conditions ?? []).map((c) => ({
+          ...c,
+          id: c.id ?? createId(),
+        })),
+      })),
       onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
       // Left undefined when unset — the control shows the default as a
       // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
@@ -355,6 +566,11 @@ export const GoogleSheetsActionDialog = ({
   const requiredColumns = form.watch("requiredColumns") ?? [];
   const conditions = form.watch("conditions") ?? [];
   const position = form.watch("position") ?? "bottom";
+  const colorRules = form.watch("colorRules") ?? [];
+  // Present for BOTH an array-level issue (no rules at all) and a per-rule one
+  // (bad color / empty filter) — the latter carries no `.message` of its own,
+  // which is why the summary below can't just read `.message`.
+  const colorRulesError = form.formState.errors.colorRules;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: buildDefaults reads props/defaultValues, re-run only on open/defaults change.
   useEffect(() => {
@@ -439,6 +655,10 @@ export const GoogleSheetsActionDialog = ({
           ];
         });
       }
+    } else if (values.action === "color_rows") {
+      // color_rows writes no columns, so it exposes no per-column paths. Leave
+      // `discoveredFields` untouched rather than emitting an empty list, so a
+      // node switched to this action and back keeps its saved fields.
     } else if (headers.length > 0) {
       // append_row + update_row both emit `rowByHeader` — the row this run
       // wrote. Same paths, so a node switched between them keeps its
@@ -485,6 +705,7 @@ export const GoogleSheetsActionDialog = ({
                       <SelectItem value="append_row">Append row</SelectItem>
                       <SelectItem value="find_rows">Find rows</SelectItem>
                       <SelectItem value="update_row">Update row</SelectItem>
+                      <SelectItem value="color_rows">Color rows</SelectItem>
                     </SelectContent>
                   </Select>
                   {action === "find_rows" ? (
@@ -499,6 +720,12 @@ export const GoogleSheetsActionDialog = ({
                       This step has two outputs — <strong>Updated</strong> and{" "}
                       <strong>No match</strong>. Connect each to the branch that
                       should run when a row is or isn&apos;t updated.
+                    </FormDescription>
+                  ) : action === "color_rows" ? (
+                    <FormDescription>
+                      This step has two outputs — <strong>Colored</strong> and{" "}
+                      <strong>No match</strong>. Connect each to the branch that
+                      should run when a row is or isn&apos;t colored.
                     </FormDescription>
                   ) : null}
                   <FormMessage />
@@ -830,6 +1057,89 @@ export const GoogleSheetsActionDialog = ({
                       }
                     />
                   </div>
+                  <div className="mt-6 flex justify-end">
+                    <Button type="button" onClick={() => setFilterOpen(false)}>
+                      Done
+                    </Button>
+                  </div>
+                </WideOverlayPanel>
+              </div>
+            ) : action === "color_rows" ? (
+              <div className="space-y-2">
+                <Label>Color rules</Label>
+                <ColumnsNotice
+                  isLoading={columnsQuery.isLoading}
+                  isError={columnsQuery.isError}
+                  hasSpreadsheet={Boolean(spreadsheetId)}
+                  headerCount={headers.length}
+                />
+                {headers.length > 0 ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      {/* The palette in miniature, so the collapsed row says
+                          what the rules actually do, not just how many. */}
+                      {colorRules.length > 0 ? (
+                        <span className="flex items-center gap-1">
+                          {colorRules.slice(0, 5).map((r) => (
+                            <span
+                              key={r.id}
+                              className="size-3 rounded-sm border"
+                              style={{ backgroundColor: r.color }}
+                            />
+                          ))}
+                        </span>
+                      ) : null}
+                      {colorRules.length} rule
+                      {colorRules.length === 1 ? "" : "s"}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setFilterOpen(true)}
+                    >
+                      Configure rules
+                    </Button>
+                  </div>
+                ) : null}
+                {/* The array-level message ("Add at least one color rule") when
+                    there is one, otherwise a pointer INTO the overlay — a bad
+                    color or an empty filter is reported per-rule, and with the
+                    overlay closed the user would otherwise see a save that
+                    silently does nothing. */}
+                {colorRulesError ? (
+                  <p className="text-sm text-destructive">
+                    {colorRulesError.message
+                      ? String(colorRulesError.message)
+                      : "One or more rules is incomplete — open Configure rules to fix it."}
+                  </p>
+                ) : null}
+
+                <WideOverlayPanel
+                  open={filterOpen}
+                  onOpenChange={setFilterOpen}
+                  title="Color rules"
+                  description="Give each color the rows it applies to. Rules are checked top to bottom and the first one that matches wins, so a row is only ever colored once."
+                >
+                  <ColorRulesEditor
+                    value={colorRules}
+                    onChange={(next) =>
+                      form.setValue("colorRules", next, {
+                        shouldValidate: true,
+                      })
+                    }
+                    currentNodeId={currentNodeId}
+                    workflowId={workflowId}
+                    columnOptions={headers}
+                    errors={
+                      colorRulesError as unknown as ColorRuleErrors | undefined
+                    }
+                  />
+                  <p className="mt-4 text-xs text-muted-foreground">
+                    The row is colored across its columns, up to the last one in
+                    the header. Every rule needs at least one condition — a rule
+                    with an empty filter would color every row in the tab.
+                  </p>
                   <div className="mt-6 flex justify-end">
                     <Button type="button" onClick={() => setFilterOpen(false)}>
                       Done

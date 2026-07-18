@@ -1,5 +1,5 @@
 /**
- * Output-handle contract for the Google Sheets action node. Two of its three
+ * Output-handle contract for the Google Sheets action node. Three of its four
  * actions branch, so the handle set depends on the selected action — this file
  * is the single source both the canvas node (handle ids become each edge's
  * stored `fromOutput`) and the executor (which emits one set via `routed(...)`)
@@ -29,6 +29,17 @@ export const UPDATE_ROW_OUTPUT_HANDLES = [
   { id: UPDATE_ROW_OUTPUTS.NO_MATCH, label: "No match" },
 ] as const;
 
+/** `color_rows`: routed by whether any row was actually painted. */
+export const COLOR_ROWS_OUTPUTS = {
+  COLORED: "colored",
+  NO_MATCH: "no_match",
+} as const;
+
+export const COLOR_ROWS_OUTPUT_HANDLES = [
+  { id: COLOR_ROWS_OUTPUTS.COLORED, label: "Colored" },
+  { id: COLOR_ROWS_OUTPUTS.NO_MATCH, label: "No match" },
+] as const;
+
 /**
  * Legacy single-output handle ids. Before these actions branched, every outgoing
  * edge carried `main` (AI-builder / persistence path) or `source-1` (an
@@ -49,5 +60,6 @@ export function sheetsActionOutputHandles(
 ): { id: string; label: string }[] | undefined {
   if (action === "find_rows") return [...FIND_ROWS_OUTPUT_HANDLES];
   if (action === "update_row") return [...UPDATE_ROW_OUTPUT_HANDLES];
+  if (action === "color_rows") return [...COLOR_ROWS_OUTPUT_HANDLES];
   return undefined;
 }

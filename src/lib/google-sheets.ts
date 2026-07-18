@@ -38,8 +38,9 @@ export const SHEETS_WRITE = {
 
 export const SHEETS_ABSOLUTE_WRITE = {
   timeoutClass: "WRITE",
-  // Writes each cell's FINAL value to a FIXED A1 range (values:batchUpdate). A
-  // retry rewrites the identical cells, so Inngest may safely retry — unlike
+  // Writes each cell's FINAL state to a FIXED target — its value via
+  // values:batchUpdate, or its FORMAT via a repeatCell batchUpdate (color_rows).
+  // A retry rewrites the identical cells, so Inngest may safely retry — unlike
   // :append and insertDimension, which ADD rows/dimensions and stay
   // idempotent:false.
   idempotent: true,

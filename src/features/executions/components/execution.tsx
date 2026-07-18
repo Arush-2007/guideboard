@@ -227,16 +227,21 @@ const FieldTable = ({
 // which of several matches this particular workflow run was for.
 // `rowLabels` adds a leading label column (the same one RowChangeGrid uses) —
 // the insert action labels each added row with the sheet row it landed on.
+// `rowColors` (color_rows) shows the #RRGGBB each row was actually painted as a
+// swatch in that same label column — the one thing a plain text grid can't say
+// about a coloring run.
 const RowsGrid = ({
   columns,
   rows,
   actedRowIndex = null,
   rowLabels = null,
+  rowColors = null,
 }: {
   columns: string[];
   rows: Record<string, string>[];
   actedRowIndex?: number | null;
   rowLabels?: string[] | null;
+  rowColors?: string[] | null;
 }) => {
   const shown = rows.slice(0, 50);
   return (
@@ -270,7 +275,16 @@ const RowsGrid = ({
               >
                 {rowLabels ? (
                   <td className="whitespace-nowrap px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                    {rowLabels[i] ?? ""}
+                    <span className="flex items-center gap-1.5">
+                      {rowColors?.[i] ? (
+                        <span
+                          className="size-3 shrink-0 rounded-sm border"
+                          style={{ backgroundColor: rowColors[i] }}
+                          title={rowColors[i]}
+                        />
+                      ) : null}
+                      {rowLabels[i] ?? ""}
+                    </span>
                   </td>
                 ) : null}
                 {columns.map((col) => (
@@ -958,6 +972,54 @@ const NodeRow = ({
                 // A fan-out child's reshaped output carries only the row it
                 // handled, with no prior state to diff against.
                 singleRowLabel={isChildRun ? "Updated" : null}
+              />
+            ) : null}
+          </div>
+        );
+      }
+
+      if (root?.action === "color_rows") {
+        const columns = Array.isArray(root.columns)
+          ? (root.columns as string[])
+          : [];
+        const rows = Array.isArray(root.rows)
+          ? (root.rows as Record<string, string>[])
+          : [];
+        const rowIndexes = Array.isArray(root.rowIndexes)
+          ? (root.rowIndexes as number[])
+          : [];
+        const colors = Array.isArray(root.colors)
+          ? (root.colors as string[])
+          : [];
+        const count =
+          typeof root.matchCount === "number" ? root.matchCount : rows.length;
+        // How many DISTINCT rules actually fired — worth saying, because the
+        // whole point of several rules is that different rows get different
+        // colors.
+        const distinctColors = new Set(colors).size;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {count === 0
+                ? `No rows in ${tab} matched any color rule, so nothing was colored.`
+                : count === 1
+                  ? `1 row in ${tab} matched a color rule and was colored.`
+                  : `${count} rows in ${tab} matched a color rule and were colored${
+                      distinctColors > 1
+                        ? `, in ${distinctColors} different colors`
+                        : ""
+                    }. A row matching more than one rule takes the first rule's color.`}
+            </SummaryMessage>
+            {/* No RowConditionsTable here: this action has N rule filters, and
+                that table renders exactly one flat condition list — it cannot
+                state which rule claimed which row without misleading. */}
+            {columns.length > 0 && rows.length > 0 ? (
+              <RowsGrid
+                columns={columns}
+                rows={rows}
+                rowLabels={rowIndexes.map((n) => `Row ${n}`)}
+                rowColors={colors}
               />
             ) : null}
           </div>

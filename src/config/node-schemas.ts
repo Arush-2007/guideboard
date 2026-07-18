@@ -403,6 +403,17 @@ const rowConditionSchema = z.object({
   ...compareOptionFields,
 });
 
+// One color_rows rule: a background color plus the filter that selects the rows
+// it paints. Rules are evaluated top-to-bottom and the FIRST match wins, so a
+// row is painted exactly once no matter how many rules it satisfies.
+const colorRuleSchema = z.object({
+  id: z.string().optional(),
+  // #RRGGBB only — `hexToRgb` (google-sheets.ts) accepts exactly this, and
+  // rejecting a bad color at save time beats failing mid-run.
+  color: z.string().regex(/^#[0-9a-f]{6}$/i, "Pick a color"),
+  conditions: z.array(rowConditionSchema),
+});
+
 // The old `insert_row_adjacent` action is now `append_row` with a non-bottom
 // `position`. Coerce saved nodes at the schema (not just the dialog) — the same
 // reason `read_rows → find_rows` is coerced below: `parseNodeConfig` is what the
@@ -434,7 +445,7 @@ const googleSheetsActionSchema = z.preprocess(
       // that were never re-opened keep running instead of permafailing.
       action: z.preprocess(
         (v) => (v === "read_rows" ? "find_rows" : v),
-        z.enum(["append_row", "find_rows", "update_row"]),
+        z.enum(["append_row", "find_rows", "update_row", "color_rows"]),
       ),
       // Where an appended row lands: the bottom of the tab (default), below a
       // matched GROUP, or below EVERY matched row (which fans out one run per
@@ -465,6 +476,10 @@ const googleSheetsActionSchema = z.preprocess(
       // whether it lands below the group or below each of its rows. At least one
       // condition is REQUIRED.
       conditions: z.array(rowConditionSchema).optional(),
+      // color_rows only: the ordered rule list (first match wins). This action
+      // uses `colorRules[].conditions`, NOT the shared `conditions` above —
+      // each rule carries its own filter.
+      colorRules: z.array(colorRuleSchema).optional(),
       // Legacy field, superseded by `position` (coerced above). Kept optional so
       // inbound saved data validates; the executor reads `position` now.
       insertUnder: z.enum(["group", "each_row"]).optional(),
@@ -478,6 +493,35 @@ const googleSheetsActionSchema = z.preprocess(
     .superRefine((data, ctx) => {
       // find_rows needs only spreadsheet + tab (already required above).
       if (data.action === "find_rows") return;
+
+      // color_rows uses neither columnMappings nor the shared `conditions` —
+      // each rule carries its own filter — so it validates here and returns
+      // before the checks below.
+      if (data.action === "color_rows") {
+        const rules = data.colorRules ?? [];
+        if (rules.length === 0) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Add at least one color rule",
+            path: ["colorRules"],
+          });
+          return;
+        }
+        // A rule whose filter is empty (or all-disabled) matches EVERY row —
+        // matchRows is vacuously true — so it would repaint the whole tab.
+        // Re-checked in the executor, which is what actually writes.
+        rules.forEach((rule, i) => {
+          if (!hasActiveRowCondition(rule.conditions)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "Add at least one condition — a rule with an empty filter would color every row",
+              path: ["colorRules", i, "conditions"],
+            });
+          }
+        });
+        return;
+      }
 
       const hasMappings = data.columnMappings
         ? Object.values(data.columnMappings).some((v) => v.trim())

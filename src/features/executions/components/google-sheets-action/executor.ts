@@ -21,6 +21,7 @@ import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import {
   ensureGridRows,
   getSheetGrid,
+  hexToRgb,
   nextFreeSheetRow,
   readSheetTable,
   sheetRange,
@@ -31,7 +32,11 @@ import {
   toSheetsError,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
-import { type MultiMatchMode, readFanOutSeed } from "@/lib/multi-match";
+import {
+  MAX_FAN_OUT_ITEMS_LIMIT,
+  type MultiMatchMode,
+  readFanOutSeed,
+} from "@/lib/multi-match";
 import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
 import { hasActiveRowCondition } from "@/lib/row-match-operators";
 import { stripTextForcing, toSheetsCellValue } from "@/lib/sheet-cells";
@@ -43,12 +48,23 @@ import {
 } from "@/lib/sheet-row";
 import { renderTemplate } from "@/lib/templating";
 import {
+  COLOR_ROWS_OUTPUTS,
   FIND_ROWS_OUTPUTS,
   LEGACY_MAIN_OUTPUTS,
   UPDATE_ROW_OUTPUTS,
 } from "./handles";
 
-type SheetsAction = "append_row" | "find_rows" | "update_row";
+type SheetsAction = "append_row" | "find_rows" | "update_row" | "color_rows";
+
+/**
+ * One `color_rows` rule: the background color, and the filter selecting the rows
+ * it paints. Rules are applied top-to-bottom and the FIRST match wins.
+ */
+type ColorRule = {
+  id?: string;
+  color: string;
+  conditions: RowMatchCondition[];
+};
 
 type RowPosition = "bottom" | "under_group" | "under_each";
 
@@ -78,9 +94,22 @@ type GoogleSheetsActionData = {
   // instead. It still honours the fan-out cap in "under_each" mode.
   onMultipleMatches?: MultiMatchMode;
   maxFanOutItems?: number;
+  // color_rows only: the ordered rule list. This action does NOT use the shared
+  // `conditions` above — every rule carries its own filter.
+  colorRules?: ColorRule[];
 };
 
 const ERROR_PREFIX = "Google Sheets Action";
+
+/**
+ * Hard ceiling on how many rows one `color_rows` run may paint. The action
+ * emits one `repeatCell` per row and has no per-node cap in its dialog (unlike
+ * the fan-out actions, which have "Max rows"), so this is what stops a filter
+ * that matches an entire tab from building a batchUpdate too large to send.
+ * Matches MAX_FAN_OUT_ITEMS_LIMIT — the same "one run shouldn't touch more than
+ * this" ceiling the fan-out cap tops out at.
+ */
+const MAX_COLORED_ROWS = MAX_FAN_OUT_ITEMS_LIMIT;
 
 function parseValuesJson(raw: string): string[][] {
   let parsed: unknown;
@@ -283,6 +312,185 @@ export const googleSheetsActionExecutor: NodeExecutor<
   };
 
   try {
+    // color_rows paints matched rows a background color. It lives outside the
+    // shared step switch because it is the one action that touches FORMAT rather
+    // than values — but unlike the append/update paths it needs only ONE step:
+    // coloring never changes a cell's VALUE, so a replayed read re-matches
+    // exactly the same rows and the repaint is a no-op.
+    if (action === "color_rows") {
+      const rules = config.colorRules ?? [];
+      if (rules.length === 0) {
+        throw new NonRetriableError(
+          `${ERROR_PREFIX}: coloring rows needs at least one color rule`,
+        );
+      }
+      // An empty filter makes matchRows vacuously true — that rule would paint
+      // EVERY row in the tab. The config schema rejects this too; re-checked
+      // here because the executor is what writes.
+      for (const rule of rules) {
+        if (!hasActiveRowCondition(rule.conditions)) {
+          throw new NonRetriableError(
+            `${ERROR_PREFIX}: every color rule needs at least one filter ` +
+              `condition — a rule with an empty filter would color every row ` +
+              `in "${sheetName}"`,
+          );
+        }
+      }
+
+      const painted = await step.run("google-sheets-color-rows", async () => {
+        try {
+          const table = await readSheetTable({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+          });
+          // The header row defines how wide the paint goes, so without one there
+          // is nothing to color to. Guarded explicitly because with zero headers
+          // every row reads as an empty object — an `is_empty` condition would
+          // "match" every row and then paint a zero-width range.
+          if (table.headers.length === 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: the sheet has no header row (row 1) to color up to`,
+            );
+          }
+
+          // Same header-keying as find_rows, so the execution grid renders these
+          // rows exactly like a find_rows result.
+          const keyed = table.headers
+            .map((c) => c.trim())
+            .filter((c) => c.length > 0)
+            .map((col) => [col, sanitizeHeaderKey(col)] as const);
+
+          // FIRST RULE WINS: walk the rules in order and let each claim only the
+          // rows no earlier rule took, so a row is painted exactly once however
+          // many rules it satisfies.
+          const claimed = new Map<
+            number,
+            { color: string; row: Record<string, string> }
+          >();
+          for (const rule of rules) {
+            for (const m of matchRows(
+              table.rowsByHeader,
+              rule.conditions,
+              context,
+            )) {
+              if (claimed.has(m.index)) continue;
+              claimed.set(m.index, { color: rule.color, row: m.row });
+            }
+          }
+
+          // Ascending sheet order — the run view lists rows top-to-bottom, not
+          // in the order the rules happened to claim them.
+          const entries = [...claimed.entries()].sort((a, b) => a[0] - b[0]);
+
+          const summary = {
+            matchCount: entries.length,
+            // Stored even when nothing matched, so the grid can still render
+            // column headers.
+            columns: keyed.map(([, key]) => key),
+            // Capped like find_rows' `rows`, so painting a huge tab can't bloat
+            // the run record.
+            rows: entries.slice(0, 100).map(([, { row }]) => {
+              const out: Record<string, string> = {};
+              for (const [col, key] of keyed) {
+                out[key] = getRowCell(row, col).trim();
+              }
+              return out;
+            }),
+            // Sheet row numbers (1-based, past the header) + the color each row
+            // was actually painted — the two things this action answers.
+            rowIndexes: entries.slice(0, 100).map(([index]) => index + 2),
+            colors: entries.slice(0, 100).map(([, { color }]) => color),
+          };
+
+          // Nothing matched ⇒ nothing to write. Returned BEFORE the grid lookup
+          // below, so a run that paints nothing — the steady state of a polling
+          // workflow — costs one read instead of two.
+          if (entries.length === 0) return summary;
+
+          // Every other multi-row path in this node caps how much one run may
+          // touch; this one has no per-node cap in its UI, so it enforces a hard
+          // ceiling. Checked BEFORE the write: one repeatCell per painted row
+          // means a filter matching an entire tab would otherwise build a
+          // multi-megabyte batchUpdate that Sheets rejects or times out on,
+          // after the user had already committed to it.
+          if (entries.length > MAX_COLORED_ROWS) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: ${entries.length} rows match the color rules, ` +
+                `which is more than this step colors in one run ` +
+                `(${MAX_COLORED_ROWS}). Narrow the rules' conditions.`,
+            );
+          }
+
+          // batchUpdate addresses the tab by numeric id, not name.
+          const grid = await getSheetGrid({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+          });
+
+          // One repeatCell per painted row, all in ONE batchUpdate. The range is
+          // bounded to the USED columns (A through the last header), so the
+          // color stops where the data does instead of running off across the
+          // empty right-hand side of the grid — which also keeps the file from
+          // carrying formatting for hundreds of empty cells. Grid rows are
+          // 0-based with the header at 0, so data row i is grid row i + 1.
+          // `hexToRgb` throws on a malformed color — and it runs while the
+          // requests are built, i.e. before anything is written.
+          await sheetsWrite(
+            sheetsBatchUpdateUrl(spreadsheetId),
+            {
+              headers: sheetsAuthHeaders(accessToken),
+              json: {
+                requests: entries.map(([index, { color }]) => ({
+                  repeatCell: {
+                    range: {
+                      sheetId: grid.sheetId,
+                      startRowIndex: index + 1,
+                      endRowIndex: index + 2,
+                      startColumnIndex: 0,
+                      // Exclusive bound — the full header width, blank headers
+                      // included, so the painted band matches the table exactly.
+                      endColumnIndex: table.headers.length,
+                    },
+                    cell: {
+                      userEnteredFormat: { backgroundColor: hexToRgb(color) },
+                    },
+                    fields: "userEnteredFormat.backgroundColor",
+                  },
+                })),
+              },
+            },
+            // Sets each cell's FINAL color, so a retry repaints identically.
+            { idempotent: true },
+          );
+
+          return summary;
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      });
+
+      await publish(
+        nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+      );
+
+      const output = {
+        ...context,
+        [outputKey]: {
+          action,
+          spreadsheetId,
+          sheetName,
+          ...painted,
+        },
+      };
+      // Nothing matched ⇒ nothing was painted: route the No-match branch so the
+      // downstream that handles "no row to flag" runs.
+      return painted.matchCount === 0
+        ? routed(output, [COLOR_ROWS_OUTPUTS.NO_MATCH])
+        : routeHappy(output, COLOR_ROWS_OUTPUTS.COLORED);
+    }
+
     // A non-bottom append and update_row live OUTSIDE the single-step switch
     // below because each splits a read/plan from its write across two Inngest
     // steps: the under-append because a row must be created before it can be

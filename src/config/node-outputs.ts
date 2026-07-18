@@ -76,6 +76,8 @@ const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "find_rows";
 const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "update_row";
+const isSheetsColor = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "color_rows";
 // A non-bottom append (formerly the insert_row_adjacent action) — an append_row
 // whose `position` drops the row under a matched group / rows. It emits the
 // group/anchor fields a plain bottom append does not. A legacy insert node was
@@ -196,8 +198,9 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "The row this run matched (all columns)",
         pickIf: isSheetsFindRows,
       },
-      // find_rows: rows returned. update_row: rows overwritten. under-append:
-      // the size of the group the new row joined (0 ⇒ it started a new one).
+      // find_rows: rows returned. update_row: rows overwritten. color_rows: rows
+      // painted. under-append: the size of the group the new row joined (0 ⇒ it
+      // started a new one).
       {
         path: "matchCount",
         label: "How many rows matched the filter",
@@ -205,6 +208,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         pickIf: (data) =>
           isSheetsFindRows(data) ||
           isSheetsUpdate(data) ||
+          isSheetsColor(data) ||
           isSheetsAppendUnder(data),
       },
       // update_row only.
