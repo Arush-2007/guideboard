@@ -26,6 +26,9 @@ export function hashRow(row: string[]): string {
  * poll. That fits sheets that grow at the bottom (form responses, logs); a row
  * inserted or deleted in the middle shifts everything below and reads as a run
  * of edits.
+ *
+ * Row 1 is treated as the header: edits to it never fire an "updated" change,
+ * since renaming a column is a schema tweak, not a data event.
  */
 export function planSheetsPollChanges(params: {
   rows: string[][];
@@ -54,10 +57,12 @@ export function planSheetsPollChanges(params: {
     }
 
     // Existing position: an edit only if we have a prior snapshot and the
-    // content at this position actually changed. Without a snapshot (first poll
-    // after enabling edit detection) nothing is reported as edited.
+    // content at this position actually changed. Row 1 (i === 0) is the header,
+    // so its edits are ignored. Without a snapshot (first poll after enabling
+    // edit detection) nothing is reported as edited.
     if (
       watchUpdated &&
+      i > 0 &&
       oldHashes &&
       i < oldHashes.length &&
       oldHashes[i] !== newHashes[i]

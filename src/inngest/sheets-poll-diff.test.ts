@@ -99,6 +99,20 @@ describe("planSheetsPollChanges", () => {
     ]);
   });
 
+  it("ignores edits to the header row (row 1)", () => {
+    const before = [["Name"], ["a"], ["b"]];
+    const after = [["Full Name"], ["a"], ["b-edited"]];
+    const { changes } = planSheetsPollChanges({
+      rows: after,
+      lastRowCount: before.length,
+      oldHashes: hashes(before),
+      triggerOn: "added_or_updated",
+    });
+
+    // Header change dropped; the row-3 edit still fires.
+    expect(changes).toEqual([{ rowIndex: 3, changeType: "updated" }]);
+  });
+
   it("does not report shrunk rows as changes and returns the trimmed hashes", () => {
     const before = [["h1"], ["a"], ["b"], ["c"]];
     const after = [["h1"], ["a"]]; // two rows deleted from the end

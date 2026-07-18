@@ -183,6 +183,9 @@ export const GoogleSheetsTriggerDialog = ({
                   <FormDescription>
                     Edits are detected by row position, so this suits sheets
                     that grow at the bottom (form responses, logs).
+                    {field.value !== "added" && (
+                      <> Edits to the first (header) row are ignored.</>
+                    )}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
