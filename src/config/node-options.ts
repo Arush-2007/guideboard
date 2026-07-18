@@ -1,6 +1,7 @@
 import {
   BrainCircuit,
   Building2,
+  Calculator,
   ClipboardCheck,
   Clock,
   FileText,
@@ -143,6 +144,13 @@ export const executionNodeOptions: NodeOption[] = [
     description:
       "Convert to a fixed target format (input auto-detected): text (PDF/HTML→text, CSV↔JSON, Markdown→HTML), images (JPG/PNG/WebP), PDF, and audio/video (MP4/MOV/MP3)",
     icon: Replace,
+  },
+  {
+    type: NodeType.CALCULATOR,
+    label: "Calculator",
+    description:
+      "Do arithmetic on values from earlier steps — add, subtract, multiply, divide, remainder, and round",
+    icon: Calculator,
   },
   {
     type: NodeType.DISCORD,

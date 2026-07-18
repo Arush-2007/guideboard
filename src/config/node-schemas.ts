@@ -1,7 +1,7 @@
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
-import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
 import { compareOptionsSchemaFields as compareOptionFields } from "@/lib/compare-options-schema";
+import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
 // `http-budget`, NOT `http` — this module runs in the browser (the dialogs validate
 // against it), and `http.ts` imports ky.
 import { MAX_USER_TIMEOUT_SECONDS } from "@/lib/http-budget";
@@ -180,6 +180,18 @@ const convertSchema = z
         path: ["to"],
       });
     }
+  })
+  .passthrough();
+
+// The Calculator carries a single field: the arithmetic expression, which may
+// mix literals with `@<path>@` references to upstream output. Its SYNTAX is
+// deliberately not validated here — `evaluateExpression` (src/lib/expression.ts)
+// owns that, and it can only judge an expression once the references have been
+// resolved to numbers at run time. Validating shape here and meaning there keeps
+// one grammar in one place.
+const calculatorSchema = z
+  .object({
+    expression: z.string().min(1, "Enter something to calculate"),
   })
   .passthrough();
 
@@ -719,6 +731,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.SWITCH]: switchSchema,
   [NodeType.RECORD_LOOKUP]: recordLookupSchema,
   [NodeType.CONVERT]: convertSchema,
+  [NodeType.CALCULATOR]: calculatorSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,

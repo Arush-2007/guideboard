@@ -4,6 +4,7 @@ import { AiReplyGeneratorNode } from "@/features/executions/components/ai-reply-
 import { AiTextNode } from "@/features/executions/components/ai-text/node";
 import { AnthropicNode } from "@/features/executions/components/anthropic/node";
 import { AtsActionNode } from "@/features/executions/components/ats-action/node";
+import { CalculatorNode } from "@/features/executions/components/calculator/node";
 import { CandidateScoringNode } from "@/features/executions/components/candidate-scoring/node";
 import { ConditionNode } from "@/features/executions/components/condition/node";
 import { ConvertNode } from "@/features/executions/components/convert/node";
@@ -58,6 +59,7 @@ export const nodeComponents = {
   [NodeType.SWITCH]: SwitchNode,
   [NodeType.RECORD_LOOKUP]: RecordLookupNode,
   [NodeType.CONVERT]: ConvertNode,
+  [NodeType.CALCULATOR]: CalculatorNode,
   [NodeType.DISCORD]: DiscordNode,
   [NodeType.SLACK]: SlackNode,
   [NodeType.NOTION_ACTION]: NotionNode,

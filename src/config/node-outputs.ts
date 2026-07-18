@@ -414,6 +414,17 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       },
     ],
   },
+  [NodeType.CALCULATOR]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "result", label: "Result", example: "1416" },
+      {
+        path: "expression",
+        label: "Expression that was calculated",
+        example: "1200 * 1.18",
+      },
+    ],
+  },
   // Resume Parser output (built-in or Affinda provider both map onto this).
   [NodeType.RESUME_PARSER]: {
     rootKind: "perNode",
