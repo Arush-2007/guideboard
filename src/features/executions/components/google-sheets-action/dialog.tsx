@@ -592,9 +592,13 @@ export const GoogleSheetsActionDialog = ({
   });
   const headers = columnsQuery.data?.headers ?? [];
 
-  const mappedCount = Object.values(columnMappings).filter(
-    (v) => typeof v === "string" && v.trim(),
-  ).length;
+  // Count only columns that still exist in the live header row. Stale mappings
+  // for columns the sheet no longer has must not inflate the count (else a sheet
+  // trimmed from 13 to 4 columns reads "13 of 4 mapped").
+  const mappedCount = headers.filter((h) => {
+    const v = columnMappings[h];
+    return typeof v === "string" && v.trim();
+  }).length;
 
   // insert_row_adjacent offers the row a new row is placed under as its OWN
   // picker group, so a column can be filled from the row above it. It is not an
