@@ -144,6 +144,7 @@ type SheetsResult = Record<
   {
     action: string;
     appendedRows?: number;
+    blankRowAbove?: boolean;
     row?: string[];
     rowByHeader?: Record<string, string>;
     matchCount?: number;
@@ -276,6 +277,65 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
     expect(out.appendedRows).toBe(1);
     expect(out.rowByHeader).toEqual({ "Job No": "", Name: "" });
     expect(publishedStatuses).toContain("success");
+  });
+
+  it("blankRowAbove skips a row instead of writing an empty one", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    const result = await run(
+      {
+        action: "append_row",
+        spreadsheetId: "s",
+        sheetName: "Master",
+        blankRowAbove: true,
+        columnMappings: { Name: "@<who>@" },
+      },
+      { who: "Ada" },
+    );
+
+    // The separator is a row we LEAVE EMPTY (row 3); the data goes one lower.
+    // Nothing empty is sent to Sheets — an all-empty payload row is exactly what
+    // made `:append` mis-place the data seven columns to the right.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const w = writtenRange(0);
+    expect(w.range).toBe("'Master'!A4:ZZ4");
+    expect(w.values).toEqual([["", "Ada"]]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.appendedRows).toBe(1);
+    expect(out.rowIndex).toBe(4);
+    expect(out.rowByHeader).toEqual({ "Job No": "", Name: "Ada" });
+    expect(out.blankRowAbove).toBe(true);
+  });
+
+  it("no row is skipped when blankRowAbove is off", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    const result = await run(
+      {
+        action: "append_row",
+        spreadsheetId: "s",
+        sheetName: "Master",
+        columnMappings: { Name: "@<who>@" },
+      },
+      { who: "Ada" },
+    );
+
+    expect(writtenRange(0).range).toBe("'Master'!A3:ZZ3");
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(3);
+    expect(result.GOOGLE_SHEETS_ACTION_1.blankRowAbove).toBe(false);
   });
 
   it("grows the grid when the tab is trimmed shorter than the target row", async () => {

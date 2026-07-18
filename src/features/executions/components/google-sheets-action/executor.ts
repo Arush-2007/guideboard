@@ -65,6 +65,9 @@ type GoogleSheetsActionData = {
   // Headers that may not be blank on the row-creating actions (accessory "may
   // be blank" off).
   requiredColumns?: string[];
+  // append_row + bottom only: leave the first free row EMPTY as a separator and
+  // write the new row one lower. Nothing blank is ever sent to Sheets.
+  blankRowAbove?: boolean;
   // AND-ed row filter, shared by find_rows (which returns the matches),
   // update_row (which writes them) and a non-bottom append (for which they are
   // the GROUP the new row joins). Both write cases require at least one.
@@ -626,7 +629,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
             );
           }
 
-          const rowIndex = nextFreeSheetRow(table);
+          // The separator is simply a row we skip: leaving the first free row
+          // untouched IS the blank row. Nothing empty is ever sent to Sheets —
+          // an all-empty payload row is what made `:append` mis-place the data.
+          const rowIndex =
+            nextFreeSheetRow(table) + (config.blankRowAbove ? 1 : 0);
           await ensureGridRows({
             accessToken,
             spreadsheetId,
@@ -683,6 +690,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
           spreadsheetId,
           sheetName,
           appendedRows: 1,
+          // Surfaced so the run view can say a separator was left above.
+          blankRowAbove: config.blankRowAbove === true,
           // Now exact rather than a guess, because we chose the row.
           rowIndex: planned.rowIndex,
           row: planned.row,

@@ -854,12 +854,16 @@ const NodeRow = ({
         const added =
           typeof root.appendedRows === "number" ? root.appendedRows : 1;
 
+        const withSeparator = root.blankRowAbove === true;
         return (
           <div className="space-y-2">
             <SummaryMessage>
               {added === 1
                 ? `Added 1 new row to the bottom of ${tab}.`
                 : `Added ${added} new rows to the bottom of ${tab}.`}
+              {withSeparator
+                ? " A blank separator row was added directly above it."
+                : ""}
             </SummaryMessage>
             {appendedColumns.length > 0 ? (
               <RowChangeGrid

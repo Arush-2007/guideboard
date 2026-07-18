@@ -450,6 +450,11 @@ const googleSheetsActionSchema = z.preprocess(
       // any position) — the accessory "may be blank" toggle turned off.
       // Enforced after the row is built.
       requiredColumns: z.array(z.string()).optional(),
+      // append_row + bottom only: leave a blank SEPARATOR row above the new row.
+      // Implemented by skipping a row number, not by writing an empty row — the
+      // row placement is absolute (see `nextFreeSheetRow`), so the gap simply
+      // stays empty.
+      blankRowAbove: z.boolean().optional(),
       // AND-ed filter conditions, selecting rows for find_rows, update_row and a
       // non-bottom append alike (one row-matching mechanism, one editor, one
       // `matchRows`).

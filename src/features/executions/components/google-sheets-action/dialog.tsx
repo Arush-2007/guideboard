@@ -80,6 +80,8 @@ const formSchema = z
     sheetName: z.string().min(1, "Tab name is required"),
     columnMappings: z.record(z.string(), z.string()).optional(),
     requiredColumns: z.array(z.string()).optional(),
+    // append_row + bottom only: also write a blank separator row above the new one.
+    blankRowAbove: z.boolean().optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
     // Multi-match fields, built from the shared constants (see the NOTE on
     // multiMatchConfigFields for why the fragment itself can't be spread here).
@@ -328,6 +330,7 @@ export const GoogleSheetsActionDialog = ({
       sheetName: defaultValues.sheetName ?? "Sheet1",
       columnMappings: defaultValues.columnMappings ?? {},
       requiredColumns: defaultValues.requiredColumns ?? [],
+      blankRowAbove: defaultValues.blankRowAbove ?? false,
       // Backfill a stable UI id on saved conditions (older saves lacked one).
       conditions: (defaultValues.conditions ?? []).map((c) => ({
         ...c,
@@ -632,6 +635,30 @@ export const GoogleSheetsActionDialog = ({
                           </FormItem>
                         )}
                       />
+
+                      {position === "bottom" ? (
+                        <FormField
+                          control={form.control}
+                          name="blankRowAbove"
+                          render={({ field }) => (
+                            <FormItem className="flex items-center justify-between gap-3 rounded-md border p-3">
+                              <div className="space-y-0.5">
+                                <FormLabel>Leave a blank row above</FormLabel>
+                                <FormDescription>
+                                  Leaves one row empty just above the new row, to
+                                  separate it from the entries before it.
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value === true}
+                                  onCheckedChange={field.onChange}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+                      ) : null}
 
                       {position !== "bottom" ? (
                         <>
