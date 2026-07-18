@@ -119,25 +119,56 @@ describe("buildSheetRow", () => {
     expect(row).toEqual(["Ada"]);
   });
 
-  it("prefixes a padded serial with a text-forcing apostrophe when serialAsText is set", () => {
+  it("prefixes a padded serial with a text-forcing apostrophe when forceTextIds is set", () => {
     const row = buildSheetRow({
       headers: ["Job No"],
       mappings: { "Job No": serial({ start: 1, pad: 4 }) },
       context,
       rows: [["0005"]],
-      serialAsText: true,
+      forceTextIds: true,
     });
     expect(row).toEqual(["'0006"]);
   });
 
-  it("does not add the apostrophe when padding is 0, even with serialAsText", () => {
+  it("does not add the apostrophe when padding is 0, even with forceTextIds", () => {
     const row = buildSheetRow({
       headers: ["Job No"],
       mappings: { "Job No": serial({ start: 7 }) },
       context,
-      serialAsText: true,
+      forceTextIds: true,
     });
     expect(row).toEqual(["7"]);
+  });
+
+  // The regression this rule exists for: a job number generated in one sheet and
+  // REFERENCED into another is not a serial token there, so the old serial-only
+  // rule left it bare and USER_ENTERED rewrote "0009" as the number 9.
+  it("force-texts a padded id that was referenced in, not generated", () => {
+    const row = buildSheetRow({
+      headers: ["Job No", "Name", "Km"],
+      mappings: {
+        "Job No": "@<sheetA.rowByHeader.Job No>@",
+        Name: "@<sheetA.rowByHeader.Name>@",
+        Km: "@<sheetA.rowByHeader.Km>@",
+      },
+      context: {
+        sheetA: { rowByHeader: { "Job No": "0009", Name: "Ada", Km: "190000" } },
+      },
+      forceTextIds: true,
+    });
+    // Only the padded id is forced; ordinary numbers stay numeric-looking so
+    // Sheets still stores them as numbers.
+    expect(row).toEqual(["'0009", "Ada", "190000"]);
+  });
+
+  it("leaves padded ids bare for the Excel path (no forceTextIds)", () => {
+    const row = buildSheetRow({
+      headers: ["Job No"],
+      mappings: { "Job No": "@<a.jobNo>@" },
+      context: { a: { jobNo: "0009" } },
+    });
+    // An apostrophe would land in the cell literally on a raw Graph write.
+    expect(row).toEqual(["0009"]);
   });
 
   it("legacy header-name serial still autofills for the Excel path", () => {
@@ -197,27 +228,31 @@ describe("findBlankRequired", () => {
 });
 
 describe("buildRowByHeader", () => {
-  it("keys by header and strips a serial's force-text apostrophe", () => {
-    const headers = ["Job No", "Name"];
-    const mappings = {
-      "Job No": serial({ start: 1, pad: 4 }),
-      Name: "@<telegram.from.firstName>@",
-    };
-    expect(buildRowByHeader(headers, ["'0006", "Ada"], mappings)).toEqual({
+  it("keys by header and strips the force-text apostrophe", () => {
+    expect(buildRowByHeader(["Job No", "Name"], ["'0006", "Ada"])).toEqual({
       "Job No": "0006",
       Name: "Ada",
     });
   });
 
+  // Mapping-agnostic: a padded id referenced in from another sheet is
+  // force-written too, and the old serial-only check would have let `'0009`
+  // leak downstream.
+  it("strips it regardless of how the column was mapped", () => {
+    expect(buildRowByHeader(["Job No"], ["'0009"])).toEqual({
+      "Job No": "0009",
+    });
+  });
+
   it("strips dots from header keys", () => {
-    expect(buildRowByHeader(["Job No."], ["0001"], {})).toEqual({
+    expect(buildRowByHeader(["Job No."], ["0001"])).toEqual({
       "Job No": "0001",
     });
   });
 
-  it("preserves a literal apostrophe in a non-serial column", () => {
-    expect(buildRowByHeader(["Note"], ["'hello"], { Note: "'hello" })).toEqual({
-      Note: "'hello",
-    });
+  it("preserves a literal apostrophe that isn't a force-text marker", () => {
+    expect(buildRowByHeader(["Note"], ["'hello"])).toEqual({ Note: "'hello" });
+    // …including one in front of a NON-padded number, which we never force.
+    expect(buildRowByHeader(["Note"], ["'42"])).toEqual({ Note: "'42" });
   });
 });

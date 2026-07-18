@@ -89,7 +89,8 @@ function mockReadWithGrid(
   {
     sheetId = 77,
     rowCount = 1000,
-  }: { sheetId?: number; rowCount?: number } = {},
+    title = "Grouped",
+  }: { sheetId?: number; rowCount?: number; title?: string } = {},
 ) {
   kyGetMock.mockImplementation((url: string) => ({
     json: async () =>
@@ -100,13 +101,23 @@ function mockReadWithGrid(
               {
                 properties: {
                   sheetId,
-                  title: "Grouped",
+                  title,
                   gridProperties: { rowCount },
                 },
               },
             ],
           },
   }));
+}
+
+/** The single ValueRange of an absolute-range write (values:batchUpdate). */
+function writtenRange(index: number) {
+  const body = postBody(index);
+  const [first] = (body.data ?? []) as Array<{
+    range: string;
+    values: unknown[][];
+  }>;
+  return { url: body.url, range: first?.range, values: first?.values };
 }
 
 /**
@@ -194,11 +205,14 @@ beforeEach(() => {
 });
 
 describe("googleSheetsActionExecutor — append with mappings", () => {
-  it("appends a mapped row and emits apostrophe-free, dot-stripped rowByHeader", async () => {
-    mockRead([
-      ["Job No.", "Name"],
-      ["0001", "X"],
-    ]);
+  it("writes the row to its ABSOLUTE range, never :append", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
 
     const result = await run(
       {
@@ -213,24 +227,38 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
       { telegram: { from: { firstName: "Ada" } } },
     );
 
+    // ONE write, to a fixed A1 range. `:append` picks its own destination by
+    // "finding a table", which mis-anchors the column and duplicates on retry.
     expect(kyPostMock).toHaveBeenCalledOnce();
+    const w = writtenRange(0);
+    expect(w.url).toContain("values:batchUpdate");
+    expect(w.url).not.toContain(":append");
+    // Header row + 1 data row ⇒ the first free row is 3.
+    expect(w.range).toBe("'Master'!A3:ZZ3");
+    expect(w.values).toEqual([["'0002", "Ada"]]);
+
     // append_row does NOT branch — it returns a plain context, not a routed
     // outcome (only find_rows / update_row gained outputs).
     expect(isRouted(result)).toBe(false);
     expect(isFanOut(result)).toBe(false);
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.appendedRows).toBe(1);
+    // The row number is now chosen by us, so it is exact rather than a guess.
+    expect(out.rowIndex).toBe(3);
     // serialAsText → '0002 written; rowByHeader strips the apostrophe + dot.
     expect(out.row).toEqual(["'0002", "Ada"]);
     expect(out.rowByHeader).toEqual({ "Job No": "0002", Name: "Ada" });
     expect(publishedStatuses).toContain("success");
   });
 
-  it("appends a BLANK row when no column is mapped (every cell empty)", async () => {
-    mockRead([
-      ["Job No.", "Name"],
-      ["0001", "X"],
-    ]);
+  it("writes a BLANK row when no column is mapped (every cell empty)", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
 
     const result = await run({
       action: "append_row",
@@ -239,16 +267,46 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
       // No columnMappings at all — a deliberately blank row.
     });
 
-    // One append, a row with an empty cell per header (a blank row).
     expect(kyPostMock).toHaveBeenCalledOnce();
-    const append = postBody(0);
-    expect(append.url).toContain(":append");
-    expect(append.values).toEqual([["", ""]]);
+    const w = writtenRange(0);
+    expect(w.range).toBe("'Master'!A3:ZZ3");
+    expect(w.values).toEqual([["", ""]]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.appendedRows).toBe(1);
     expect(out.rowByHeader).toEqual({ "Job No": "", Name: "" });
     expect(publishedStatuses).toContain("success");
+  });
+
+  it("grows the grid when the tab is trimmed shorter than the target row", async () => {
+    // A tab trimmed to exactly its 2 rows: the target row 3 doesn't exist yet.
+    // `values:batchUpdate` (unlike :append) will NOT expand a sheet, so the grid
+    // has to be grown first or the write falls outside it.
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master", rowCount: 2, sheetId: 12 },
+    );
+
+    const result = await run({
+      action: "append_row",
+      spreadsheetId: "s",
+      sheetName: "Master",
+      columnMappings: { Name: "Ada" },
+    });
+
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+    // First the structural growth…
+    const grow = postBody(0);
+    expect(grow.url).toContain(":batchUpdate");
+    expect(grow.requests).toEqual([
+      { appendDimension: { sheetId: 12, dimension: "ROWS", length: 1 } },
+    ]);
+    // …then the absolute write into the row that now exists.
+    expect(writtenRange(1).range).toBe("'Master'!A3:ZZ3");
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(3);
   });
 
   it("throws NonRetriableError naming a blank required column", async () => {
@@ -1072,15 +1130,19 @@ describe("googleSheetsActionExecutor — append under a group", () => {
       ],
     });
 
-    // Globex's block ends at the last data row, so appending IS inserting under
-    // it: ONE request, and no blank row ever exists on its own to be orphaned.
+    // Globex's block ends at the last data row, so no structural insert is
+    // needed — the row is simply the first free one, written to its ABSOLUTE
+    // range (never `:append`, which would pick its own destination).
     expect(kyPostMock).toHaveBeenCalledOnce();
-    const append = postBody(0);
-    expect(append.url).toContain("/values/");
-    expect(append.url).toContain(":append");
-    expect(append.searchParams).toEqual({ valueInputOption: "USER_ENTERED" });
-    expect(append.values).toEqual([["Globex", "", "Open"]]);
-    expect(stepNames).toEqual(["google-sheets-insert-adjacent"]);
+    const w = writtenRange(0);
+    expect(w.url).toContain("values:batchUpdate");
+    expect(w.url).not.toContain(":append");
+    expect(w.range).toBe("'Grouped'!A5:ZZ5");
+    expect(w.values).toEqual([["Globex", "", "Open"]]);
+    expect(stepNames).toEqual([
+      "google-sheets-insert-adjacent",
+      "google-sheets-insert-adjacent-write",
+    ]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.insertedUnderGroup).toBe(true);
@@ -1098,10 +1160,11 @@ describe("googleSheetsActionExecutor — append under a group", () => {
       ],
     });
 
-    // A brand-new buyer: no group to join, so the row is simply appended at the
-    // bottom of the tab, starting a group of its own.
+    // A brand-new buyer: no group to join, so the row goes to the first free
+    // row of the tab, starting a group of its own.
     expect(kyPostMock).toHaveBeenCalledOnce();
-    expect(postBody(0).values).toEqual([["Initech", "", "Open"]]);
+    expect(writtenRange(0).range).toBe("'Grouped'!A5:ZZ5");
+    expect(writtenRange(0).values).toEqual([["Initech", "", "Open"]]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     // Matching nothing is a normal outcome here — a row is still written.
@@ -1119,7 +1182,8 @@ describe("googleSheetsActionExecutor — append under a group", () => {
       conditions: matchAcme,
     });
 
-    expect(postBody(0).values).toEqual([["Acme", "", "Open"]]);
+    expect(writtenRange(0).range).toBe("'Grouped'!A2:ZZ2");
+    expect(writtenRange(0).values).toEqual([["Acme", "", "Open"]]);
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.rowIndex).toBe(2);
   });
@@ -1205,8 +1269,12 @@ describe("googleSheetsActionExecutor — append under a group", () => {
       conditions: matchAcme,
     });
 
+    // The anchor's Job No is a PADDED id, so it is force-texted (`'0002`) on the
+    // way in. Written bare, USER_ENTERED would store it as the number 2 and the
+    // padding would be gone — the same way a job number referenced into a second
+    // sheet used to arrive as "9".
     expect(postBody(1).data).toEqual([
-      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "0002", "Follow-up"]] },
+      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "'0002", "Follow-up"]] },
     ]);
   });
 });

@@ -19,13 +19,14 @@ import { nodeStatusChannel } from "@/inngest/channels/node-status";
 import { FAN_OUT_MARKER } from "@/inngest/fan-out";
 import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import {
+  ensureGridRows,
   getSheetGrid,
+  nextFreeSheetRow,
   readSheetTable,
   sheetRange,
   sheetsAuthHeaders,
   sheetsBatchUpdateUrl,
   sheetsValuesBatchUpdateUrl,
-  sheetsValuesUrl,
   sheetsWrite,
   toSheetsError,
 } from "@/lib/google-sheets";
@@ -33,7 +34,7 @@ import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { type MultiMatchMode, readFanOutSeed } from "@/lib/multi-match";
 import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
 import { hasActiveRowCondition } from "@/lib/row-match-operators";
-import { coerceCellValue } from "@/lib/sheet-cells";
+import { stripTextForcing, toSheetsCellValue } from "@/lib/sheet-cells";
 import { ANCHOR_ROW_KEY, sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
   buildRowByHeader,
@@ -355,17 +356,18 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
             // Serial Numbers keep counting UP across the rows THIS run inserts,
             // so each row is built against the rows written so far, not just the
-            // ones already in the tab. A padded serial is force-text ("'0004")
-            // and `parseInt` chokes on the apostrophe, so the copy fed back for
-            // the max() computation has it stripped.
+            // ones already in the tab. A padded id is force-text ("'0004") and
+            // `parseInt` chokes on the apostrophe, so the copy fed back for the
+            // max() computation has it stripped.
             const seenRows = [...table.rows];
             const built = anchorIndexes.map((anchorIdx) => {
-              // Empty mappings ⇒ pure sanitized header keys, no serial-quote
-              // stripping: this is an EXISTING row, read as-is.
+              // An EXISTING row read from the sheet: Sheets consumed the
+              // force-text apostrophe on write, so there is nothing to strip —
+              // `buildRowByHeader` is a no-op on it beyond keying by header.
               const anchorRow =
                 anchorIdx === null
                   ? {}
-                  : buildRowByHeader(table.headers, table.rows[anchorIdx], {});
+                  : buildRowByHeader(table.headers, table.rows[anchorIdx]);
 
               const row = buildSheetRow({
                 headers: table.headers,
@@ -376,7 +378,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 // leak downstream.
                 context: { ...context, [ANCHOR_ROW_KEY]: anchorRow },
                 rows: seenRows,
-                serialAsText: true,
+                forceTextIds: true,
               });
 
               const blankRequired = findBlankRequired(
@@ -390,20 +392,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 );
               }
 
-              seenRows.push(
-                row.map((cell) =>
-                  cell.startsWith("'") ? cell.slice(1) : cell,
-                ),
-              );
+              seenRows.push(row.map(stripTextForcing));
               return {
                 anchorIdx,
                 row,
                 anchorRow,
-                rowByHeader: buildRowByHeader(
-                  table.headers,
-                  row,
-                  columnMappings,
-                ),
+                rowByHeader: buildRowByHeader(table.headers, row),
               };
             });
 
@@ -413,34 +407,25 @@ export const googleSheetsActionExecutor: NodeExecutor<
             };
 
             // Bottom of the data — nothing matched (a NEW group starts here), or
-            // the single anchor already IS the last row, in which case appending
-            // is inserting under it. One request, and no blank row ever exists on
-            // its own, so a dead run leaves nothing to clean up.
+            // the single anchor already IS the last row, in which case adding
+            // under it just means writing the first free row. No structural
+            // insert is needed; step 2 writes it to its ABSOLUTE range like every
+            // other row this action creates (never `:append` — see
+            // `nextFreeSheetRow`). Grow the grid first so that row exists.
             const only = built[0];
             if (
               built.length === 1 &&
               (only.anchorIdx === null ||
                 only.anchorIdx === table.rows.length - 1)
             ) {
-              await sheetsWrite(
-                `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
-                {
-                  headers: sheetsAuthHeaders(accessToken),
-                  searchParams: { valueInputOption: "USER_ENTERED" },
-                  json: { values: [only.row] },
-                },
-              );
-              return {
-                ...base,
-                written: true,
-                rows: [
-                  {
-                    ...only,
-                    // Sheet row = header + data rows + 1.
-                    rowIndex: table.rows.length + 2,
-                  },
-                ],
-              };
+              const rowIndex = nextFreeSheetRow(table);
+              await ensureGridRows({
+                accessToken,
+                spreadsheetId,
+                sheetName,
+                throughRow: rowIndex,
+              });
+              return { ...base, rows: [{ ...only, rowIndex }] };
             }
 
             // Room has to be MADE. Grid rows are 0-based with the header at 0, so
@@ -493,7 +478,6 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
             return {
               ...base,
-              written: false,
               rows: built.map((b, k) => ({
                 ...b,
                 // Sheet row = the anchor's row + 1, pushed down one more for each
@@ -507,38 +491,32 @@ export const googleSheetsActionExecutor: NodeExecutor<
         },
       );
 
-      // STEP 2 — fill the rows the insert opened up, all in ONE request. The
-      // append path already wrote its row (values.append carries the data), so it
-      // skips this. USER_ENTERED (not a batchUpdate `updateCells`) so numbers and
-      // dates are parsed exactly as on every other Sheets write in the app.
-      if (!placed.written) {
-        await step.run("google-sheets-insert-adjacent-write", async () => {
-          try {
-            await sheetsWrite(
-              sheetsValuesBatchUpdateUrl(spreadsheetId),
-              {
-                headers: sheetsAuthHeaders(accessToken),
-                json: {
-                  valueInputOption: "USER_ENTERED",
-                  data: placed.rows.map((r) => ({
-                    range: sheetRange(
-                      sheetName,
-                      `A${r.rowIndex}:ZZ${r.rowIndex}`,
-                    ),
-                    values: [r.row],
-                  })),
-                },
+      // STEP 2 — write every row this run creates, all in ONE request, each to
+      // its own ABSOLUTE range. Step 1 already made room (a structural insert) or
+      // grew the grid, and it is memoized — so a retry here rewrites the exact
+      // same cells rather than adding a row. USER_ENTERED (not a batchUpdate
+      // `updateCells`) so numbers and dates parse as on every other Sheets write.
+      await step.run("google-sheets-insert-adjacent-write", async () => {
+        try {
+          await sheetsWrite(
+            sheetsValuesBatchUpdateUrl(spreadsheetId),
+            {
+              headers: sheetsAuthHeaders(accessToken),
+              json: {
+                valueInputOption: "USER_ENTERED",
+                data: placed.rows.map((r) => ({
+                  range: sheetRange(sheetName, `A${r.rowIndex}:ZZ${r.rowIndex}`),
+                  values: [r.row],
+                })),
               },
-              // Absolute-range fill: the structural insert ran in an EARLIER,
-              // memoized step, so a retry of this step rewrites the same cells.
-              { idempotent: true },
-            );
-            return null;
-          } catch (error) {
-            throw await toSheetsError(error);
-          }
-        });
-      }
+            },
+            { idempotent: true },
+          );
+          return null;
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      });
 
       const first = placed.rows[0];
       // One item per inserted row: the row itself, where it landed, and the row
@@ -597,6 +575,122 @@ export const googleSheetsActionExecutor: NodeExecutor<
         nodeStatusChannel(userId).status({ nodeId, status: "success" }),
       );
       return outcome;
+    }
+
+    // A BOTTOM append onto the sheet's live columns. Split read/plan from write
+    // for the same reason update_row and the under-append are: the target row is
+    // derived from a read, so it must be memoized — otherwise a retry would
+    // re-read a sheet the landed write already changed and place a SECOND row.
+    // The row goes to an ABSOLUTE range, never `:append` (see `nextFreeSheetRow`
+    // for why that heuristic is unsafe). The legacy raw-`range` + `values` path
+    // has no mapping and falls through to the single-step switch below.
+    if (action === "append_row" && (hasMappings || !range)) {
+      // STEP 1 — read the tab, build the row, and settle exactly which row it
+      // lands on (growing the grid if the tab was trimmed to its data).
+      const planned = await step.run("google-sheets-append-plan", async () => {
+        try {
+          const table = await readSheetTable({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+          });
+          if (table.headers.length === 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
+            );
+          }
+
+          const newRow = buildSheetRow({
+            headers: table.headers,
+            mappings: columnMappings,
+            context,
+            // Data rows (header-aligned) so a Serial Number custom-feature
+            // column autofills to max(existing)+1.
+            rows: table.rows,
+            // Keep every padded id (0006) as text — generated serial or a value
+            // referenced in from another sheet alike. USER_ENTERED would
+            // otherwise store it as a number and drop the leading zeros.
+            forceTextIds: true,
+          });
+
+          // Enforce required columns after the row is built (a serial cell is
+          // always populated, so it never trips this).
+          const blankRequired = findBlankRequired(
+            table.headers,
+            newRow,
+            config.requiredColumns,
+          );
+          if (blankRequired.length > 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: required column(s) may not be blank: ${blankRequired.join(", ")}`,
+            );
+          }
+
+          const rowIndex = nextFreeSheetRow(table);
+          await ensureGridRows({
+            accessToken,
+            spreadsheetId,
+            sheetName,
+            throughRow: rowIndex,
+          });
+
+          return {
+            rowIndex,
+            row: newRow,
+            rowByHeader: buildRowByHeader(table.headers, newRow),
+          };
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      });
+
+      // STEP 2 — write it to its absolute range. Retry-safe: the row number was
+      // fixed by the memoized step above, so a replay rewrites the same cells.
+      await step.run("google-sheets-append-write", async () => {
+        try {
+          await sheetsWrite(
+            sheetsValuesBatchUpdateUrl(spreadsheetId),
+            {
+              headers: sheetsAuthHeaders(accessToken),
+              json: {
+                valueInputOption: "USER_ENTERED",
+                data: [
+                  {
+                    range: sheetRange(
+                      sheetName,
+                      `A${planned.rowIndex}:ZZ${planned.rowIndex}`,
+                    ),
+                    values: [planned.row],
+                  },
+                ],
+              },
+            },
+            { idempotent: true },
+          );
+          return null;
+        } catch (error) {
+          throw await toSheetsError(error);
+        }
+      });
+
+      await publish(
+        nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+      );
+      return {
+        ...context,
+        [outputKey]: {
+          action,
+          spreadsheetId,
+          sheetName,
+          appendedRows: 1,
+          // Now exact rather than a guess, because we chose the row.
+          rowIndex: planned.rowIndex,
+          row: planned.row,
+          // Header-keyed view of the appended row so downstream nodes pick
+          // columns (force-text apostrophe + header dots stripped).
+          rowByHeader: planned.rowByHeader,
+        },
+      };
     }
 
     if (action === "update_row") {
@@ -691,7 +785,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
               ) {
                 return null;
               }
-              return coerceCellValue(renderTemplate(mapping, context));
+              // Force-text for a padded id, same rule the row builder applies on
+              // insert — otherwise USER_ENTERED rewrites "0009" as the number 9
+              // and an update silently strips a job number's padding.
+              return toSheetsCellValue(renderTemplate(mapping, context));
             });
 
             // Sheet row number: +1 for the 1-based grid, +1 for the header row.
@@ -712,16 +809,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
               },
               // The row as it stood BEFORE this write — the execution page shows
               // it next to the new state so a user can see what changed.
-              previousRow: buildRowByHeader(
-                table.headers,
-                existing,
-                columnMappings,
-              ),
-              rowByHeader: buildRowByHeader(
-                table.headers,
-                mergedRow,
-                columnMappings,
-              ),
+              previousRow: buildRowByHeader(table.headers, existing),
+              rowByHeader: buildRowByHeader(table.headers, mergedRow),
             };
           });
 
@@ -811,81 +900,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
     const result = await step.run("google-sheets-action", async () => {
       if (action === "append_row") {
-        // Preferred path: map upstream data onto the sheet's live columns. All
-        // Sheets REST plumbing routes through src/lib/google-sheets.ts. Taken
-        // whenever there is no legacy `range` — including when NOTHING is mapped,
-        // in which case `buildSheetRow` yields an all-empty row (a blank row).
-        if (hasMappings || !range) {
-          try {
-            const table = await readSheetTable({
-              accessToken,
-              spreadsheetId,
-              sheetName,
-            });
-            if (table.headers.length === 0) {
-              throw new NonRetriableError(
-                `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
-              );
-            }
-            const newRow = buildSheetRow({
-              headers: table.headers,
-              mappings: columnMappings,
-              context,
-              // Data rows (header-aligned) so a Serial Number custom-feature
-              // column autofills to max(existing)+1.
-              rows: table.rows,
-              // Keep padded serials (0006) as text — USER_ENTERED would
-              // otherwise drop the leading zeros.
-              serialAsText: true,
-            });
-
-            // Enforce required columns after the row is built (a serial cell is
-            // always populated, so it never trips this).
-            const blankRequired = findBlankRequired(
-              table.headers,
-              newRow,
-              config.requiredColumns,
-            );
-            if (blankRequired.length > 0) {
-              throw new NonRetriableError(
-                `${ERROR_PREFIX}: required column(s) may not be blank: ${blankRequired.join(", ")}`,
-              );
-            }
-
-            await sheetsWrite(
-              `${sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ"))}:append`,
-              {
-                headers: sheetsAuthHeaders(accessToken),
-                searchParams: { valueInputOption: "USER_ENTERED" },
-                json: { values: [newRow] },
-              },
-            );
-
-            return {
-              ...context,
-              [outputKey]: {
-                action,
-                spreadsheetId,
-                sheetName,
-                appendedRows: 1,
-                row: newRow,
-                // Header-keyed view of the appended row so downstream nodes
-                // pick columns (serial apostrophe + header dots stripped).
-                rowByHeader: buildRowByHeader(
-                  table.headers,
-                  newRow,
-                  columnMappings,
-                ),
-              },
-            };
-          } catch (error) {
-            // Map HTTP failures onto Inngest retry semantics; self-thrown
-            // NonRetriableErrors (no header / blank required) pass through.
-            throw await toSheetsError(error);
-          }
-        }
-
-        // Legacy path: raw JSON values + explicit range.
+        // Only the LEGACY raw-values path reaches here: an explicit `range` with
+        // no column mapping. The mapped path (the one every current node uses)
+        // was handled above as a planned, absolute-range write. This one keeps
+        // `:append` because the user chose the range and supplies raw rows, so
+        // there is no header table to derive a row number from.
         const a1Range = sheetRange(sheetName, range);
         const renderedValues = decode(
           renderTemplate(config.values ?? "", context),

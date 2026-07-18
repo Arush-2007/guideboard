@@ -107,24 +107,28 @@ export type SheetTable = {
 };
 
 /**
- * Reads a tab's used range (default `A:ZZ`) into a header/rows table. The header
- * row is trimmed; data rows are string-normalized and aligned to the header
- * width. The `{ headers, rows }` shape feeds `buildSheetRow` directly, and
- * `rowsByHeader` feeds `matchRows` / downstream `rowByHeader` outputs.
+ * Reads a tab into a header/rows table. The header row is trimmed; data rows are
+ * string-normalized and aligned to the header width. The `{ headers, rows }`
+ * shape feeds `buildSheetRow` directly, and `rowsByHeader` feeds `matchRows` /
+ * downstream `rowByHeader` outputs.
+ *
+ * The range is FIXED to the whole tab (`A:ZZ`) rather than being a parameter:
+ * `nextFreeSheetRow` derives an absolute row number from `rows.length`, which is
+ * only meaningful when row 1 is the header and the rows are the whole tab. A
+ * caller reading a sub-range (`A10:ZZ`) would compute a row number 9 too high
+ * and overwrite live data, so the option is deliberately not offered.
  */
 export async function readSheetTable({
   accessToken,
   spreadsheetId,
   sheetName,
-  range = "A:ZZ",
 }: {
   accessToken: string;
   spreadsheetId: string;
   sheetName: string;
-  range?: string;
 }): Promise<SheetTable> {
   const res = await http
-    .get(sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, range)), {
+    .get(sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ")), {
       headers: { Authorization: `Bearer ${accessToken}` },
       timeout: HTTP_TIMEOUT.READ,
     })
@@ -144,6 +148,28 @@ export async function readSheetTable({
     return obj;
   });
   return { headers, rows, rowsByHeader };
+}
+
+/**
+ * The 1-based sheet row a NEW row should occupy: the first free row under the
+ * table. `readSheetTable` always reads the WHOLE tab (its range is fixed, not a
+ * parameter — see there) and returns every row up to the last non-empty one,
+ * with row 1 the header. So the next free row is exactly `rows.length + 2`.
+ *
+ * ⚠️ Row placement is computed HERE and written to an ABSOLUTE range — never via
+ * `values:append`. Append picks its own destination by "finding a table" in the
+ * range, and that heuristic is unsafe in four ways:
+ *   1. it mis-anchors the COLUMN when the payload's first row is empty, writing
+ *      the row shifted right (and the offset compounds on later appends);
+ *   2. it ignores trailing blank rows, so a blank row can never be appended and
+ *      the next append lands on top of one;
+ *   3. a lost-response retry appends the row a SECOND time (see SHEETS_WRITE);
+ *   4. the caller can only guess where the row landed, so a reported row number
+ *      may be wrong.
+ * An absolute range has none of these failure modes and is retry-safe.
+ */
+export function nextFreeSheetRow(table: SheetTable): number {
+  return table.rows.length + 2;
 }
 
 type SheetsMetaResponse = {
@@ -204,6 +230,46 @@ export async function getSheetGrid({
     sheetId: found.properties.sheetId,
     rowCount: found.properties.gridProperties?.rowCount ?? 0,
   };
+}
+
+/**
+ * Grows the tab's GRID until `throughRow` exists, so an absolute-range write to
+ * that row can't fall outside the sheet (`values:batchUpdate` does NOT expand a
+ * sheet the way `:append` does — it fails). A no-op when the grid is already tall
+ * enough, which is the common case for a default 1000-row tab; it matters for a
+ * sheet a user has trimmed down to its data.
+ *
+ * Growing by a few extra rows is harmless (they are empty), so a retry that grows
+ * again cannot corrupt anything.
+ */
+export async function ensureGridRows({
+  accessToken,
+  spreadsheetId,
+  sheetName,
+  throughRow,
+}: {
+  accessToken: string;
+  spreadsheetId: string;
+  sheetName: string;
+  throughRow: number;
+}): Promise<void> {
+  const grid = await getSheetGrid({ accessToken, spreadsheetId, sheetName });
+  const shortfall = throughRow - grid.rowCount;
+  if (shortfall <= 0) return;
+  await sheetsWrite(sheetsBatchUpdateUrl(spreadsheetId), {
+    headers: sheetsAuthHeaders(accessToken),
+    json: {
+      requests: [
+        {
+          appendDimension: {
+            sheetId: grid.sheetId,
+            dimension: "ROWS",
+            length: shortfall,
+          },
+        },
+      ],
+    },
+  });
 }
 
 /**
