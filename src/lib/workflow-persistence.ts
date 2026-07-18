@@ -259,8 +259,16 @@ export async function syncTriggerPollsForWorkflow(
 
   if (googleSheetsTrigger) {
     const triggerData = (googleSheetsTrigger.data as
-      | { spreadsheetId?: string; sheetName?: string }
+      | {
+          spreadsheetId?: string;
+          sheetName?: string;
+          triggerOn?: "added" | "updated" | "added_or_updated";
+        }
       | undefined) ?? { spreadsheetId: "", sheetName: "" };
+
+    // Missing on nodes saved before edit-detection existed; those keep the
+    // historical append-only behavior.
+    const triggerOn = triggerData.triggerOn ?? "added";
 
     if (triggerData.spreadsheetId && triggerData.sheetName) {
       await prisma.googleSheetsPoll.upsert({
@@ -269,12 +277,14 @@ export async function syncTriggerPollsForWorkflow(
           userId,
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
+          triggerOn,
         },
         create: {
           userId,
           workflowId,
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
+          triggerOn,
         },
       });
     }

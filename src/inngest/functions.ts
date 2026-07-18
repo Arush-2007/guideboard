@@ -29,6 +29,10 @@ import {
   runWorkflowNodes,
 } from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
+import {
+  planSheetsPollChanges,
+  type SheetsTriggerOn,
+} from "./sheets-poll-diff";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
 /** The Gmail poller's reads — listing and fetching messages changes nothing. */
@@ -755,10 +759,11 @@ export const pollGoogleSheets = inngest.createFunction(
   },
 );
 
-// Handler: processes a single Google Sheets poll. Diffs current row count
-// against `lastRowCount` and emits one execution per new row. Isolated retries
-// + concurrency cap; duplicate runs are prevented by the
-// `google_sheets:<spreadsheetId>:<rowIndex>` idempotency key.
+// Handler: processes a single Google Sheets poll. Emits one execution per
+// change the poll's `triggerOn` watches: appended rows (row count grew) and/or
+// edited rows (a stored per-position content hash changed). Isolated retries +
+// concurrency cap; duplicate runs are prevented by the
+// `google_sheets:<spreadsheetId>:<rowIndex>[:<hash>]` idempotency key.
 export const handleGoogleSheetsPoll = inngest.createFunction(
   { id: "handle-google-sheets-poll", retries: 1, concurrency: { limit: 20 } },
   { event: "polls/google-sheets.check" },
@@ -775,6 +780,8 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           spreadsheetId: true,
           sheetName: true,
           lastRowCount: true,
+          rowHashes: true,
+          triggerOn: true,
         },
       });
       if (!poll) return;
@@ -807,30 +814,44 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
       const rows = valuesResult.values ?? [];
       const currentRowCount = rows.length;
 
-      if (currentRowCount > poll.lastRowCount) {
-        for (let i = poll.lastRowCount; i < currentRowCount; i++) {
-          const rowIndex = i + 1;
-          const row = rows[i] ?? [];
+      const { changes, newHashes } = planSheetsPollChanges({
+        rows,
+        lastRowCount: poll.lastRowCount,
+        // Null until the first poll seeds it, so no existing row reads as edited
+        // the first time edit detection runs.
+        oldHashes: Array.isArray(poll.rowHashes)
+          ? (poll.rowHashes as string[])
+          : null,
+        triggerOn: poll.triggerOn as SheetsTriggerOn,
+      });
 
-          await sendWorkflowExecution({
-            workflowId: poll.workflowId,
-            initialData: {
-              googleSheets: {
-                spreadsheetId: poll.spreadsheetId,
-                sheetName: poll.sheetName,
-                rowIndex,
-                row,
-              },
+      for (const { rowIndex, changeType } of changes) {
+        await sendWorkflowExecution({
+          workflowId: poll.workflowId,
+          initialData: {
+            googleSheets: {
+              spreadsheetId: poll.spreadsheetId,
+              sheetName: poll.sheetName,
+              rowIndex,
+              row: rows[rowIndex - 1] ?? [],
+              changeType,
             },
-            idempotencyKey: `google_sheets:${poll.spreadsheetId}:${rowIndex}`,
-          });
-        }
+          },
+          // Appends fire once per row (static key). Edits key on the new content
+          // hash, so a genuine re-edit fires again but re-polling the same edit
+          // does not.
+          idempotencyKey:
+            changeType === "added"
+              ? `google_sheets:${poll.spreadsheetId}:${rowIndex}`
+              : `google_sheets:${poll.spreadsheetId}:${rowIndex}:${newHashes[rowIndex - 1]}`,
+        });
       }
 
       await prisma.googleSheetsPoll.update({
         where: { id: poll.id },
         data: {
           lastRowCount: currentRowCount,
+          rowHashes: newHashes,
           lastChecked: new Date(),
         },
       });

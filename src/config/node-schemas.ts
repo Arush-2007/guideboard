@@ -337,6 +337,7 @@ const googleSheetsTriggerSchema = z
   .object({
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Sheet Name is required"),
+    triggerOn: z.enum(["added", "updated", "added_or_updated"]).optional(),
   })
   .passthrough();
 

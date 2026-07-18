@@ -36,9 +36,19 @@ import { useTRPC } from "@/trpc/client";
 const formSchema = z.object({
   spreadsheetId: z.string().min(1, "Spreadsheet is required"),
   sheetName: z.string().min(1, "Sheet Name is required"),
+  triggerOn: z.enum(["added", "updated", "added_or_updated"]),
 });
 
 export type GoogleSheetsTriggerFormValues = z.infer<typeof formSchema>;
+
+const TRIGGER_ON_OPTIONS: Array<{
+  value: GoogleSheetsTriggerFormValues["triggerOn"];
+  label: string;
+}> = [
+  { value: "added", label: "Row added" },
+  { value: "updated", label: "Row updated" },
+  { value: "added_or_updated", label: "Row added or updated" },
+];
 
 interface Props {
   open: boolean;
@@ -65,6 +75,7 @@ export const GoogleSheetsTriggerDialog = ({
     defaultValues: {
       spreadsheetId: defaultValues.spreadsheetId ?? "",
       sheetName: defaultValues.sheetName ?? "Sheet1",
+      triggerOn: defaultValues.triggerOn ?? "added_or_updated",
     },
   });
 
@@ -73,6 +84,7 @@ export const GoogleSheetsTriggerDialog = ({
       form.reset({
         spreadsheetId: defaultValues.spreadsheetId ?? "",
         sheetName: defaultValues.sheetName ?? "Sheet1",
+        triggerOn: defaultValues.triggerOn ?? "added_or_updated",
       });
     }
   }, [open, defaultValues, form]);
@@ -88,7 +100,7 @@ export const GoogleSheetsTriggerDialog = ({
         <DialogHeader>
           <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
-            Trigger this workflow when a new row is added to a sheet.
+            Trigger this workflow when a row is added to or edited in a sheet.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -141,7 +153,36 @@ export const GoogleSheetsTriggerDialog = ({
                     <Input placeholder="Sheet1" {...field} />
                   </FormControl>
                   <FormDescription>
-                    Row count is tracked on this tab every 5 minutes.
+                    This tab is checked every 5 minutes.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="triggerOn"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Trigger on</FormLabel>
+                  <Select onValueChange={field.onChange} value={field.value}>
+                    <FormControl>
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {TRIGGER_ON_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    Edits are detected by row position, so this suits sheets
+                    that grow at the bottom (form responses, logs).
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

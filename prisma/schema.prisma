@@ -217,6 +217,13 @@ model GoogleSheetsPoll {
   spreadsheetId String
   sheetName     String
   lastRowCount  Int      @default(0)
+  // One content hash per row, by position, from the last poll. Used to detect
+  // edits to existing rows (a change the row count alone can't reveal). Null
+  // until the first poll seeds it. Only consulted when triggerOn watches updates.
+  rowHashes     Json?
+  // Denormalized from the trigger node's `triggerOn`: "added" (append only,
+  // the historical default), "updated" (edits only), or "added_or_updated".
+  triggerOn     String   @default("added")
   lastChecked   DateTime @default(now())
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
