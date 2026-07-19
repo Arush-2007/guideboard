@@ -4,7 +4,7 @@ import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
 import dynamic from "next/dynamic";
 import { memo, useState } from "react";
 import { BaseTriggerNode } from "../base-trigger-node";
-import type { GoogleSheetsTriggerFormValues } from "./dialog";
+import type { GoogleSheetsTriggerSubmitValues } from "./dialog";
 
 const GoogleSheetsTriggerDialog = dynamic(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsTriggerDialog),
@@ -19,6 +19,9 @@ const option = getNodeOption(NodeType.GOOGLE_SHEETS_TRIGGER);
 type GoogleSheetsTriggerNodeData = {
   spreadsheetId?: string;
   sheetName?: string;
+  triggerOn?: "added" | "updated" | "added_or_updated";
+  ignoreColumns?: string[];
+  discoveredFields?: { path: string; label: string }[];
 };
 
 type GoogleSheetsTriggerFlowNode = Node<GoogleSheetsTriggerNodeData>;
@@ -32,7 +35,7 @@ export const GoogleSheetsTriggerNode = memo(
 
     const handleOpenSettings = () => setDialogOpen(true);
 
-    const handleSubmit = (values: GoogleSheetsTriggerFormValues) => {
+    const handleSubmit = (values: GoogleSheetsTriggerSubmitValues) => {
       setNodes((nodes) =>
         nodes.map((node) => {
           if (node.id === props.id) {

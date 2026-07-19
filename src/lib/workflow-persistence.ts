@@ -263,12 +263,19 @@ export async function syncTriggerPollsForWorkflow(
           spreadsheetId?: string;
           sheetName?: string;
           triggerOn?: "added" | "updated" | "added_or_updated";
+          ignoreColumns?: string[];
         }
       | undefined) ?? { spreadsheetId: "", sheetName: "" };
 
     // Missing on nodes saved before edit-detection existed; those keep the
     // historical append-only behavior.
     const triggerOn = triggerData.triggerOn ?? "added";
+    // Header names whose edits are ignored; empty watches every column. A change
+    // here does NOT need a baseline reset from this side: the poller detects the
+    // shifted watched-column projection via `watchColumnsSignature` and re-seeds
+    // itself (see `planSheetsPollChanges`), which also covers header changes made
+    // directly in the sheet — the same mechanism in one place.
+    const ignoreColumns = triggerData.ignoreColumns ?? [];
 
     if (triggerData.spreadsheetId && triggerData.sheetName) {
       await prisma.googleSheetsPoll.upsert({
@@ -278,6 +285,7 @@ export async function syncTriggerPollsForWorkflow(
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
           triggerOn,
+          ignoreColumns,
         },
         create: {
           userId,
@@ -285,6 +293,7 @@ export async function syncTriggerPollsForWorkflow(
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
           triggerOn,
+          ignoreColumns,
         },
       });
     }

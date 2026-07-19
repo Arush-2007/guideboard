@@ -11,6 +11,7 @@ import {
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
+import { sheetsTriggerOptionsSchemaFields } from "@/lib/sheets-trigger-options";
 
 type AnyZodSchema = z.ZodTypeAny;
 
@@ -338,6 +339,7 @@ const googleSheetsTriggerSchema = z
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Sheet Name is required"),
     triggerOn: z.enum(["added", "updated", "added_or_updated"]).optional(),
+    ...sheetsTriggerOptionsSchemaFields,
   })
   .passthrough();
 

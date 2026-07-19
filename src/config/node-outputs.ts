@@ -292,9 +292,10 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
   [NodeType.GOOGLE_SHEETS_TRIGGER]: {
     rootKind: "fixed",
     rootKey: "googleSheets",
+    // Per-column values (`googleSheets.values.<Header>`) are offered dynamically
+    // as `discoveredFields` the dialog saves from the sheet's header row (see
+    // upstream-fields.ts), since the columns depend on the chosen sheet.
     fields: [
-      { path: "row", label: "Row values" },
-      { path: "rowIndex", label: "Row number", example: "2" },
       {
         path: "changeType",
         label: "Change type",

@@ -1,18 +1,12 @@
 "use client";
 
-import { ChevronRight } from "lucide-react";
-import { useState } from "react";
 import type {
   FieldValues,
   Path,
   PathValue,
   UseFormReturn,
 } from "react-hook-form";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import { RestraintsSection } from "@/components/restraints-section";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -21,7 +15,6 @@ import {
   supportsNumericOption,
   supportsTextOptions,
 } from "@/features/executions/lib/compare";
-import { cn } from "@/lib/utils";
 
 /** The three option fields, as they sit on a condition/case/rule config object. */
 export type MatchingOptionsValue = {
@@ -88,8 +81,6 @@ export function MatchingOptions({
   onChange,
   idPrefix,
 }: Props) {
-  const [open, setOpen] = useState(false);
-
   if (!supportsTextOptions(operator)) return null;
   const showNumeric = supportsNumericOption(operator);
   const summary = describeCompareOptions(
@@ -98,76 +89,59 @@ export function MatchingOptions({
   );
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="group flex w-full items-center gap-1.5 rounded-sm py-1 text-left text-xs text-muted-foreground transition-colors hover:text-foreground">
-        <ChevronRight
-          className={cn(
-            "size-3.5 shrink-0 transition-transform",
-            open && "rotate-90",
-          )}
+    <RestraintsSection summary={summary}>
+      <div className="flex items-center justify-between gap-2">
+        <Label
+          htmlFor={`${idPrefix}-ignore-case`}
+          className="text-xs font-normal"
+        >
+          Ignore case
+        </Label>
+        <Switch
+          id={`${idPrefix}-ignore-case`}
+          checked={ignoreCase === true}
+          onCheckedChange={(checked) => onChange({ ignoreCase: checked })}
         />
-        <span className="font-medium">Restraints</span>
-        {!open && summary ? (
-          <span className="truncate text-muted-foreground/70">→ {summary}</span>
-        ) : null}
-      </CollapsibleTrigger>
+      </div>
 
-      <CollapsibleContent className="pt-1.5">
-        <div className="space-y-2.5 rounded-md border bg-muted/30 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <Label
-              htmlFor={`${idPrefix}-ignore-case`}
-              className="text-xs font-normal"
-            >
-              Ignore case
-            </Label>
-            <Switch
-              id={`${idPrefix}-ignore-case`}
-              checked={ignoreCase === true}
-              onCheckedChange={(checked) => onChange({ ignoreCase: checked })}
-            />
-          </div>
-
-          {showNumeric ? (
-            <div className="flex items-center justify-between gap-2">
-              <Label
-                htmlFor={`${idPrefix}-numeric`}
-                className="text-xs font-normal"
-              >
-                Compare as number
-                <span className="ml-1 text-muted-foreground">(0001 = 1)</span>
-              </Label>
-              <Switch
-                id={`${idPrefix}-numeric`}
-                checked={numeric === true}
-                onCheckedChange={(checked) => onChange({ numeric: checked })}
-              />
-            </div>
-          ) : null}
-
-          <div className="space-y-1">
-            <div className="flex items-center justify-between gap-2">
-              <Label
-                htmlFor={`${idPrefix}-ignore-chars`}
-                className="text-xs font-normal"
-              >
-                Neglect characters
-              </Label>
-              <Input
-                id={`${idPrefix}-ignore-chars`}
-                value={ignoreChars ?? ""}
-                onChange={(e) => onChange({ ignoreChars: e.target.value })}
-                placeholder="e.g. - / space"
-                className="h-8 w-40 font-mono text-xs"
-              />
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Any character typed here (a space included) is stripped from both
-              sides before comparing.
-            </p>
-          </div>
+      {showNumeric ? (
+        <div className="flex items-center justify-between gap-2">
+          <Label
+            htmlFor={`${idPrefix}-numeric`}
+            className="text-xs font-normal"
+          >
+            Compare as number
+            <span className="ml-1 text-muted-foreground">(0001 = 1)</span>
+          </Label>
+          <Switch
+            id={`${idPrefix}-numeric`}
+            checked={numeric === true}
+            onCheckedChange={(checked) => onChange({ numeric: checked })}
+          />
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      ) : null}
+
+      <div className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <Label
+            htmlFor={`${idPrefix}-ignore-chars`}
+            className="text-xs font-normal"
+          >
+            Neglect characters
+          </Label>
+          <Input
+            id={`${idPrefix}-ignore-chars`}
+            value={ignoreChars ?? ""}
+            onChange={(e) => onChange({ ignoreChars: e.target.value })}
+            placeholder="e.g. - / space"
+            className="h-8 w-40 font-mono text-xs"
+          />
+        </div>
+        <p className="text-[11px] text-muted-foreground">
+          Any character typed here (a space included) is stripped from both
+          sides before comparing.
+        </p>
+      </div>
+    </RestraintsSection>
   );
 }

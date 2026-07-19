@@ -30,8 +30,14 @@ import {
 } from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
 import {
+  computeWatchedColumns,
   planSheetsPollChanges,
+  readSnapshot,
+  rowValuesByHeader,
+  type SheetsPollSnapshot,
   type SheetsTriggerOn,
+  sheetsPollIdempotencyKey,
+  watchColumnsSignature,
 } from "./sheets-poll-diff";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
@@ -782,6 +788,8 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           lastRowCount: true,
           rowHashes: true,
           triggerOn: true,
+          ignoreColumns: true,
+          lastChecked: true,
         },
       });
       if (!poll) return;
@@ -813,37 +821,57 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
 
       const rows = valuesResult.values ?? [];
       const currentRowCount = rows.length;
+      const header = rows[0] ?? [];
+
+      // Ignored columns are stored as header names; resolve against the current
+      // header row (so scoping tracks a column even if it was reordered) and
+      // watch everything else. Empty = watch the whole row.
+      const ignoreNames = Array.isArray(poll.ignoreColumns)
+        ? (poll.ignoreColumns as string[])
+        : [];
+      const watchColumns = computeWatchedColumns(header, ignoreNames);
+      const newSignature = watchColumnsSignature(header, watchColumns);
+
+      // `readSnapshot` owns the persisted shape (incl. the legacy bare-array form).
+      const { hashes: oldHashes, sig: oldSignature } = readSnapshot(
+        poll.rowHashes,
+      );
 
       const { changes, newHashes } = planSheetsPollChanges({
         rows,
         lastRowCount: poll.lastRowCount,
-        // Null until the first poll seeds it, so no existing row reads as edited
-        // the first time edit detection runs.
-        oldHashes: Array.isArray(poll.rowHashes)
-          ? (poll.rowHashes as string[])
-          : null,
+        // Null until the first poll seeds it. The first poll is a baseline that
+        // fires nothing, so attaching the trigger never backfills existing rows.
+        oldHashes,
         triggerOn: poll.triggerOn as SheetsTriggerOn,
+        watchColumns,
+        oldSignature,
+        newSignature,
       });
 
       for (const { rowIndex, changeType } of changes) {
+        const row = rows[rowIndex - 1] ?? [];
         await sendWorkflowExecution({
           workflowId: poll.workflowId,
           initialData: {
             googleSheets: {
               spreadsheetId: poll.spreadsheetId,
               sheetName: poll.sheetName,
-              rowIndex,
-              row: rows[rowIndex - 1] ?? [],
               changeType,
+              // Cells keyed by column name, so a downstream node picks
+              // `googleSheets.values.<Header>` instead of a positional index.
+              values: rowValuesByHeader(header, row),
             },
           },
-          // Appends fire once per row (static key). Edits key on the new content
-          // hash, so a genuine re-edit fires again but re-polling the same edit
-          // does not.
-          idempotencyKey:
-            changeType === "added"
-              ? `google_sheets:${poll.spreadsheetId}:${rowIndex}`
-              : `google_sheets:${poll.spreadsheetId}:${rowIndex}:${newHashes[rowIndex - 1]}`,
+          idempotencyKey: sheetsPollIdempotencyKey({
+            spreadsheetId: poll.spreadsheetId,
+            rowIndex,
+            changeType,
+            row,
+            // The poll's prior lastChecked: stable across retries of this poll,
+            // distinct on the next poll, so a re-edit to an earlier value fires.
+            pollToken: String(poll.lastChecked.getTime()),
+          }),
         });
       }
 
@@ -851,7 +879,12 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         where: { id: poll.id },
         data: {
           lastRowCount: currentRowCount,
-          rowHashes: newHashes,
+          // Snapshot = the hashes plus the projection they were computed under,
+          // so the next poll can tell whether that projection still holds.
+          rowHashes: {
+            sig: newSignature,
+            hashes: newHashes,
+          } satisfies SheetsPollSnapshot,
           lastChecked: new Date(),
         },
       });
