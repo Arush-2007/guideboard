@@ -3,6 +3,7 @@
 import { NodeToolbar, Position } from "@xyflow/react";
 import { SettingsIcon, TrashIcon } from "lucide-react";
 import type { ReactNode } from "react";
+import { NODE_LABEL_MAX_WIDTH } from "@/features/editor/lib/canvas-metrics";
 import { Button } from "./ui/button";
 
 interface WorkflowNodeProps {
@@ -33,11 +34,16 @@ export function WorkflowNode({
         </NodeToolbar>
       )}
       {children}
+      {/* `maxWidth` comes from the shared canvas metric rather than a Tailwind
+          literal: the auto-layout reserves exactly this much horizontal room
+          per column, and a hardcoded copy here could drift out of sync and put
+          names back on top of each other. */}
       {name && (
         <NodeToolbar
           position={Position.Bottom}
           isVisible
-          className="max-w-[200px] text-center"
+          className="text-center"
+          style={{ maxWidth: NODE_LABEL_MAX_WIDTH }}
         >
           <p className="text-[0.6rem] font-medium leading-tight">{name}</p>
         </NodeToolbar>

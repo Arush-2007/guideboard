@@ -22,7 +22,12 @@ import {
   useReactFlow,
   useStore,
 } from "@xyflow/react";
-import { LocateFixedIcon, MinusIcon, PlusIcon } from "lucide-react";
+import {
+  LocateFixedIcon,
+  MinusIcon,
+  PlusIcon,
+  SparklesIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -42,6 +47,8 @@ import {
   withAssignedRef,
 } from "@/lib/node-ref";
 import { useEditorShortcuts } from "../hooks/use-editor-shortcuts";
+import { autoLayoutNodes, layoutChanged } from "../lib/auto-layout";
+import { SNAP_GRID } from "../lib/canvas-metrics";
 import { invalidConnectionReason } from "../lib/connection-validation";
 import { unrunnableNodes } from "../lib/connectivity";
 import { serializeSnapshot } from "../lib/snapshot";
@@ -72,7 +79,8 @@ import { UndoRedoButtons } from "./undo-redo-buttons";
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 2.5;
 
-// Framing applied when the user ASKS for it — the "center view" button.
+// Framing applied when the user ASKS for it — the "center view" and "refine"
+// buttons.
 //
 // It gets the full zoom range. A one- or two-node workflow needs ~2.5x to fill
 // the frame, so the old 1.4 cap left it stranded at ~40% in a mostly empty
@@ -100,12 +108,12 @@ const FIT_VIEW_OPTIONS = { maxZoom: MAX_ZOOM, padding: "15%" } as const;
  * FIT_VIEW_OPTIONS which the user asks for by pressing a button.
  *
  * The distinction is the zoom ceiling. Filling the frame is the right answer
- * when someone clicks "center view" — they asked to see the workflow as large
- * as it goes. It is the wrong answer on open, where the degenerate case is a
- * brand-new workflow holding nothing but the INITIAL placeholder: an 80px box
- * wants ~6x to fill the frame, and every new workflow would open on one
- * enormous "+". Capping the automatic fit keeps opening a workflow predictable;
- * pressing a button still gets the full range.
+ * when someone clicks "center view" or "refine" — they asked to see the
+ * workflow as large as it goes. It is the wrong answer on open, where the
+ * degenerate case is a brand-new workflow holding nothing but the INITIAL
+ * placeholder: an 80px box wants ~6x to fill the frame, and every new workflow
+ * would open on one enormous "+". Capping the automatic fit keeps opening a
+ * workflow predictable; pressing a button still gets the full range.
  */
 const AUTO_FIT_VIEW_OPTIONS = { ...FIT_VIEW_OPTIONS, maxZoom: 1.4 } as const;
 
@@ -114,7 +122,7 @@ const AUTO_FIT_VIEW_OPTIONS = { ...FIT_VIEW_OPTIONS, maxZoom: 1.4 } as const;
 // default bottom-left <Controls /> bar. Lives in the bottom bar (a sibling of
 // <ReactFlow>), so it relies on the surrounding <ReactFlowProvider> for store
 // access rather than being a child of <ReactFlow>.
-const MiniMapWithControls = () => {
+const MiniMapWithControls = ({ onRefine }: { onRefine: () => void }) => {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
 
   const controlButton =
@@ -147,7 +155,16 @@ const MiniMapWithControls = () => {
             <MinusIcon className="size-editor-control-icon" />
           </button>
         </div>
-        <div className="absolute bottom-1.5 right-1.5 flex justify-end">
+        <div className="absolute bottom-1.5 right-1.5 flex justify-end gap-1">
+          <button
+            type="button"
+            aria-label="Refine layout"
+            title="Refine layout"
+            onClick={onRefine}
+            className={`${controlButton} h-editor-control px-2 gap-1`}
+          >
+            <SparklesIcon className="size-editor-control-icon" />
+          </button>
           <button
             type="button"
             aria-label="Center view"
@@ -370,6 +387,9 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
   const [nodes, setNodes] = useState<Node[]>(workflow.nodes);
   const [edges, setEdges] = useState<Edge[]>(workflow.edges);
 
+  // The canvas viewport, measured at refine time to shape the layout to it.
+  const canvasRef = useRef<HTMLDivElement>(null);
+
   const lastSaved = useAtomValue(lastSavedSnapshotAtom);
   const setLastSaved = useSetAtom(lastSavedSnapshotAtom);
 
@@ -542,6 +562,66 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
     [],
   );
 
+  // "Refine layout": rebuild the canvas into clean layered columns.
+  //
+  // Writes the controlled `useState` (never `useReactFlow().setNodes`) so the
+  // authoritative state and the store agree — and that one write is all the
+  // wiring needed: <HistoryController> observes the store, so a refine records
+  // as a SINGLE undo step (nodes aren't `dragging`, so nothing is suppressed),
+  // and <DirtyTracker> flips the save button on its own. Nothing is persisted
+  // here; the user saves as with any other edit.
+  const refineTarget = useRef(false);
+  const handleRefine = useCallback(() => {
+    // Measure the canvas so the layout can be widened to its aspect ratio.
+    // `fitView` scales by min(xZoom, yZoom), so a workflow taller than the
+    // canvas is height-constrained and would fill only a narrow horizontal
+    // strip; matching the ratio makes both axes bind and the fit fill the frame
+    // in both directions. Measured per click rather than tracked, so a resized
+    // window is always accounted for without a resize observer.
+    const canvas = canvasRef.current?.getBoundingClientRect();
+    const aspectRatio =
+      canvas && canvas.width > 0 && canvas.height > 0
+        ? canvas.width / canvas.height
+        : undefined;
+
+    // Read the STORE, not the local `nodes`/`edges` state. Config-dialog edits
+    // go through `useReactFlow().setNodes` and land ONLY in the store (see
+    // <DirtyTracker>), so laying out the local copy and writing it back would
+    // silently revert every configuration change made since the last
+    // interactive edit. The Save button reads `getNodes()` for the same reason.
+    const current = editorInstance?.getNodes() ?? nodes;
+    const currentEdges = editorInstance?.getEdges() ?? edges;
+
+    // Computed OUTSIDE the state updater, which must stay pure: React
+    // double-invokes updaters under StrictMode, so a toast raised in there
+    // fires twice and the layout is computed twice per click.
+    const next = autoLayoutNodes(current, currentEdges, { aspectRatio });
+    if (!layoutChanged(current, next)) {
+      // Identity-preserving: an already-tidy canvas returns the same objects, so
+      // there is no history entry and no false dirty flag. Say so rather than
+      // leaving a button that looks broken.
+      toast.info("Layout is already tidy");
+      return;
+    }
+
+    refineTarget.current = true;
+    setNodes(next);
+  }, [editorInstance, nodes, edges]);
+
+  // Frame the result once the new positions have reached the store. `nodes` is
+  // not read in the body but is the TRIGGER: it fires this on the render the
+  // refine produced, and React runs child effects before parent ones, so by then
+  // <ReactFlow> has synced the `nodes` prop into its store. The ref gates it to
+  // refines only, so ordinary edits and drags fall straight through — and it is
+  // cleared only once the fit can actually run, so a missing instance defers the
+  // fit to the next render instead of swallowing it.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `nodes` is the trigger, not an input — see above.
+  useEffect(() => {
+    if (!refineTarget.current || !editorInstance) return;
+    refineTarget.current = false;
+    editorInstance.fitView({ ...FIT_VIEW_OPTIONS, duration: 300 });
+  }, [nodes, editorInstance]);
+
   const backgroundConfig = useMemo(
     () => ({
       variant: BackgroundVariant.Lines,
@@ -592,6 +672,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             tray no longer overlay the flow. Drop target for staged nodes. */}
         {/* biome-ignore lint/a11y/noStaticElementInteractions: canvas drop zone for staged nodes */}
         <div
+          ref={canvasRef}
           className="relative flex-1"
           onDrop={onDrop}
           onDragOver={onDragOver}
@@ -612,7 +693,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             fitViewOptions={AUTO_FIT_VIEW_OPTIONS}
             minZoom={MIN_ZOOM}
             maxZoom={MAX_ZOOM}
-            snapGrid={[10, 10]}
+            snapGrid={[SNAP_GRID, SNAP_GRID]}
             snapToGrid
             panOnScroll
             panOnDrag={false}
@@ -649,7 +730,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             outside the canvas so neither covers the flow. */}
         <div className="flex h-editor-bar shrink-0 items-center justify-between gap-4 border-t border-border/70 bg-background px-4">
           <StagingTray />
-          <MiniMapWithControls />
+          <MiniMapWithControls onRefine={handleRefine} />
         </div>
         <NavGuardDialog workflowId={workflowId} />
       </div>
