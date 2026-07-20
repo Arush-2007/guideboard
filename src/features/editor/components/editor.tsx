@@ -63,6 +63,52 @@ import { NavGuardDialog } from "./nav-guard-dialog";
 import { StagingTray } from "./staging-tray";
 import { UndoRedoButtons } from "./undo-redo-buttons";
 
+// Canvas zoom bounds. React Flow's DEFAULT minZoom is 0.5, and leaving it at
+// that is not merely a tight manual limit — `fitView` is clamped by the same
+// floor. So a workflow larger than 2x the viewport can never be fitted: the
+// zoom-out buttons, the zoomable minimap and the "center view" button all stop
+// at 50% showing a cropped graph. 0.1 gives ~100x the viewport area, enough for
+// any workflow a user can realistically build.
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 2.5;
+
+// Framing applied when the user ASKS for it — the "center view" button.
+//
+// It gets the full zoom range. A one- or two-node workflow needs ~2.5x to fill
+// the frame, so the old 1.4 cap left it stranded at ~40% in a mostly empty
+// canvas; someone who pressed the button wants the workflow as large as it goes.
+// Automatic framing is capped lower — see AUTO_FIT_VIEW_OPTIONS.
+//
+// The ceiling may sit at or below MAX_ZOOM but never above it: `fitViewport`
+// resolves it as `options.maxZoom ?? store.maxZoom` (@xyflow/system), so a
+// higher cap would leave the canvas at a zoom the +/- buttons cannot hold and
+// the next press would jump backwards.
+//
+// `padding` fills 70% of the canvas with the workflow, leaving 15% either side.
+//
+// ⚠️ It MUST stay a percentage STRING. @xyflow/system's `parsePadding` treats
+// the two forms completely differently:
+//   "15%"  → floor(viewport * 0.15) a side ⇒ content fills 1 - 2(0.15) = 70%
+//   0.15   → floor((v - v/1.15) * 0.5)     ⇒ content fills 1/1.15  = 87%
+// The numeric form is a zoom-out ratio, not a fraction of the viewport, so
+// React Flow's numeric default of 0.1 is a 91% fill — not 80%. Writing 0.15
+// here as a bare number silently lands on 87%.
+const FIT_VIEW_OPTIONS = { maxZoom: MAX_ZOOM, padding: "15%" } as const;
+
+/**
+ * Framing applied AUTOMATICALLY when a workflow is opened, as opposed to
+ * FIT_VIEW_OPTIONS which the user asks for by pressing a button.
+ *
+ * The distinction is the zoom ceiling. Filling the frame is the right answer
+ * when someone clicks "center view" — they asked to see the workflow as large
+ * as it goes. It is the wrong answer on open, where the degenerate case is a
+ * brand-new workflow holding nothing but the INITIAL placeholder: an 80px box
+ * wants ~6x to fill the frame, and every new workflow would open on one
+ * enormous "+". Capping the automatic fit keeps opening a workflow predictable;
+ * pressing a button still gets the full range.
+ */
+const AUTO_FIT_VIEW_OPTIONS = { ...FIT_VIEW_OPTIONS, maxZoom: 1.4 } as const;
+
 // MiniMap with overlaid view controls: zoom in/out at the top-right of the
 // minimap, and a "center view" (fit) button along its bottom. Replaces the
 // default bottom-left <Controls /> bar. Lives in the bottom bar (a sibling of
@@ -105,7 +151,7 @@ const MiniMapWithControls = () => {
           <button
             type="button"
             aria-label="Center view"
-            onClick={() => fitView({ duration: 300, maxZoom: 1.4 })}
+            onClick={() => fitView({ ...FIT_VIEW_OPTIONS, duration: 300 })}
             className={`${controlButton} h-editor-control px-2 gap-1`}
           >
             <LocateFixedIcon className="size-editor-control-icon" />
@@ -128,7 +174,7 @@ const FitViewOnLoad = () => {
   useEffect(() => {
     if (nodesInitialized && !hasFit.current) {
       hasFit.current = true;
-      fitView({ maxZoom: 1.4 });
+      fitView(AUTO_FIT_VIEW_OPTIONS);
     }
   }, [nodesInitialized, fitView]);
 
@@ -563,8 +609,9 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             onInit={setEditor}
             deleteKeyCode={["Delete", "Backspace"]}
             fitView
-            fitViewOptions={{ maxZoom: 1.4 }}
-            maxZoom={2}
+            fitViewOptions={AUTO_FIT_VIEW_OPTIONS}
+            minZoom={MIN_ZOOM}
+            maxZoom={MAX_ZOOM}
             snapGrid={[10, 10]}
             snapToGrid
             panOnScroll
