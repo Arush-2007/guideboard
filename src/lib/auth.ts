@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { prismaAdapter } from "better-auth/adapters/prisma";
 import prisma from "@/lib/db";
-import { sendEmail } from "@/lib/email";
+import { emailTemplate, sendEmail } from "@/lib/email";
 import { encrypt } from "@/lib/encryption";
 
 const githubClientId = process.env.GITHUB_CLIENT_ID;
@@ -94,25 +94,54 @@ export const auth = betterAuth({
         to: user.email,
         subject: "Reset your Guideboard password",
         text: `Reset your password by visiting this link: ${url}\n\nIf you didn't request this, you can safely ignore this email. The link expires in 1 hour.`,
-        html: `
-          <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
-            <h2 style="margin-bottom: 8px;">Reset your password</h2>
-            <p style="color: #555; line-height: 1.5;">
-              We received a request to reset your Guideboard password. Click the
-              button below to choose a new one.
-            </p>
-            <p style="margin: 24px 0;">
-              <a href="${url}" style="background: #111; color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; display: inline-block;">
-                Reset password
-              </a>
-            </p>
-            <p style="color: #888; font-size: 13px; line-height: 1.5;">
-              If you didn't request this, you can safely ignore this email.
-              This link expires in 1 hour.
-            </p>
-          </div>
-        `,
+        html: emailTemplate({
+          heading: "Reset your password",
+          body: "We received a request to reset your Guideboard password. Click the button below to choose a new one.",
+          cta: "Reset password",
+          url,
+        }),
       });
+    },
+  },
+  // Email-change confirmation depends on a verification sender being present.
+  // `sendOnSignUp` stays off so the existing signup flow is unchanged — this
+  // sender exists purely to close the loop on an address change.
+  emailVerification: {
+    sendVerificationEmail: async ({ user, url }) => {
+      await sendEmail({
+        to: user.email,
+        subject: "Confirm your Guideboard email address",
+        text: `Confirm this address by visiting this link: ${url}\n\nIf you didn't request this, you can safely ignore this email.`,
+        html: emailTemplate({
+          heading: "Confirm your email address",
+          body: "Click below to confirm this address for your Guideboard account.",
+          cta: "Confirm email",
+          url,
+        }),
+      });
+    },
+  },
+  user: {
+    changeEmail: {
+      enabled: true,
+      // Better Auth picks the safer of two paths on its own: when the current
+      // address is verified the confirmation goes to *that* address (below), so
+      // whoever holds the account today has to approve the move; when it isn't
+      // verified it falls through to `sendVerificationEmail` against the new
+      // address instead. Either way the email only changes after a click.
+      sendChangeEmailConfirmation: async ({ user, newEmail, url }) => {
+        await sendEmail({
+          to: user.email,
+          subject: "Approve your Guideboard email change",
+          text: `Approve changing your Guideboard email to ${newEmail} by visiting this link: ${url}\n\nIf you didn't request this, ignore this email and your address stays as it is.`,
+          html: emailTemplate({
+            heading: "Approve your email change",
+            body: `Someone asked to change this account's email address to <strong>${newEmail}</strong>. Approve it below, or ignore this email to keep things as they are.`,
+            cta: "Approve change",
+            url,
+          }),
+        });
+      },
     },
   },
   socialProviders: {
