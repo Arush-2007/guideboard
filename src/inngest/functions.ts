@@ -367,7 +367,11 @@ export const executeWorkflow = inngest.createFunction(
     if (idempotencyKey) {
       const existing = await step.run("check-idempotency", async () => {
         return prisma.execution.findUnique({
-          where: { idempotencyKey },
+          // Scoped to this workflow: the key names the external event, so an
+          // identical key under a DIFFERENT workflow is a different run that
+          // must not be deduped away (a copied workflow watching the same
+          // sheet, or another tenant watching the same public video).
+          where: { workflowId_idempotencyKey: { workflowId, idempotencyKey } },
           select: { id: true, status: true },
         });
       });

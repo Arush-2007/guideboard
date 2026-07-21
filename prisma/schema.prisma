@@ -455,7 +455,15 @@ model Execution {
 
   inngestEventId String @unique
 
-  idempotencyKey String? @unique
+  // Dedup key for the external event that started this run (`gmail:<messageId>`,
+  // `google_sheets:<sheetId>:<row>:…`). Unique PER WORKFLOW, not globally: those
+  // keys name an event, and two workflows watching the same inbox, sheet or
+  // video legitimately both handle it. A global unique here meant whichever
+  // poll landed first created the row and the other workflow's run was silently
+  // dropped — trivially reachable by copying a workflow, and cross-tenant for a
+  // shared source like a YouTube comment id. Nulls stay distinct in Postgres, so
+  // the many runs without a key are unaffected.
+  idempotencyKey String?
 
   // The trigger payload (initialData) this run started with, persisted so a run
   // can be re-dispatched verbatim via the `rerun` mutation. For a replay-from-node
@@ -473,6 +481,7 @@ model Execution {
 
   nodeExecutions NodeExecution[]
 
+  @@unique([workflowId, idempotencyKey])
   @@index([workflowId, startedAt])
   @@index([workflowId, status, startedAt])
   @@index([replayOfId])

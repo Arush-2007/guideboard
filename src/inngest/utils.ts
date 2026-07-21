@@ -64,26 +64,17 @@ type SendWorkflowExecutionInput = {
 };
 
 /**
- * Scopes a caller's idempotency key to one workflow.
+ * Callers pass a key naming the EXTERNAL EVENT only — `gmail:<messageId>`,
+ * `youtube:<commentId>`, `google_sheets:<sheetId>:<row>:…` — never the
+ * workflow. Two workflows watching the same inbox, sheet, chat or video
+ * legitimately both handle the same event, and each should run.
  *
- * `Execution.idempotencyKey` is GLOBALLY unique, but almost every caller
- * derives its key purely from the external event — `gmail:<messageId>`,
- * `youtube:<commentId>`, `google_sheets:<sheetId>:<row>:…`. Two workflows
- * watching the same inbox, sheet, chat or video therefore compete for one key:
- * whichever poll lands first creates the Execution and the other is silently
- * dropped by `executeWorkflow`'s `check-idempotency` step. That is trivially
- * reachable — copy a workflow and save it, and the copy never runs — and worse
- * across TENANTS, since a YouTube comment id or a shared spreadsheet id is the
- * same string for every user watching it.
- *
- * The key is meant to mean "this workflow already handled this event", so the
- * workflow belongs in it. Scoping happens HERE, at the single door every
- * trigger goes through, rather than in each of the seven call sites that mint a
- * key — a new trigger cannot forget a rule it never has to apply.
+ * That is enforced by the `@@unique([workflowId, idempotencyKey])` constraint
+ * on `Execution` (see the schema), which `executeWorkflow`'s `check-idempotency`
+ * step reads through. Scoping lives in the constraint rather than in the key's
+ * text so it is a fact the database holds, not a prefix convention every
+ * producer has to apply and every reader has to strip.
  */
-export const scopedIdempotencyKey = (workflowId: string, key: string): string =>
-  `wf:${workflowId}:${key}`;
-
 export const sendWorkflowExecution = async ({
   workflowId,
   initialData,
@@ -98,9 +89,7 @@ export const sendWorkflowExecution = async ({
       workflowId,
       initialData: initialData ?? {},
       initialDataBlobKey,
-      idempotencyKey: idempotencyKey
-        ? scopedIdempotencyKey(workflowId, idempotencyKey)
-        : undefined,
+      idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,
     },

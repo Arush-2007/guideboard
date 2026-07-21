@@ -115,9 +115,9 @@ const formatStatus = (status: ExecutionStatus) => {
  */
 const fanOutItemNumber = (idempotencyKey: string | null): number | null => {
   if (!idempotencyKey) return null;
-  // Located, not position-indexed: `sendWorkflowExecution` prefixes every key
-  // with its `wf:<workflowId>:` scope, and pre-scoping rows have no prefix, so
-  // "fanout:" can start at either offset.
+  // Located rather than position-indexed, because rows written during the brief
+  // window when scoping was a `wf:<workflowId>:` key prefix (rather than the
+  // unique constraint it is now) carry that prefix ahead of "fanout:".
   const marker = idempotencyKey.indexOf("fanout:");
   if (marker === -1) return null;
   const parts = idempotencyKey.slice(marker).split(":");
