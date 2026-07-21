@@ -13,6 +13,7 @@ import { auth } from "@/lib/auth";
 import { deleteBlob, isBlobConfigured, putBlob } from "@/lib/blob";
 import prisma from "@/lib/db";
 import { isAllowed } from "@/lib/rate-limit";
+import { isTrustedOrigin } from "@/lib/trusted-origins";
 
 /**
  * Avatar upload and removal.
@@ -47,6 +48,13 @@ async function deleteExistingAvatar(image: string | null, userId: string) {
 }
 
 export async function POST(request: Request) {
+  // This route sits outside Better Auth's own origin check, and a multipart
+  // POST is a CORS-simple request — no preflight, cookie attached — so without
+  // this an attacker's page could replace a signed-in user's avatar.
+  if (!isTrustedOrigin(request)) {
+    return badRequest("Request origin is not allowed.", 403);
+  }
+
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) {
     return badRequest("Unauthorized", 401);
@@ -57,13 +65,6 @@ export async function POST(request: Request) {
     return badRequest(
       "Avatar uploads aren't available — object storage isn't configured.",
       503,
-    );
-  }
-
-  if (!isAllowed(`avatar-upload:${userId}`, UPLOADS_PER_HOUR, HOUR_MS)) {
-    return badRequest(
-      "Too many avatar changes in the last hour. Try again later.",
-      429,
     );
   }
 
@@ -94,6 +95,16 @@ export async function POST(request: Request) {
     return badRequest("That file isn't a PNG, JPEG, or WebP image.");
   }
 
+  // Metered only once the request is known to be a real upload, so picking the
+  // wrong file ten times doesn't exhaust the hour's budget before the first
+  // valid image gets through.
+  if (!isAllowed(`avatar-upload:${userId}`, UPLOADS_PER_HOUR, HOUR_MS)) {
+    return badRequest(
+      "Too many avatar changes in the last hour. Try again later.",
+      429,
+    );
+  }
+
   // Read the outgoing image before overwriting it. `session.user.image` can't
   // be used here — the session is served from a 5-minute cookie cache, so it
   // may still name an avatar that was already replaced.
@@ -103,10 +114,21 @@ export async function POST(request: Request) {
   });
 
   const name = `${createId()}.${avatarExtension(contentType)}`;
-  await putBlob({ key: avatarObjectKey(userId, name), bytes, contentType });
+  const key = avatarObjectKey(userId, name);
+  await putBlob({ key, bytes, contentType });
 
   const image = avatarPublicPath(userId, name);
-  await prisma.user.update({ where: { id: userId }, data: { image } });
+  try {
+    await prisma.user.update({ where: { id: userId }, data: { image } });
+  } catch (error) {
+    // The object is already in the bucket but nothing will ever reference it —
+    // `User.image` still names the old file, so the cleanup below would never
+    // reach this one. Drop it rather than leak an unreachable object per
+    // failure.
+    await deleteBlob(key).catch(() => {});
+    throw error;
+  }
+
   // Only once the new avatar is durably referenced, so a failure mid-way leaves
   // the old face working rather than none at all.
   await deleteExistingAvatar(previousImage, userId);
@@ -114,7 +136,11 @@ export async function POST(request: Request) {
   return NextResponse.json({ image });
 }
 
-export async function DELETE() {
+export async function DELETE(request: Request) {
+  if (!isTrustedOrigin(request)) {
+    return badRequest("Request origin is not allowed.", 403);
+  }
+
   const session = await auth.api.getSession({ headers: await headers() });
   if (!session) {
     return badRequest("Unauthorized", 401);

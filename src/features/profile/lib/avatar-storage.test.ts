@@ -3,6 +3,7 @@ import {
   avatarObjectKey,
   avatarPublicPath,
   isValidAvatarFile,
+  isValidAvatarUserId,
   parseAvatarPath,
   sniffAvatarContentType,
 } from "./avatar-storage";
@@ -95,5 +96,24 @@ describe("key + path helpers", () => {
     ["some other app route", "/api/profile/avatar"],
   ])("returns null for %s", (_name, image) => {
     expect(parseAvatarPath(image)).toBeNull();
+  });
+});
+
+describe("isValidAvatarUserId", () => {
+  it("accepts a Better Auth user id", () => {
+    expect(isValidAvatarUserId("clh3k2m9x0000abcd1234")).toBe(true);
+    expect(isValidAvatarUserId("user_1")).toBe(true);
+    expect(isValidAvatarUserId("A-b_9")).toBe(true);
+  });
+
+  it.each([
+    ["a traversal attempt", ".."],
+    ["a nested traversal", "../.."],
+    ["a path separator", "a/b"],
+    ["an empty segment", ""],
+    ["a dot", "."],
+    ["something absurdly long", "a".repeat(65)],
+  ])("rejects %s", (_name, userId) => {
+    expect(isValidAvatarUserId(userId)).toBe(false);
   });
 });

@@ -41,5 +41,11 @@ export const useRefreshProfile = () => {
       queryClient.invalidateQueries(
         trpc.profile.listConnectedAccounts.queryFilter(),
       ),
+      // Included so callers don't each have to remember it: this is the count
+      // the disconnect confirmation quotes, and a stale one would understate
+      // what the user is about to break.
+      queryClient.invalidateQueries(
+        trpc.profile.googleDependentWorkflowCount.queryFilter(),
+      ),
     ]);
 };

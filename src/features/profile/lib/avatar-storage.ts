@@ -67,6 +67,17 @@ const AVATAR_FILE_RE = /^[a-z0-9]{8,40}\.(?:webp|png|jpg)$/;
 export const isValidAvatarFile = (file: string): boolean =>
   AVATAR_FILE_RE.test(file);
 
+/**
+ * The shape of a Better Auth user id. Checked on the way in for the same reason
+ * as the filename: both segments are interpolated into an object key, and
+ * leaning on "S3 treats keys as opaque strings" for the traversal guard puts the
+ * safety in the storage backend rather than in this code.
+ */
+const USER_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+export const isValidAvatarUserId = (userId: string): boolean =>
+  USER_ID_RE.test(userId);
+
 export const avatarObjectKey = (userId: string, file: string): string =>
   `avatars/${userId}/${file}`;
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { PlugZapIcon } from "lucide-react";
 import Image from "next/image";
@@ -71,7 +71,6 @@ const reconnect = (providerId: string) => {
 
 export const ConnectedAccountsCard = () => {
   const trpc = useTRPC();
-  const queryClient = useQueryClient();
   const { data: accounts } = useConnectedAccounts();
   const { data: googleWorkflowCount } = useGoogleDependentWorkflowCount();
   const refreshProfile = useRefreshProfile();
@@ -85,9 +84,6 @@ export const ConnectedAccountsCard = () => {
       onSuccess: async (_data, variables) => {
         setPendingDisconnect(null);
         await refreshProfile();
-        await queryClient.invalidateQueries(
-          trpc.profile.googleDependentWorkflowCount.queryFilter(),
-        );
         toast.success(`${brandFor(variables.providerId).label} disconnected`);
       },
       onError: (error) => {

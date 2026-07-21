@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import {
   avatarObjectKey,
   isValidAvatarFile,
+  isValidAvatarUserId,
 } from "@/features/profile/lib/avatar-storage";
 import { getBlobBytes, isBlobConfigured } from "@/lib/blob";
 
@@ -25,9 +26,10 @@ export async function GET(
 ) {
   const { userId, file } = await params;
 
-  // The filename is interpolated straight into an object key below, so it has
-  // to match the exact shape we write — no traversal, no surprise extensions.
-  if (!isValidAvatarFile(file)) {
+  // Both segments are interpolated straight into an object key below, so both
+  // have to match the exact shape we write — no traversal, no surprise
+  // extensions.
+  if (!isValidAvatarUserId(userId) || !isValidAvatarFile(file)) {
     return new NextResponse("Not found", { status: 404 });
   }
 

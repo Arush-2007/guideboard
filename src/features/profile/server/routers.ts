@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { isAPIError } from "better-auth/api";
 import { headers } from "next/headers";
 import z from "zod";
 import { NodeType } from "@/generated/prisma";
@@ -152,16 +153,21 @@ export const profileRouter = createTRPCRouter({
           body: { providerId: input.providerId },
         });
       } catch (error) {
-        // Better Auth refuses to unlink the only remaining sign-in method. That
-        // is a user-fixable situation ("set a password first"), not a server
-        // fault, so it must not surface as a 500.
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Couldn't disconnect that account.",
-        });
+        // Better Auth refuses to unlink the only remaining sign-in method, and
+        // says so with a 4xx APIError. That is user-fixable ("set a password
+        // first"), so it becomes a BAD_REQUEST the UI can show verbatim.
+        //
+        // Anything else — a 5xx, a dropped database connection, a bug — is NOT
+        // the user's fault and must keep its own status: dressing it up as a
+        // 400 hides a real outage behind a message that reads like validation,
+        // and loses the 5xx that alerting keys on.
+        if (isAPIError(error) && error.statusCode < 500) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: error.body?.message ?? "Couldn't disconnect that account.",
+          });
+        }
+        throw error;
       }
 
       if (input.providerId === "google") {

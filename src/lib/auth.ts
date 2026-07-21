@@ -3,6 +3,7 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import prisma from "@/lib/db";
 import { emailTemplate, sendEmail } from "@/lib/email";
 import { encrypt } from "@/lib/encryption";
+import { trustedOrigins } from "@/lib/trusted-origins";
 
 const githubClientId = process.env.GITHUB_CLIENT_ID;
 const githubClientSecret = process.env.GITHUB_CLIENT_SECRET;
@@ -45,13 +46,7 @@ export const auth = betterAuth({
   // webhooks unchanged. localhost is NOT trusted in production builds. Without a
   // matching trusted origin, better-auth rejects the request with a 403 on the
   // origin/CSRF check.
-  trustedOrigins: [
-    process.env.NODE_ENV === "development"
-      ? "http://localhost:3000"
-      : undefined,
-    process.env.NEXT_PUBLIC_APP_URL,
-    process.env.NGROK_URL,
-  ].filter((origin): origin is string => Boolean(origin)),
+  trustedOrigins: trustedOrigins(),
   session: {
     // Serve getSession from a signed cookie snapshot instead of hitting Postgres
     // on every call; refresh from DB after maxAge. Benefits both requireAuth() and
