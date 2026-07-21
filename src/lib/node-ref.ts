@@ -96,6 +96,83 @@ export function nextNodeRef(
 }
 
 /**
+ * Resolves the final, collision-free ref for every node in a save payload.
+ *
+ * `Node.ref` carries `@@unique([workflowId, ref])`, so two nodes claiming the
+ * same ref don't produce a warning — they abort the whole save with a raw
+ * Prisma constraint error the user can do nothing about. Ref assignment happens
+ * on the canvas (so a node renders as `AI_TEXT_1` the moment it's dropped),
+ * which means the server is receiving refs it did not mint and must not trust:
+ * any client bug, stale tab, or hand-rolled request turns into a dead
+ * "Failed to save workflow". This is the server-side door for that invariant.
+ *
+ * Priority when two nodes claim the same ref:
+ *   1. A node whose claim matches what the database already has for it keeps
+ *      it. That ref is its frozen identity and existing `@<REF.path>@`
+ *      references point at it — moving it would silently re-aim them.
+ *   2. Everyone else, in payload order, keeps a free claim or is bumped to the
+ *      next available number for its type.
+ *
+ * References are deliberately NOT rewritten for a bumped node: a reference
+ * written against the duplicated ref is already ambiguous (it could have meant
+ * either node), and guessing would silently re-point data flow. Bumping keeps
+ * the save working and leaves the ambiguity visible in the editor, which is the
+ * honest failure mode.
+ *
+ * `storedRefById` is the DB's current ref per node id — empty for a brand-new
+ * workflow. Returns the ref per node id (null for ref-less types) plus the
+ * nodes that had to be bumped, so callers can log or surface it.
+ */
+export function resolveNodeRefs<T extends { id: string } & RefCarrier>(
+  nodes: readonly T[],
+  storedRefById: ReadonlyMap<string, string | null> = new Map(),
+): {
+  refByNodeId: Map<string, string | null>;
+  reassigned: { nodeId: string; from: string; to: string }[];
+} {
+  const claimOf = (node: T): string | null =>
+    readNodeRef(node.data) ?? storedRefById.get(node.id) ?? null;
+
+  // A claim is "owned" when the database already agrees it belongs to this
+  // node, which is what makes it the one that survives a clash.
+  const owned = new Set<string>();
+  for (const node of nodes) {
+    const claim = claimOf(node);
+    if (claim && storedRefById.get(node.id) === claim) owned.add(claim);
+  }
+
+  const refByNodeId = new Map<string, string | null>();
+  const reassigned: { nodeId: string; from: string; to: string }[] = [];
+  const used = new Set<string>();
+
+  // Seed with every owned claim so a bump can't land on one before we reach it.
+  for (const ref of owned) used.add(ref);
+
+  for (const node of nodes) {
+    if (!node.type || !nodeTypeHasRef(node.type)) {
+      refByNodeId.set(node.id, null);
+      continue;
+    }
+
+    const claim = claimOf(node);
+    const isOwner = Boolean(claim) && storedRefById.get(node.id) === claim;
+
+    if (claim && (isOwner || !used.has(claim))) {
+      refByNodeId.set(node.id, claim);
+      used.add(claim);
+      continue;
+    }
+
+    const next = nextNodeRef(node.type, used);
+    used.add(next);
+    refByNodeId.set(node.id, next);
+    if (claim) reassigned.push({ nodeId: node.id, from: claim, to: next });
+  }
+
+  return { refByNodeId, reassigned };
+}
+
+/**
  * The canvas-side carrier of a ref.
  *
  * On a React Flow node the ref lives at `data.ref`, NOT as a top-level field.

@@ -12,6 +12,7 @@ import {
   removeRefsInTemplate,
   renameRefInData,
   renameRefInTemplate,
+  resolveNodeRefs,
   rewriteRefsInJson,
   stripRefFromData,
   toRefSlug,
@@ -480,5 +481,141 @@ describe("rewriteRefsInJson", () => {
     const out = JSON.parse(rewriteRefsInJson(json, map));
     expect(out.field).toBe("@<AI_TEXT_1.output>@");
     expect(out.url).toBe("@<HTTP_REQUEST_1.httpResponse.status>@");
+  });
+});
+
+describe("resolveNodeRefs", () => {
+  const node = (id: string, type: string, ref?: string) => ({
+    id,
+    type,
+    data: ref ? { ref } : {},
+  });
+
+  it("keeps every claim when there is no clash", () => {
+    const { refByNodeId, reassigned } = resolveNodeRefs([
+      node("a", "AI_TEXT", "AI_TEXT_1"),
+      node("b", "AI_TEXT", "AI_TEXT_2"),
+      node("c", "SLACK_ACTION", "SLACK_ACTION_1"),
+    ]);
+
+    expect([...refByNodeId.values()]).toEqual([
+      "AI_TEXT_1",
+      "AI_TEXT_2",
+      "SLACK_ACTION_1",
+    ]);
+    expect(reassigned).toEqual([]);
+  });
+
+  it("leaves ref-less types (triggers, INITIAL) null", () => {
+    const { refByNodeId } = resolveNodeRefs([
+      node("t", "TELEGRAM_TRIGGER"),
+      node("i", "INITIAL"),
+      node("a", "AI_TEXT"),
+    ]);
+
+    expect(refByNodeId.get("t")).toBeNull();
+    expect(refByNodeId.get("i")).toBeNull();
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_1");
+  });
+
+  it("mints a ref for a node that arrives without one", () => {
+    const { refByNodeId } = resolveNodeRefs([
+      node("a", "AI_TEXT", "AI_TEXT_1"),
+      node("b", "AI_TEXT"),
+    ]);
+
+    expect(refByNodeId.get("b")).toBe("AI_TEXT_2");
+  });
+
+  it("falls back to the stored ref when the payload carries none", () => {
+    const { refByNodeId } = resolveNodeRefs(
+      [node("a", "AI_TEXT")],
+      new Map([["a", "AI_TEXT_7"]]),
+    );
+
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_7");
+  });
+
+  it("lets a client-sent rename win over the stored ref", () => {
+    const { refByNodeId, reassigned } = resolveNodeRefs(
+      [node("a", "AI_TEXT", "Summarizer")],
+      new Map([["a", "AI_TEXT_1"]]),
+    );
+
+    expect(refByNodeId.get("a")).toBe("Summarizer");
+    expect(reassigned).toEqual([]);
+  });
+
+  // The whole point: a duplicate used to abort the save with a raw
+  // `@@unique([workflowId, ref])` Prisma error.
+  it("bumps a duplicate claim instead of failing the save", () => {
+    const { refByNodeId, reassigned } = resolveNodeRefs([
+      node("a", "AI_TEXT", "AI_TEXT_1"),
+      node("b", "AI_TEXT", "AI_TEXT_1"),
+    ]);
+
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("b")).toBe("AI_TEXT_2");
+    expect(reassigned).toEqual([
+      { nodeId: "b", from: "AI_TEXT_1", to: "AI_TEXT_2" },
+    ]);
+  });
+
+  it("gives the ref to the node the database says owns it, not payload order", () => {
+    // `b` is the newcomer even though it comes first in the payload.
+    const { refByNodeId } = resolveNodeRefs(
+      [node("b", "AI_TEXT", "AI_TEXT_1"), node("a", "AI_TEXT", "AI_TEXT_1")],
+      new Map([["a", "AI_TEXT_1"]]),
+    );
+
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("b")).toBe("AI_TEXT_2");
+  });
+
+  it("never bumps onto a ref an owner holds later in the payload", () => {
+    const { refByNodeId } = resolveNodeRefs(
+      [node("x", "AI_TEXT", "AI_TEXT_1"), node("a", "AI_TEXT", "AI_TEXT_2")],
+      new Map([["a", "AI_TEXT_2"]]),
+    );
+
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_2");
+    expect(refByNodeId.get("x")).toBe("AI_TEXT_1");
+  });
+
+  it("resolves a three-way pile-up onto distinct refs", () => {
+    const { refByNodeId } = resolveNodeRefs([
+      node("a", "AI_TEXT", "AI_TEXT_1"),
+      node("b", "AI_TEXT", "AI_TEXT_1"),
+      node("c", "AI_TEXT", "AI_TEXT_1"),
+    ]);
+
+    const refs = [...refByNodeId.values()];
+    expect(new Set(refs).size).toBe(3);
+  });
+
+  it("always returns a collision-free set for a messy mixed payload", () => {
+    const { refByNodeId } = resolveNodeRefs(
+      [
+        node("t", "TELEGRAM_TRIGGER"),
+        node("a", "AI_TEXT", "AI_TEXT_1"),
+        node("b", "AI_TEXT", "AI_TEXT_1"),
+        node("c", "AI_TEXT"),
+        node("d", "SLACK_ACTION", "AI_TEXT_1"),
+        node("e", "SLACK_ACTION"),
+      ],
+      new Map([["b", "AI_TEXT_1"]]),
+    );
+
+    const refs = [...refByNodeId.values()].filter(Boolean);
+    expect(new Set(refs).size).toBe(refs.length);
+    // The database owner keeps it; the payload-order-first node is bumped.
+    expect(refByNodeId.get("b")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("a")).not.toBe("AI_TEXT_1");
+  });
+
+  it("handles an empty payload", () => {
+    const { refByNodeId, reassigned } = resolveNodeRefs([]);
+    expect(refByNodeId.size).toBe(0);
+    expect(reassigned).toEqual([]);
   });
 });

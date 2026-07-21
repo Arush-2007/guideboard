@@ -494,30 +494,37 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         y: e.clientY,
       });
 
-      setNodes((current) => {
-        const hasInitialTrigger = current.some(
-          (node) => node.type === NodeType.INITIAL,
-        );
+      // Read the STORE, not the local `nodes` state — the same reason
+      // <DirtyTracker>, <ConfigValidator>, "Refine layout" and the Save button
+      // all do. Config-dialog edits (a rename among them) go through
+      // `useReactFlow().setNodes` and land ONLY in the store, so the local copy
+      // can be stale. Computing the used refs from it handed the new node a ref
+      // a renamed node had already taken, and the save then died on
+      // `@@unique([workflowId, ref])`; writing the local copy back would also
+      // have reverted every config edit since the last interactive change.
+      const current = editorInstance.getNodes();
+      const hasInitialTrigger = current.some(
+        (node) => node.type === NodeType.INITIAL,
+      );
 
-        // Replacing the INITIAL placeholder wipes the canvas, so the surviving
-        // set — and therefore the refs the new node must not collide with — is
-        // empty in that case and `current` otherwise.
-        const survivors = hasInitialTrigger ? [] : current;
+      // Replacing the INITIAL placeholder wipes the canvas, so the surviving
+      // set — and therefore the refs the new node must not collide with — is
+      // empty in that case and `current` otherwise.
+      const survivors = hasInitialTrigger ? [] : current;
 
-        // Stamp the ref here rather than letting the server assign it on save:
-        // the node has to render as AI_TEXT_1 the moment it's dropped.
-        const newNode: Node = withAssignedRef(
-          {
-            id: createId(),
-            type: staged.type,
-            position,
-            data: {},
-          },
-          collectNodeRefs(survivors),
-        );
+      // Stamp the ref here rather than letting the server assign it on save:
+      // the node has to render as AI_TEXT_1 the moment it's dropped.
+      const newNode: Node = withAssignedRef(
+        {
+          id: createId(),
+          type: staged.type,
+          position,
+          data: {},
+        },
+        collectNodeRefs(survivors),
+      );
 
-        return [...survivors, newNode];
-      });
+      setNodes([...survivors, newNode]);
 
       setStaged((prev) => prev.filter((node) => node.id !== staged.id));
     },

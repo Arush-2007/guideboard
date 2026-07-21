@@ -6,11 +6,10 @@ import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
 import { isTimeout, timeoutSignal } from "@/lib/http";
+import { logger } from "@/lib/logger";
 import {
   legacyOutputKey,
-  nextNodeRef,
-  nodeTypeHasRef,
-  readNodeRef,
+  resolveNodeRefs,
   rewriteRefsInJson,
   stripRefFromData,
 } from "@/lib/node-ref";
@@ -258,28 +257,23 @@ export const workflowsRouter = createTRPCRouter({
       });
       const refById = new Map(existingRefs.map((n) => [n.id, n.ref]));
 
-      // The ref the client claims for a node lives in `data.ref` (see
-      // `RefCarrier` in lib/node-ref.ts) and is authoritative over the stored
-      // value — so a rename the client sends wins over what the column currently
-      // says. `refById` is the fallback for a node whose payload carries no ref
-      // yet.
-      const usedRefs = new Set<string>();
-      for (const node of nodes) {
-        const known = readNodeRef(node.data) ?? refById.get(node.id);
-        if (known) usedRefs.add(known);
+      // First pass: resolve each node's final ref and map its legacy `<type>_<id>`
+      // output key to it. The ref a client claims lives in `data.ref` and wins
+      // over the stored column (that's how a rename lands), but it is NOT
+      // trusted blind: `resolveNodeRefs` guarantees the batch is collision-free,
+      // because a duplicate would otherwise fail the whole save on
+      // `@@unique([workflowId, ref])` with a raw Prisma error.
+      const { refByNodeId, reassigned } = resolveNodeRefs(nodes, refById);
+      if (reassigned.length > 0) {
+        logger.warn("Reassigned duplicate node refs on save", {
+          workflowId: id,
+          reassigned,
+        });
       }
 
-      // First pass: resolve each node's final ref and map its legacy `<type>_<id>`
-      // output key to it.
-      const refByNodeId = new Map<string, string | null>();
       const legacyKeyToRef = new Map<string, string>();
       for (const node of nodes) {
-        let ref = readNodeRef(node.data) ?? refById.get(node.id) ?? null;
-        if (!ref && node.type && nodeTypeHasRef(node.type)) {
-          ref = nextNodeRef(node.type, usedRefs);
-          usedRefs.add(ref);
-        }
-        refByNodeId.set(node.id, ref);
+        const ref = refByNodeId.get(node.id);
         if (ref && node.type) {
           legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
         }
