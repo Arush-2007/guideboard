@@ -8,8 +8,7 @@ import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
 import {
   legacyOutputKey,
-  nextNodeRef,
-  nodeTypeHasRef,
+  resolveNodeRefs,
   rewriteRefsInJson,
   stripRefFromData,
 } from "@/lib/node-ref";
@@ -145,18 +144,21 @@ export async function persistGeneratedWorkflow(
     // Assign a frozen ref to each ref-eligible node, then rewrite any legacy
     // `<type>_<id>` references the model emitted to the new refs, so generated
     // references resolve against the ref-keyed context.
-    const usedRefs = new Set<string>();
+    //
+    // Shares `resolveNodeRefs` with `workflows.update` rather than re-deriving
+    // the numbering here: `@@unique([workflowId, ref])` has exactly two write
+    // paths and both go through one door, the same way `assertNoEdgeIntoTrigger`
+    // guards the edge invariant for both. A generated node carries no `data.ref`
+    // today so every ref is minted, but if the model ever emits one it is now
+    // deduped instead of aborting the transaction on a constraint error.
+    const { refByNodeId: nodeRefById } = resolveNodeRefs(parsed.nodes);
+
     const legacyKeyToRef = new Map<string, string>();
-    const nodeRefById = new Map<string, string | null>();
     for (const node of parsed.nodes) {
-      if (!nodeTypeHasRef(node.type)) {
-        nodeRefById.set(node.id, null);
-        continue;
+      const ref = nodeRefById.get(node.id);
+      if (ref) {
+        legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
       }
-      const ref = nextNodeRef(node.type, usedRefs);
-      usedRefs.add(ref);
-      legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
-      nodeRefById.set(node.id, ref);
     }
 
     await tx.node.createMany({

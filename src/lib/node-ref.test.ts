@@ -619,3 +619,101 @@ describe("resolveNodeRefs", () => {
     expect(reassigned).toEqual([]);
   });
 });
+
+// Regression guards for the pass-ordering rule: every claim must be placed
+// before any ref is minted. The original implementation seeded only DB-owned
+// claims, so a node that claimed nothing could mint a ref a later node had
+// explicitly asked for — moving that ref onto the wrong node and silently
+// re-aiming every `@<REF.path>@` reference to it.
+describe("resolveNodeRefs — minting never steals a claimed ref", () => {
+  const node = (id: string, type: string, ref?: string) => ({
+    id,
+    type,
+    data: ref ? { ref } : {},
+  });
+
+  it("does not let a claim-less node take a ref a LATER node claims", () => {
+    const { refByNodeId, reassigned } = resolveNodeRefs([
+      node("legacy", "AI_TEXT"),
+      node("y", "AI_TEXT", "AI_TEXT_1"),
+    ]);
+
+    expect(refByNodeId.get("y")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("legacy")).toBe("AI_TEXT_2");
+    expect(reassigned).toEqual([]);
+  });
+
+  it("holds for a stored-ref claim as well as a payload one", () => {
+    const { refByNodeId } = resolveNodeRefs(
+      [node("legacy", "AI_TEXT"), node("y", "AI_TEXT")],
+      new Map([["y", "AI_TEXT_1"]]),
+    );
+
+    expect(refByNodeId.get("y")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("legacy")).toBe("AI_TEXT_2");
+  });
+
+  it("mints around several claims regardless of payload order", () => {
+    const { refByNodeId } = resolveNodeRefs([
+      node("m1", "AI_TEXT"),
+      node("a", "AI_TEXT", "AI_TEXT_2"),
+      node("m2", "AI_TEXT"),
+      node("b", "AI_TEXT", "AI_TEXT_1"),
+    ]);
+
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_2");
+    expect(refByNodeId.get("b")).toBe("AI_TEXT_1");
+    const minted = [refByNodeId.get("m1"), refByNodeId.get("m2")];
+    expect(minted).toEqual(["AI_TEXT_3", "AI_TEXT_4"]);
+  });
+
+  it("ignores a stale ref on a ref-less type instead of reserving it", () => {
+    // A type moved into NON_REF_NODE_TYPES after its rows were written still
+    // carries a ref; it must not block a real node from claiming that string.
+    const { refByNodeId } = resolveNodeRefs(
+      [
+        node("t", "TELEGRAM_TRIGGER", "AI_TEXT_1"),
+        node("a", "AI_TEXT", "AI_TEXT_1"),
+      ],
+      new Map([["t", "AI_TEXT_1"]]),
+    );
+
+    expect(refByNodeId.get("t")).toBeNull();
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_1");
+  });
+
+  it("still bumps a genuine duplicate, and only the non-owner", () => {
+    const { refByNodeId, reassigned } = resolveNodeRefs(
+      [
+        node("newcomer", "AI_TEXT", "AI_TEXT_1"),
+        node("a", "AI_TEXT", "AI_TEXT_1"),
+      ],
+      new Map([["a", "AI_TEXT_1"]]),
+    );
+
+    expect(refByNodeId.get("a")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("newcomer")).toBe("AI_TEXT_2");
+    expect(reassigned).toEqual([
+      { nodeId: "newcomer", from: "AI_TEXT_1", to: "AI_TEXT_2" },
+    ]);
+  });
+
+  it("always yields distinct refs for a payload of mixed claims and blanks", () => {
+    const { refByNodeId } = resolveNodeRefs(
+      [
+        node("t", "TELEGRAM_TRIGGER"),
+        node("m1", "AI_TEXT"),
+        node("a", "AI_TEXT", "AI_TEXT_1"),
+        node("b", "AI_TEXT", "AI_TEXT_1"),
+        node("m2", "SLACK_ACTION"),
+        node("c", "SLACK_ACTION", "SLACK_ACTION_1"),
+      ],
+      new Map([["b", "AI_TEXT_1"]]),
+    );
+
+    const refs = [...refByNodeId.values()].filter(Boolean);
+    expect(new Set(refs).size).toBe(refs.length);
+    expect(refByNodeId.get("b")).toBe("AI_TEXT_1");
+    expect(refByNodeId.get("c")).toBe("SLACK_ACTION_1");
+  });
+});

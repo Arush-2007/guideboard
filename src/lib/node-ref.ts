@@ -106,12 +106,17 @@ export function nextNodeRef(
  * any client bug, stale tab, or hand-rolled request turns into a dead
  * "Failed to save workflow". This is the server-side door for that invariant.
  *
- * Priority when two nodes claim the same ref:
+ * Resolution runs in three passes, and the ORDER is the whole correctness
+ * argument — every claim must be placed before any ref is minted:
  *   1. A node whose claim matches what the database already has for it keeps
  *      it. That ref is its frozen identity and existing `@<REF.path>@`
  *      references point at it — moving it would silently re-aim them.
- *   2. Everyone else, in payload order, keeps a free claim or is bumped to the
- *      next available number for its type.
+ *   2. Remaining claims, in payload order, first come first served.
+ *   3. Only now are refs minted, for nodes that claimed nothing and for nodes
+ *      whose claim was already taken. Minting last is what stops a node with no
+ *      ref (a legacy row from before refs existed) from being handed a number
+ *      that a later node in the payload explicitly claims — which would move
+ *      that ref onto the wrong node and re-aim every reference to it.
  *
  * References are deliberately NOT rewritten for a bumped node: a reference
  * written against the duplicated ref is already ambiguous (it could have meant
@@ -133,39 +138,55 @@ export function resolveNodeRefs<T extends { id: string } & RefCarrier>(
   const claimOf = (node: T): string | null =>
     readNodeRef(node.data) ?? storedRefById.get(node.id) ?? null;
 
-  // A claim is "owned" when the database already agrees it belongs to this
-  // node, which is what makes it the one that survives a clash.
-  const owned = new Set<string>();
-  for (const node of nodes) {
-    const claim = claimOf(node);
-    if (claim && storedRefById.get(node.id) === claim) owned.add(claim);
-  }
-
   const refByNodeId = new Map<string, string | null>();
   const reassigned: { nodeId: string; from: string; to: string }[] = [];
   const used = new Set<string>();
 
-  // Seed with every owned claim so a bump can't land on one before we reach it.
-  for (const ref of owned) used.add(ref);
-
+  // Ref-less types (triggers, INITIAL) resolve to null and are set aside here.
+  // They must not reserve a string even if a stale row still carries one — the
+  // ref-less list is a denylist that grows, so a type added to it later can
+  // leave old rows holding a ref that no longer means anything.
+  const eligible: { node: T; type: string }[] = [];
   for (const node of nodes) {
-    if (!node.type || !nodeTypeHasRef(node.type)) {
+    if (node.type && nodeTypeHasRef(node.type)) {
+      eligible.push({ node, type: node.type });
+    } else {
       refByNodeId.set(node.id, null);
-      continue;
     }
+  }
 
-    const claim = claimOf(node);
-    const isOwner = Boolean(claim) && storedRefById.get(node.id) === claim;
-
-    if (claim && (isOwner || !used.has(claim))) {
-      refByNodeId.set(node.id, claim);
+  // Pass 1: owners. A claim is "owned" when the database already agrees it
+  // belongs to this node, which is what makes it survive a clash.
+  const unowned: { node: T; type: string }[] = [];
+  for (const entry of eligible) {
+    const claim = claimOf(entry.node);
+    if (claim && storedRefById.get(entry.node.id) === claim) {
+      refByNodeId.set(entry.node.id, claim);
       used.add(claim);
-      continue;
+    } else {
+      unowned.push(entry);
     }
+  }
 
-    const next = nextNodeRef(node.type, used);
+  // Pass 2: everyone else's claim, payload order, first come first served.
+  const needsMint: { node: T; type: string }[] = [];
+  for (const entry of unowned) {
+    const claim = claimOf(entry.node);
+    if (claim && !used.has(claim)) {
+      refByNodeId.set(entry.node.id, claim);
+      used.add(claim);
+    } else {
+      needsMint.push(entry);
+    }
+  }
+
+  // Pass 3: mint, now that every claim in the payload is accounted for.
+  for (const { node, type } of needsMint) {
+    const next = nextNodeRef(type, used);
     used.add(next);
     refByNodeId.set(node.id, next);
+
+    const claim = claimOf(node);
     if (claim) reassigned.push({ nodeId: node.id, from: claim, to: next });
   }
 
