@@ -51,7 +51,7 @@ import { autoLayoutNodes, layoutChanged } from "../lib/auto-layout";
 import { SNAP_GRID } from "../lib/canvas-metrics";
 import { invalidConnectionReason } from "../lib/connection-validation";
 import { unrunnableNodes } from "../lib/connectivity";
-import { serializeSnapshot } from "../lib/snapshot";
+import { NEVER_SAVED_BASELINE, serializeSnapshot } from "../lib/snapshot";
 import {
   editorAtom,
   invalidNodeConfigAtom,
@@ -400,11 +400,20 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
   // hook. The `null` case is defensive self-healing so nothing can leave
   // dirty-tracking permanently dead. The live comparison happens in
   // <DirtyTracker> off the React Flow store.
+  //
+  // A workflow that has never been saved (a copy) is seeded with a baseline no
+  // canvas can equal, so it opens dirty: it is inert until saved, and showing
+  // "Saved" would claim otherwise. The first save replaces this with a real
+  // snapshot and clears the flag server-side.
   const seededWorkflowId = useRef<string | null>(null);
   useEffect(() => {
     if (seededWorkflowId.current !== workflow.id || lastSaved === null) {
       seededWorkflowId.current = workflow.id;
-      setLastSaved(serializeSnapshot(workflow.nodes, workflow.edges));
+      setLastSaved(
+        workflow.pendingFirstSave
+          ? NEVER_SAVED_BASELINE
+          : serializeSnapshot(workflow.nodes, workflow.edges),
+      );
     }
   }, [workflow, lastSaved, setLastSaved]);
 

@@ -38,6 +38,26 @@ export const useCreateWorkflow = () => {
 };
 
 /**
+ * Hook to copy an entire workflow (graph included) into a new one.
+ */
+export const useDuplicateWorkflow = () => {
+  const queryClient = useQueryClient();
+  const trpc = useTRPC();
+
+  return useMutation(
+    trpc.workflows.duplicate.mutationOptions({
+      onSuccess: (data) => {
+        toast.success(`Copied to "${data.name}"`);
+        queryClient.invalidateQueries(trpc.workflows.getMany.queryOptions({}));
+      },
+      onError: (error) => {
+        toast.error(`Failed to copy workflow: ${error.message}`);
+      },
+    }),
+  );
+};
+
+/**
  * Hook to remove a workflow
  */
 export const useRemoveWorkflow = () => {

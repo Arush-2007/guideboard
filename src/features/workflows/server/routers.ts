@@ -13,6 +13,7 @@ import {
   rewriteRefsInJson,
   stripRefFromData,
 } from "@/lib/node-ref";
+import { duplicateWorkflow } from "@/lib/workflow-copy";
 import {
   assertNoEdgeIntoTrigger,
   generatedWorkflowSchema,
@@ -97,6 +98,11 @@ export const workflowsRouter = createTRPCRouter({
           userId: ctx.auth.user.id,
         },
       });
+    }),
+  duplicate: premiumProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(({ ctx, input }) => {
+      return duplicateWorkflow(ctx.auth.user.id, input.id);
     }),
   generateFromPrompt: premiumProcedure
     .input(z.object({ prompt: z.string().min(1) }))
@@ -325,10 +331,13 @@ export const workflowsRouter = createTRPCRouter({
           })),
         });
 
-        // Update workflow's updatedAt timestamp
+        // Update workflow's updatedAt timestamp. This is also the save that
+        // "activates" a copied workflow — `syncTriggerPollsForWorkflow` below
+        // provisions its poll rows — so `pendingFirstSave` is retired here, in
+        // the same transaction as the graph it refers to.
         await tx.workflow.update({
           where: { id },
-          data: { updatedAt: new Date() },
+          data: { updatedAt: new Date(), pendingFirstSave: false },
         });
       });
 
@@ -382,6 +391,9 @@ export const workflowsRouter = createTRPCRouter({
       return {
         id: workflow.id,
         name: workflow.name,
+        // Drives the editor's opening dirty state — a copy has never been saved,
+        // so it must not present as "Saved" while its triggers are still inert.
+        pendingFirstSave: workflow.pendingFirstSave,
         nodes,
         edges,
       };

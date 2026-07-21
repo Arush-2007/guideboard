@@ -1,6 +1,6 @@
 import type { Edge, Node } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import { serializeSnapshot } from "./snapshot";
+import { NEVER_SAVED_BASELINE, serializeSnapshot } from "./snapshot";
 
 const node = (overrides: Partial<Node> & Pick<Node, "id">): Node => ({
   type: "HTTP_REQUEST",
@@ -125,5 +125,24 @@ describe("serializeSnapshot", () => {
 
     const after = serializeSnapshot([node({ id: "n1", data })], []);
     expect(after).not.toBe(baseline);
+  });
+});
+
+describe("NEVER_SAVED_BASELINE", () => {
+  it("can never equal a real canvas, so a never-saved workflow stays dirty", () => {
+    // Including the degenerate empty canvas — the one a naive sentinel like ""
+    // would collide with, which would show "Saved" on an inert copy.
+    const canvases = [
+      serializeSnapshot([], []),
+      serializeSnapshot([node({ id: "n1" })], []),
+      serializeSnapshot(
+        [node({ id: "n1" }), node({ id: "n2" })],
+        [edge({ id: "e1", source: "n1", target: "n2" })],
+      ),
+    ];
+
+    for (const canvas of canvases) {
+      expect(canvas).not.toBe(NEVER_SAVED_BASELINE);
+    }
   });
 });

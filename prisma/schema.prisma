@@ -303,6 +303,13 @@ model Workflow {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // True for a workflow whose graph exists but has never been through a save —
+  // today, only a copy (see `duplicateWorkflow`). Its trigger poll rows are
+  // deliberately not provisioned, so it is INERT until the user saves it, and
+  // the editor opens it dirty ("Save", not "Saved") to make that state visible
+  // and one click from fixed. Cleared by `workflows.update`.
+  pendingFirstSave Boolean @default(false)
+
   nodes Node[]
   connections Connection[]
   executions Execution[]
