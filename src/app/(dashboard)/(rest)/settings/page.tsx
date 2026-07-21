@@ -8,14 +8,12 @@ const Page = async () => {
 
   return (
     <HydrateClient>
-      <div className="mx-auto max-w-2xl space-y-6 p-6">
-        <div className="space-y-1">
-          <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-          <p className="text-sm text-muted-foreground">
-            Configure your account, integrations, and notifications.
-          </p>
-        </div>
-
+      {/* Same width as /profile — both are settings-style form pages. List
+          pages are wider (max-w-5xl, via EntityContainer). The layout supplies
+          the page padding, so none is set here. */}
+      {/* No page title, matching /profile: each card names itself, and the
+          sidebar already says which page you're on. */}
+      <div className="mx-auto max-w-3xl space-y-6">
         <InstagramSettings />
         <NotificationSettings />
       </div>
