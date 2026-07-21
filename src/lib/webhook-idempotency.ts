@@ -8,14 +8,15 @@
  * each call still gets a distinct key and is never dropped as a false
  * duplicate. Dedup itself is enforced downstream by `executeWorkflow`'s
  * `check-idempotency` step against `Execution.idempotencyKey`.
+ *
+ * Deliberately NOT scoped to a workflow here: `sendWorkflowExecution` prefixes
+ * every key with `wf:<workflowId>:`, so a key that named the workflow again
+ * would be stating the same fact twice, in two places that could drift.
  */
-export function googleFormIdempotencyKey(
-  workflowId: string,
-  responseId?: string | null,
-): string {
+export function googleFormIdempotencyKey(responseId?: string | null): string {
   const id =
     typeof responseId === "string" && responseId.trim()
       ? responseId.trim()
       : Date.now().toString();
-  return `google-form:${workflowId}:${id}`;
+  return `google-form:${id}`;
 }

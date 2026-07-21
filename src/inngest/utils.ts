@@ -63,6 +63,27 @@ type SendWorkflowExecutionInput = {
   replayOfExecutionId?: string;
 };
 
+/**
+ * Scopes a caller's idempotency key to one workflow.
+ *
+ * `Execution.idempotencyKey` is GLOBALLY unique, but almost every caller
+ * derives its key purely from the external event — `gmail:<messageId>`,
+ * `youtube:<commentId>`, `google_sheets:<sheetId>:<row>:…`. Two workflows
+ * watching the same inbox, sheet, chat or video therefore compete for one key:
+ * whichever poll lands first creates the Execution and the other is silently
+ * dropped by `executeWorkflow`'s `check-idempotency` step. That is trivially
+ * reachable — copy a workflow and save it, and the copy never runs — and worse
+ * across TENANTS, since a YouTube comment id or a shared spreadsheet id is the
+ * same string for every user watching it.
+ *
+ * The key is meant to mean "this workflow already handled this event", so the
+ * workflow belongs in it. Scoping happens HERE, at the single door every
+ * trigger goes through, rather than in each of the seven call sites that mint a
+ * key — a new trigger cannot forget a rule it never has to apply.
+ */
+export const scopedIdempotencyKey = (workflowId: string, key: string): string =>
+  `wf:${workflowId}:${key}`;
+
 export const sendWorkflowExecution = async ({
   workflowId,
   initialData,
@@ -77,7 +98,9 @@ export const sendWorkflowExecution = async ({
       workflowId,
       initialData: initialData ?? {},
       initialDataBlobKey,
-      idempotencyKey,
+      idempotencyKey: idempotencyKey
+        ? scopedIdempotencyKey(workflowId, idempotencyKey)
+        : undefined,
       replayFromNodeId,
       replayOfExecutionId,
     },

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Connection, Node } from "@/generated/prisma";
-import { topologicalSort } from "./utils";
+import { scopedIdempotencyKey, topologicalSort } from "./utils";
 
 // Minimal Node/Connection factories — topologicalSort only reads `id`.
 const node = (id: string): Node => ({ id }) as unknown as Node;
@@ -43,6 +43,33 @@ describe("topologicalSort", () => {
     const connections = [edge("a", "b"), edge("b", "a")];
     expect(() => topologicalSort(nodes, connections)).toThrow(
       "Workflow contains a cycle",
+    );
+  });
+});
+
+describe("scopedIdempotencyKey", () => {
+  it("keeps two workflows watching the same source from starving each other", () => {
+    // The exact shape that broke a copied workflow: both poll the same sheet
+    // row / inbox message, so both mint the SAME external key. Unscoped, the
+    // second run is swallowed by the globally-unique Execution.idempotencyKey.
+    const externalKey = "google_sheets:sheet-1:7:added";
+    expect(scopedIdempotencyKey("wf_original", externalKey)).not.toBe(
+      scopedIdempotencyKey("wf_copy", externalKey),
+    );
+  });
+
+  it("still dedupes a repeat of the same event within one workflow", () => {
+    expect(scopedIdempotencyKey("wf_1", "gmail:msg_9")).toBe(
+      scopedIdempotencyKey("wf_1", "gmail:msg_9"),
+    );
+  });
+
+  it("keeps the caller's key intact after the scope prefix", () => {
+    // The fan-out lineage badge parses the trailing portion, so the original
+    // key has to survive verbatim. (Ambiguity between the two `:` segments is
+    // impossible in practice: workflow ids are cuids — lowercase alphanumeric.)
+    expect(scopedIdempotencyKey("wf_1", "fanout:exec_a:node_x:3")).toBe(
+      "wf:wf_1:fanout:exec_a:node_x:3",
     );
   });
 });

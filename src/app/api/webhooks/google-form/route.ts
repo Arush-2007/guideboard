@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
       initialData: {
         googleForm: formData,
       },
-      idempotencyKey: googleFormIdempotencyKey(workflowId, body.responseId),
+      idempotencyKey: googleFormIdempotencyKey(body.responseId),
     });
 
     return NextResponse.json({ success: true }, { status: 200 });
