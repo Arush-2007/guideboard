@@ -360,3 +360,44 @@ export function hexToRgb(hex: string): SheetsColor {
     blue: (n & 0xff) / 255,
   };
 }
+
+/** Solid white — the background every ADDED blank row is forced to. */
+export const WHITE: SheetsColor = { red: 1, green: 1, blue: 1 };
+
+/**
+ * A `repeatCell` batchUpdate request that paints one row's background solid white
+ * across the used-column band (columns 0..`columnCount`).
+ *
+ * A row this app ADDS as blank must read as an empty gap, but "blank" only means
+ * no VALUES — a skipped `blankRowAbove` separator keeps whatever background sat at
+ * that grid position (alternating-row banding, or a deleted colored row's
+ * residue), and a blank row inserted under a group inherits the color of the row
+ * above via `insertDimension`'s `inheritFromBefore`. Writing an explicit white
+ * overrides both, since a cell's own `userEnteredFormat.backgroundColor` wins over
+ * banding. Setting a fixed color on fixed cells is idempotent, so the write is
+ * safe for Inngest to retry.
+ *
+ * `gridRow0` is the 0-based grid row: the header is grid row 0, so sheet row N is
+ * grid row N − 1.
+ */
+export function whiteRowRequest(
+  sheetId: number,
+  gridRow0: number,
+  columnCount: number,
+): { repeatCell: unknown } {
+  return {
+    repeatCell: {
+      range: {
+        sheetId,
+        startRowIndex: gridRow0,
+        endRowIndex: gridRow0 + 1,
+        startColumnIndex: 0,
+        // Exclusive bound — the full header width, so the white band matches the
+        // table exactly (the same bound color_rows paints to).
+        endColumnIndex: columnCount,
+      },
+      cell: { userEnteredFormat: { backgroundColor: WHITE } },
+      fields: "userEnteredFormat.backgroundColor",
+    },
+  };
+}
