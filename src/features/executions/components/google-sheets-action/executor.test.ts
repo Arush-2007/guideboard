@@ -271,15 +271,70 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
       // No columnMappings at all — a deliberately blank row.
     });
 
-    expect(kyPostMock).toHaveBeenCalledOnce();
+    // Two writes: the (empty) values, then a repaint of that blank row to white
+    // so it can't show the sheet's alternating-row banding.
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
     const w = writtenRange(0);
     expect(w.range).toBe("'Master'!A3:ZZ3");
     expect(w.values).toEqual([["", ""]]);
+
+    // Row 3 (grid row 2) painted solid white across the 2-column header band.
+    const whiten = postBody(1);
+    expect(whiten.url).toContain(":batchUpdate");
+    expect(whiten.url).not.toContain("values:batchUpdate");
+    expect(whiten.requests).toEqual([
+      {
+        repeatCell: {
+          range: {
+            sheetId: 77,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 0,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+            },
+          },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      },
+    ]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.appendedRows).toBe(1);
     expect(out.rowByHeader).toEqual({ "Job No": "", Name: "" });
     expect(publishedStatuses).toContain("success");
+  });
+
+  it("does NOT whiten a MAPPED row whose values render empty (intent, not content)", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    // The node maps a column, so it is a DATA row by intent — even though the
+    // template resolves to "" this run (no `who` in context). Whitening is keyed
+    // on config, not the rendered result, so the row keeps the sheet's banding
+    // rather than being forced white just because its data came out empty.
+    const result = await run({
+      action: "append_row",
+      spreadsheetId: "s",
+      sheetName: "Master",
+      columnMappings: { Name: "@<who>@" },
+    });
+
+    // Just the value write — no whitening batchUpdate.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const w = writtenRange(0);
+    expect(w.range).toBe("'Master'!A3:ZZ3");
+    expect(w.values).toEqual([["", ""]]);
+
+    expect(result.GOOGLE_SHEETS_ACTION_1.appendedRows).toBe(1);
   });
 
   it("blankRowAbove skips a row instead of writing an empty one", async () => {
@@ -305,10 +360,38 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
     // The separator is a row we LEAVE EMPTY (row 3); the data goes one lower.
     // Nothing empty is sent to Sheets — an all-empty payload row is exactly what
     // made `:append` mis-place the data seven columns to the right.
-    expect(kyPostMock).toHaveBeenCalledOnce();
+    //
+    // Two writes: the data row (row 4), then a repaint of the blank separator
+    // (row 3) to white so the gap can't inherit the sheet's banding.
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
     const w = writtenRange(0);
     expect(w.range).toBe("'Master'!A4:ZZ4");
     expect(w.values).toEqual([["", "Ada"]]);
+
+    // The separator sits at sheet row 3 → grid row 2, painted white; the data row
+    // itself (row 4, with content) is NOT whitened.
+    const whiten = postBody(1);
+    expect(whiten.url).toContain(":batchUpdate");
+    expect(whiten.url).not.toContain("values:batchUpdate");
+    expect(whiten.requests).toEqual([
+      {
+        repeatCell: {
+          range: {
+            sheetId: 77,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 0,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+            },
+          },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      },
+    ]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.appendedRows).toBe(1);
@@ -1125,6 +1208,73 @@ describe("googleSheetsActionExecutor — append under a group", () => {
     expect(out.insertedUnderGroup).toBe(true);
     expect(out.rowIndex).toBe(4);
     expect(isRouted(result)).toBe(false); // append never branches
+  });
+
+  it("forces a BLANK row inserted under a group to white (it inherited the group's color)", async () => {
+    mockReadWithGrid(grouped);
+
+    // A spacer: an under-group insert with NO column mapping, so every cell is
+    // empty. `insertDimension inheritFromBefore` copies Acme's banding onto it —
+    // the exact way a blank spacer came out tinted — so it must be repainted white.
+    const result = await run({
+      ...baseConfig,
+      columnMappings: {},
+      conditions: matchAcme,
+    });
+
+    // Three writes: structural insert, the (empty) values, then the whitening.
+    expect(kyPostMock).toHaveBeenCalledTimes(3);
+    expect(postBody(0).url).toContain("/s:batchUpdate");
+    expect(postBody(0).url).not.toContain("values:batchUpdate");
+    // The blank row landed at sheet row 4 (under Acme's block).
+    expect(writtenRange(1).range).toBe("'Grouped'!A4:ZZ4");
+    expect(writtenRange(1).values).toEqual([["", "", ""]]);
+
+    // Sheet row 4 → grid row 3, painted white across the 3-column header band.
+    const whiten = postBody(2);
+    expect(whiten.url).toContain(":batchUpdate");
+    expect(whiten.url).not.toContain("values:batchUpdate");
+    expect(whiten.requests).toEqual([
+      {
+        repeatCell: {
+          range: {
+            sheetId: 77,
+            startRowIndex: 3,
+            endRowIndex: 4,
+            startColumnIndex: 0,
+            endColumnIndex: 3,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+            },
+          },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      },
+    ]);
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(4);
+  });
+
+  it("does NOT whiten a row inserted under a group when it has content", async () => {
+    mockReadWithGrid(grouped);
+
+    // A normal under-group insert (mapped cells) keeps the group banding it
+    // inherited — only BLANK inserts are repainted. So no whitening write.
+    await run({ ...baseConfig, conditions: matchAcme });
+
+    // Structural insert + values write, and nothing more.
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+    expect(
+      kyPostMock.mock.calls.some(([, opts]) =>
+        (opts as { json?: { requests?: unknown[] } }).json?.requests?.some(
+          (r) =>
+            typeof r === "object" &&
+            r !== null &&
+            "repeatCell" in (r as Record<string, unknown>),
+        ),
+      ),
+    ).toBe(false);
   });
 
   it("inserts a row directly under the LAST row of the matching group, then fills it", async () => {

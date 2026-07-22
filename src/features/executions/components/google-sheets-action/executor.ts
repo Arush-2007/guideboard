@@ -30,6 +30,7 @@ import {
   sheetsValuesBatchUpdateUrl,
   sheetsWrite,
   toSheetsError,
+  whiteRowRequest,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import {
@@ -309,6 +310,56 @@ export const googleSheetsActionExecutor: NodeExecutor<
   const headers = {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
+  };
+
+  /**
+   * Force the blank rows this run DELIBERATELY added to a solid-white background.
+   * A blank row is never format-free: a `blankRowAbove` separator keeps the
+   * banding at its grid slot, a blank bottom append can land on a banded row, and
+   * a blank row inserted under a group inherits the color of the row above (see
+   * `whiteRowRequest`). One repeatCell per row, all in ONE batchUpdate, in its OWN
+   * step — idempotent (fixed white on fixed cells), so a retry repaints
+   * identically. A no-op on an empty list, so a run that added no blank row makes
+   * no extra call.
+   *
+   * "Blank" is decided from CONFIG, not from the rendered row: a node adds a blank
+   * row when it has no column mappings (or, for a bottom append, the
+   * `blankRowAbove` separator). A MAPPED row whose values happen to render empty on
+   * a given run is a data event, not a spacer — it keeps the sheet's banding, so a
+   * row's background never depends on that run's upstream data.
+   *
+   * `rowNumbers` are 1-based sheet rows; each maps to grid row n − 1.
+   */
+  const whitenBlankRows = async (
+    rowNumbers: number[],
+    columnCount: number,
+  ): Promise<void> => {
+    if (rowNumbers.length === 0 || columnCount === 0) return;
+    await step.run("google-sheets-whiten-blank-rows", async () => {
+      try {
+        const grid = await getSheetGrid({
+          accessToken,
+          spreadsheetId,
+          sheetName,
+        });
+        await sheetsWrite(
+          sheetsBatchUpdateUrl(spreadsheetId),
+          {
+            headers: sheetsAuthHeaders(accessToken),
+            json: {
+              requests: rowNumbers.map((n) =>
+                whiteRowRequest(grid.sheetId, n - 1, columnCount),
+              ),
+            },
+          },
+          // Fixed color on fixed cells — safe for Inngest to retry.
+          { idempotent: true },
+        );
+        return null;
+      } catch (error) {
+        throw await toSheetsError(error);
+      }
+    });
   };
 
   try {
@@ -615,6 +666,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
             const base = {
               matchCount: matches.length,
               insertedUnderGroup: matches.length > 0,
+              // Carried out so the post-write whitening can bound the white band
+              // to the table's width without re-reading the header.
+              columnCount: table.headers.length,
             };
 
             // Bottom of the data — nothing matched (a NEW group starts here), or
@@ -716,7 +770,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
               json: {
                 valueInputOption: "USER_ENTERED",
                 data: placed.rows.map((r) => ({
-                  range: sheetRange(sheetName, `A${r.rowIndex}:ZZ${r.rowIndex}`),
+                  range: sheetRange(
+                    sheetName,
+                    `A${r.rowIndex}:ZZ${r.rowIndex}`,
+                  ),
                   values: [r.row],
                 })),
               },
@@ -728,6 +785,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
           throw await toSheetsError(error);
         }
       });
+
+      // A blank spacer inserted under a group inherited the group's color via
+      // `inheritFromBefore` above — repaint it white so the gap is clean. Keyed on
+      // CONFIG: with no column mappings every inserted row is a deliberate blank;
+      // a mapped insert keeps the group banding even if its values render empty.
+      await whitenBlankRows(
+        hasMappings ? [] : placed.rows.map((r) => r.rowIndex),
+        placed.columnCount,
+      );
 
       const first = placed.rows[0];
       // One item per inserted row: the row itself, where it landed, and the row
@@ -853,6 +919,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
             rowIndex,
             row: newRow,
             rowByHeader: buildRowByHeader(table.headers, newRow),
+            columnCount: table.headers.length,
           };
         } catch (error) {
           throw await toSheetsError(error);
@@ -887,6 +954,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
           throw await toSheetsError(error);
         }
       });
+
+      // Force the blank rows this append DELIBERATELY produced to white: the
+      // `blankRowAbove` separator (always blank), and the placed row itself when
+      // the node has no column mappings (a deliberately blank append). Both can
+      // otherwise show the sheet's alternating-row banding. A mapped row that
+      // renders empty is a data event, not a spacer — left banded.
+      const blanks: number[] = [];
+      if (config.blankRowAbove) blanks.push(planned.rowIndex - 1);
+      if (!hasMappings) blanks.push(planned.rowIndex);
+      await whitenBlankRows(blanks, planned.columnCount);
 
       await publish(
         nodeStatusChannel(userId).status({ nodeId, status: "success" }),
