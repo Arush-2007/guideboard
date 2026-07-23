@@ -99,6 +99,11 @@ const formSchema = z
     conditions: z.array(rowConditionFormSchema).optional(),
     // color_rows only: the ordered rule list (first match wins).
     colorRules: z.array(colorRuleFormSchema).optional(),
+    // color_rows only: paint the topmost matched row ("first"), the bottom-most
+    // ("last"), or every matched row ("all", the default). Declared here too so
+    // the resolver keeps it on submit (a plain z.object() strips undeclared keys
+    // — the dual-schema gotcha).
+    onMultipleColorMatches: z.enum(["first", "last", "all"]).optional(),
     // Multi-match fields, built from the shared constants (see the NOTE on
     // multiMatchConfigFields for why the fragment itself can't be spread here).
     onMultipleMatches: z.enum(MULTI_MATCH_MODES).optional(),
@@ -541,6 +546,9 @@ export const GoogleSheetsActionDialog = ({
         })),
       })),
       onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
+      // Default "all" preserves the pre-feature behavior (paint every match), so
+      // existing color_rows nodes keep working with no migration.
+      onMultipleColorMatches: defaultValues.onMultipleColorMatches ?? "all",
       // Left undefined when unset — the control shows the default as a
       // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
       maxFanOutItems: defaultValues.maxFanOutItems,
@@ -560,6 +568,7 @@ export const GoogleSheetsActionDialog = ({
   const conditions = form.watch("conditions") ?? [];
   const position = form.watch("position") ?? "bottom";
   const colorRules = form.watch("colorRules") ?? [];
+  const colorMatchMode = form.watch("onMultipleColorMatches") ?? "all";
   // Present for BOTH an array-level issue (no rules at all) and a per-rule one
   // (bad color / empty filter) — the latter carries no `.message` of its own,
   // which is why the summary below can't just read `.message`.
@@ -1110,6 +1119,49 @@ export const GoogleSheetsActionDialog = ({
                       ? String(colorRulesError.message)
                       : "One or more rules is incomplete — open Configure rules to fix it."}
                   </p>
+                ) : null}
+
+                {/* Gated on loaded headers like the "Configure rules" row above
+                    — a match policy is meaningless before a sheet's columns (and
+                    so its rules) exist. */}
+                {headers.length > 0 ? (
+                  <div className="space-y-2 pt-2">
+                    <Label>When multiple rows match</Label>
+                    <Select
+                      value={colorMatchMode}
+                      onValueChange={(v) =>
+                        form.setValue(
+                          "onMultipleColorMatches",
+                          v as "first" | "last" | "all",
+                        )
+                      }
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue />
+                      </SelectTrigger>
+                      {/* Labels say "topmost"/"bottom-most", not "first"/"last",
+                          so they can't be read as the rules' "first match wins"
+                          precedence — this is about row position, not rule order. */}
+                      <SelectContent>
+                        <SelectItem value="all">
+                          Color every matching row
+                        </SelectItem>
+                        <SelectItem value="first">
+                          Color only the topmost matching row
+                        </SelectItem>
+                        <SelectItem value="last">
+                          Color only the bottom-most matching row
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {colorMatchMode === "first"
+                        ? "Only the topmost matching row is painted; the rest are left unchanged."
+                        : colorMatchMode === "last"
+                          ? "Only the bottom-most matching row is painted; the rest are left unchanged."
+                          : "Every row a rule matches is painted (rules are checked top to bottom, first match wins)."}
+                    </p>
+                  </div>
                 ) : null}
 
                 <WideOverlayPanel

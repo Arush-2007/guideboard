@@ -199,8 +199,9 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         pickIf: isSheetsFindRows,
       },
       // find_rows: rows returned. update_row: rows overwritten. color_rows: rows
-      // painted. under-append: the size of the group the new row joined (0 ⇒ it
-      // started a new one).
+      // that matched (all of them, even when only the first/last is painted).
+      // under-append: the size of the group the new row joined (0 ⇒ it started a
+      // new one).
       {
         path: "matchCount",
         label: "How many rows matched the filter",
@@ -210,6 +211,14 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
           isSheetsUpdate(data) ||
           isSheetsColor(data) ||
           isSheetsAppendUnder(data),
+      },
+      // color_rows only: how many rows were actually painted — the same as
+      // matchCount in "all" mode, exactly one in "first"/"last".
+      {
+        path: "coloredCount",
+        label: "How many rows were colored",
+        example: "1",
+        pickIf: isSheetsColor,
       },
       // update_row only.
       {

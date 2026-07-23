@@ -991,8 +991,13 @@ const NodeRow = ({
         const colors = Array.isArray(root.colors)
           ? (root.colors as string[])
           : [];
-        const count =
+        const matched =
           typeof root.matchCount === "number" ? root.matchCount : rows.length;
+        // How many were actually painted. Falls back to `matched` for runs
+        // recorded before the first/last modes existed (no `coloredCount`), when
+        // every match was always painted.
+        const colored =
+          typeof root.coloredCount === "number" ? root.coloredCount : matched;
         // How many DISTINCT rules actually fired — worth saying, because the
         // whole point of several rules is that different rows get different
         // colors.
@@ -1001,15 +1006,18 @@ const NodeRow = ({
         return (
           <div className="space-y-2">
             <SummaryMessage>
-              {count === 0
+              {colored === 0
                 ? `No rows in ${tab} matched any color rule, so nothing was colored.`
-                : count === 1
-                  ? `1 row in ${tab} matched a color rule and was colored.`
-                  : `${count} rows in ${tab} matched a color rule and were colored${
-                      distinctColors > 1
-                        ? `, in ${distinctColors} different colors`
-                        : ""
-                    }. A row matching more than one rule takes the first rule's color.`}
+                : matched > colored
+                  ? // "first"/"last" mode: several matched, only one painted.
+                    `${matched} rows in ${tab} matched a color rule, but only one was colored.`
+                  : colored === 1
+                    ? `1 row in ${tab} matched a color rule and was colored.`
+                    : `${colored} rows in ${tab} matched a color rule and were colored${
+                        distinctColors > 1
+                          ? `, in ${distinctColors} different colors`
+                          : ""
+                      }. A row matching more than one rule takes the first rule's color.`}
             </SummaryMessage>
             {/* No RowConditionsTable here: this action has N rule filters, and
                 that table renders exactly one flat condition list — it cannot

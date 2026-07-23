@@ -161,6 +161,7 @@ type SheetsResult = Record<
     // color_rows
     rowIndexes?: number[];
     colors?: string[];
+    coloredCount?: number;
   }
 >;
 
@@ -1783,6 +1784,128 @@ describe("googleSheetsActionExecutor — color_rows", () => {
     expect(out.matchCount).toBe(3);
     // Sheet row numbers (1-based, past the header), ascending.
     expect(out.rowIndexes).toEqual([2, 3, 4]);
+  });
+
+  it("colors every matched row when set to all (the explicit default)", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run({ ...twoRules, onMultipleColorMatches: "all" });
+
+    // "all" is identical to leaving the mode unset — every match is painted, so
+    // matched and colored counts coincide.
+    expect(paintRequests()).toHaveLength(3);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(3);
+    expect(out.rowIndexes).toEqual([2, 3, 4]);
+  });
+
+  it("colors only the topmost matched row when set to first", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run({
+      ...twoRules,
+      onMultipleColorMatches: "first",
+    });
+
+    // Three rows match, but only ONE is painted — the topmost (row 2, "A" Done).
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const requests = paintRequests();
+    expect(requests).toHaveLength(1);
+    // Grid row 1 = sheet row 2.
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(1);
+    expect(requests[0].repeatCell.range.endRowIndex).toBe(2);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    // matchCount is the TRUE match count (3), coloredCount is what was painted (1).
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(1);
+    expect(out.rowIndexes).toEqual([2]);
+    expect(out.colors).toEqual(["#22c55e"]);
+    // Still the happy branch, with the legacy aliases.
+    expect(outputs(outcome)).toEqual(["colored", "main", "source-1"]);
+  });
+
+  it("colors only the bottom-most matched row when set to last", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run({
+      ...twoRules,
+      onMultipleColorMatches: "last",
+    });
+
+    // Three rows match (2, 3, 4); only the last one — row 4 ("C" Done) — is
+    // painted, in the Done rule's green.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const requests = paintRequests();
+    expect(requests).toHaveLength(1);
+    // Grid row 3 = sheet row 4.
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(3);
+    expect(requests[0].repeatCell.range.endRowIndex).toBe(4);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    // Three matched, one painted.
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(1);
+    expect(out.rowIndexes).toEqual([4]);
+    expect(out.colors).toEqual(["#22c55e"]);
+    expect(outputs(outcome)).toEqual(["colored", "main", "source-1"]);
+  });
+
+  it("first picks the sheet-topmost match, not the first rule's match", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    // Rule order is Blocked-then-Done, but row 2 ("Done") sits above row 3
+    // ("Blocked"). "first" paints row 2 in rule 2's red — proving the topmost
+    // ROW wins, not the first RULE.
+    const outcome = await run({
+      action: "color_rows",
+      spreadsheetId: "sheet1",
+      sheetName: "Grouped",
+      colorRules: [rule("#22c55e", "Blocked"), rule("#ef4444", "Done")],
+      onMultipleColorMatches: "first",
+    });
+
+    const requests = paintRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(1);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.rowIndexes).toEqual([2]);
+    expect(out.colors).toEqual(["#ef4444"]);
+  });
+
+  it("first with no matches still writes nothing and routes No-match", async () => {
+    mockReadWithGrid(statuses);
+
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Shipped")],
+      onMultipleColorMatches: "first",
+    });
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.coloredCount).toBe(0);
+  });
+
+  it("last with no matches still writes nothing and routes No-match", async () => {
+    mockReadWithGrid(statuses);
+
+    // Exercises the slice(-1) branch on an empty match set — it must stay a
+    // clean no-op, symmetric with the "first" case above.
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Shipped")],
+      onMultipleColorMatches: "last",
+    });
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.coloredCount).toBe(0);
   });
 
   it("gives a row matching two rules the FIRST rule's color", async () => {

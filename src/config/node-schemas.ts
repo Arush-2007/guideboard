@@ -495,6 +495,12 @@ const googleSheetsActionSchema = z.preprocess(
       // uses `colorRules[].conditions`, NOT the shared `conditions` above —
       // each rule carries its own filter.
       colorRules: z.array(colorRuleSchema).optional(),
+      // color_rows only: paint just the topmost matched row ("first"), just the
+      // bottom-most ("last"), or every matched row ("all", the default — today's
+      // behavior). Its OWN key, not the shared `onMultipleMatches` below, whose
+      // first/each/error enum has no "all"/"last" and whose fan-out semantics
+      // color_rows deliberately does not use.
+      onMultipleColorMatches: z.enum(["first", "last", "all"]).optional(),
       // Legacy field, superseded by `position` (coerced above). Kept optional so
       // inbound saved data validates; the executor reads `position` now.
       insertUnder: z.enum(["group", "each_row"]).optional(),

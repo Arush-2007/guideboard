@@ -98,6 +98,10 @@ type GoogleSheetsActionData = {
   // color_rows only: the ordered rule list. This action does NOT use the shared
   // `conditions` above — every rule carries its own filter.
   colorRules?: ColorRule[];
+  // color_rows only: paint just the topmost matched row ("first"), just the
+  // bottom-most ("last"), or every matched row ("all", the default). Its own key
+  // — color_rows does not use the shared `onMultipleMatches` fan-out policy.
+  onMultipleColorMatches?: "first" | "last" | "all";
 };
 
 const ERROR_PREFIX = "Google Sheets Action";
@@ -432,10 +436,34 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
           // Ascending sheet order — the run view lists rows top-to-bottom, not
           // in the order the rules happened to claim them.
-          const entries = [...claimed.entries()].sort((a, b) => a[0] - b[0]);
+          const claimedEntries = [...claimed.entries()].sort(
+            (a, b) => a[0] - b[0],
+          );
+
+          // "first" paints only the topmost matched row and "last" only the
+          // bottom-most (entries are already in sheet order); "all" (the default)
+          // paints every matched row. Slicing HERE means everything below — the
+          // summary, the cap check, and the write — sees exactly the rows this
+          // run will paint. `.slice` is empty-safe, so a zero-match run stays a
+          // clean no-op in every mode.
+          const mode = config.onMultipleColorMatches ?? "all";
+          const entries =
+            mode === "first"
+              ? claimedEntries.slice(0, 1)
+              : mode === "last"
+                ? claimedEntries.slice(-1)
+                : claimedEntries;
 
           const summary = {
-            matchCount: entries.length,
+            // How many rows matched the color rules — ALL of them, even when
+            // only one is painted. Same meaning as find_rows/update_row's
+            // matchCount, so a downstream branch on "how many matched" reads the
+            // true count in every mode.
+            matchCount: claimedEntries.length,
+            // How many this run actually painted: every match in "all", exactly
+            // one in "first"/"last". `rows`/`rowIndexes`/`colors` below describe
+            // THESE rows.
+            coloredCount: entries.length,
             // Stored even when nothing matched, so the grid can still render
             // column headers.
             columns: keyed.map(([, key]) => key),
@@ -535,9 +563,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
           ...painted,
         },
       };
-      // Nothing matched ⇒ nothing was painted: route the No-match branch so the
-      // downstream that handles "no row to flag" runs.
-      return painted.matchCount === 0
+      // Nothing painted ⇒ route the No-match branch so the downstream that
+      // handles "no row to flag" runs. Keyed on coloredCount, not matchCount:
+      // the branch is about whether a row was COLORED. (They agree today — a
+      // matched row is always painted — but coloredCount states what the branch
+      // actually means.)
+      return painted.coloredCount === 0
         ? routed(output, [COLOR_ROWS_OUTPUTS.NO_MATCH])
         : routeHappy(output, COLOR_ROWS_OUTPUTS.COLORED);
     }
