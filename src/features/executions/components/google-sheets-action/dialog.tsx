@@ -19,6 +19,7 @@ import {
   RowMatchConditions,
 } from "@/components/row-match-conditions";
 import { Button } from "@/components/ui/button";
+import { ColorPicker } from "@/components/ui/color-picker";
 import {
   Dialog,
   DialogContent,
@@ -402,22 +403,14 @@ function ColorRulesEditor({
               <span className="text-xs font-medium text-muted-foreground">
                 Rule {index + 1}
               </span>
-              {/* Native color input + hex text, kept in sync — either can drive
-                  the value, and the text field is what makes a brand hex
-                  pasteable. */}
-              <input
-                type="color"
-                aria-label={`Rule ${index + 1} color`}
+              {/* Themed swatch + board popover. Commits on release, not per
+                  drag value, so the host dialog doesn't re-render mid-pick. The
+                  rule palette doubles as one-click presets. */}
+              <ColorPicker
                 value={rule.color}
-                onChange={(e) => update(index, { color: e.target.value })}
-                className="size-8 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
-              />
-              <Input
-                aria-label={`Rule ${index + 1} color hex`}
-                value={rule.color}
-                onChange={(e) => update(index, { color: e.target.value })}
-                placeholder="#22c55e"
-                className="w-32 font-mono text-xs"
+                onChange={(color) => update(index, { color })}
+                label={`Rule ${index + 1} color`}
+                presets={DEFAULT_RULE_COLORS}
               />
               <Button
                 type="button"
@@ -876,8 +869,8 @@ export const GoogleSheetsActionDialog = ({
                               <div className="space-y-0.5">
                                 <FormLabel>Leave a blank row above</FormLabel>
                                 <FormDescription>
-                                  Leaves one row empty just above the new row, to
-                                  separate it from the entries before it.
+                                  Leaves one row empty just above the new row,
+                                  to separate it from the entries before it.
                                 </FormDescription>
                               </div>
                               <FormControl>

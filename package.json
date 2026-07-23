@@ -78,6 +78,7 @@
     "nuqs": "^2.7.1",
     "random-word-slugs": "^0.1.7",
     "react": "19.1.0",
+    "react-colorful": "^5.8.0",
     "react-dom": "19.1.0",
     "react-error-boundary": "^6.0.0",
     "react-hook-form": "^7.64.0",
