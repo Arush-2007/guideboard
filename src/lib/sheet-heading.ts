@@ -1,0 +1,166 @@
+import { z } from "zod";
+
+/**
+ * The single source for the Google Sheets "append heading" row style — its zod
+ * fragment, its bounds, and its defaults.
+ *
+ * A heading row is one merged cell spanning the table's columns, so unlike an
+ * appended DATA row it has no column mapping: it carries one piece of text and
+ * the formatting that makes it read as a section header. That formatting is user
+ * config, which means it must be validated identically by the server schema
+ * (`node-schemas.ts`) and by the dialog's own form schema — a plain `z.object()`
+ * STRIPS undeclared keys on submit, so a dialog that restated a subset of these
+ * fields would silently drop the rest (the same trap `compare-options-schema.ts`
+ * exists to close).
+ *
+ * Kept zod-only and dependency-free so the editor can import it: the request
+ * BUILDER that turns a format into Sheets `batchUpdate` requests lives in
+ * `google-sheets.ts`, which pulls in ky + inngest and is server-only.
+ */
+
+/**
+ * Horizontal placement of the heading text inside its merged band. These are
+ * Sheets' own `horizontalAlignment` enum values, passed through verbatim.
+ */
+export const HEADING_ALIGNMENTS = ["LEFT", "CENTER", "RIGHT"] as const;
+export type HeadingAlignment = (typeof HEADING_ALIGNMENTS)[number];
+
+/**
+ * Font-size bounds. Sheets itself accepts far more, but a heading outside this
+ * range is a mis-typed value rather than an intent — and a 400-point row would
+ * silently resize the sheet's row height for everyone looking at it.
+ */
+export const HEADING_FONT_SIZE = { min: 6, max: 48 } as const;
+
+/** `#RRGGBB` — exactly what `hexToRgb` (google-sheets.ts) accepts. */
+const hexColor = z.string().regex(/^#[0-9a-f]{6}$/i, "Pick a color");
+
+export const headingFormatSchema = z.object({
+  bold: z.boolean().optional(),
+  italic: z.boolean().optional(),
+  fontSize: z
+    .number()
+    .int()
+    .min(HEADING_FONT_SIZE.min)
+    .max(HEADING_FONT_SIZE.max)
+    .optional(),
+  textColor: hexColor.optional(),
+  backgroundColor: hexColor.optional(),
+  align: z.enum(HEADING_ALIGNMENTS).optional(),
+});
+
+export type HeadingFormat = z.infer<typeof headingFormatSchema>;
+
+/**
+ * What an unconfigured heading looks like: bold, centered, black on white, one
+ * step up from the sheet's default 10pt body text. White is deliberate rather
+ * than "leave it alone" — an appended row can land on a banded grid slot, and a
+ * heading striped like a data row does not read as a heading (the same reason
+ * `whiteRowRequest` exists for added blank rows).
+ */
+export const DEFAULT_HEADING_FORMAT: Required<HeadingFormat> = {
+  bold: true,
+  italic: false,
+  fontSize: 12,
+  textColor: "#000000",
+  backgroundColor: "#ffffff",
+  align: "CENTER",
+};
+
+/**
+ * Fills every unset field from `DEFAULT_HEADING_FORMAT`, so the writer always
+ * has a COMPLETE format to send.
+ *
+ * Field-by-field with `??` rather than a spread: zod keeps an explicitly-passed
+ * `undefined` as a present key, which a `{ ...defaults, ...format }` spread would
+ * let overwrite the default with `undefined`.
+ */
+/**
+ * Which KIND of row an action is allowed to act on.
+ *
+ * A heading row is structurally a row like any other (its text sits in the first
+ * column — merging is only a display effect), so without this every filter that
+ * happens to match a heading's text would overwrite or repaint a section title.
+ *
+ * - `data`     — skip heading rows. The DEFAULT for every action that takes a
+ *                filter, because a filter written against your columns is asking
+ *                about your data, never about a section title.
+ * - `headings` — act ONLY on heading rows. This is how a heading gets edited or
+ *                recoloured at all.
+ * - `all`      — no distinction; the pre-heading behaviour, kept as an explicit
+ *                opt-in for a tab where a merged row IS data.
+ */
+export const ROW_SCOPES = ["data", "headings", "all"] as const;
+export type RowScope = (typeof ROW_SCOPES)[number];
+
+export const ROW_SCOPE_LABELS: Record<RowScope, string> = {
+  data: "Data rows only (skip headings)",
+  headings: "Heading rows only",
+  all: "All rows, headings included",
+};
+
+export const DEFAULT_ROW_SCOPE: RowScope = "data";
+
+/** Does a row of this kind pass the given scope? */
+export function rowPassesScope(scope: RowScope, isHeading: boolean): boolean {
+  if (scope === "all") return true;
+  return scope === "headings" ? isHeading : !isHeading;
+}
+
+/**
+ * The operators the "Find rows — heading" action offers.
+ *
+ * A deliberate subset of the row-match set: a heading always holds text (its
+ * value is required), so `is empty` / `is not empty` are meaningless, and the
+ * numeric and date operators have nothing to compare against. Keeping the list
+ * short is the point of the action — it is a search box for headings, not the
+ * general conditions editor.
+ */
+export const HEADING_MATCH_OPERATORS = [
+  "equals",
+  "contains",
+  "not_equals",
+  "not_contains",
+] as const;
+export type HeadingMatchOperator = (typeof HEADING_MATCH_OPERATORS)[number];
+
+export const HEADING_MATCH_OPERATOR_LABELS: Record<
+  HeadingMatchOperator,
+  string
+> = {
+  equals: "Is exactly",
+  contains: "Contains",
+  not_equals: "Is not",
+  not_contains: "Does not contain",
+};
+
+/**
+ * The heading search itself. Both fields are optional: with no value the action
+ * returns EVERY heading on the tab, which is the natural "list the sections"
+ * query and a safe default (it is a read).
+ *
+ * Note there is no `column` — a heading's text always lives in the tab's first
+ * column, so the executor supplies it at run time from the live header row.
+ * That way a renamed first column can't break a saved node.
+ */
+export const headingFilterSchema = z.object({
+  operator: z.enum(HEADING_MATCH_OPERATORS).optional(),
+  value: z.string().optional(),
+});
+
+export type HeadingFilter = z.infer<typeof headingFilterSchema>;
+
+export function resolveHeadingFormat(
+  format?: HeadingFormat | null,
+): Required<HeadingFormat> {
+  const f = format ?? {};
+  return {
+    bold: f.bold ?? DEFAULT_HEADING_FORMAT.bold,
+    italic: f.italic ?? DEFAULT_HEADING_FORMAT.italic,
+    fontSize: f.fontSize ?? DEFAULT_HEADING_FORMAT.fontSize,
+    textColor: f.textColor ?? DEFAULT_HEADING_FORMAT.textColor,
+    backgroundColor:
+      f.backgroundColor ?? DEFAULT_HEADING_FORMAT.backgroundColor,
+    align: f.align ?? DEFAULT_HEADING_FORMAT.align,
+  };
+}

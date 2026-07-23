@@ -26,7 +26,13 @@ import { NodeType } from "@/generated/prisma";
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
-  action?: "append_row" | "find_rows" | "update_row" | "color_rows";
+  action?:
+    | "append_row"
+    | "append_heading"
+    | "find_rows"
+    | "find_heading"
+    | "update_row"
+    | "color_rows";
   position?: "bottom" | "under_group" | "under_each";
   spreadsheetId?: string;
   sheetName?: string;
@@ -104,15 +110,22 @@ export const GoogleSheetsActionNode = memo(
     const description = nodeData?.sheetName
       ? nodeData.action === "find_rows"
         ? `Find rows in ${nodeData.sheetName}`
-        : nodeData.action === "update_row"
-          ? `Update a row in ${nodeData.sheetName}`
-          : nodeData.action === "color_rows"
-            ? `Color rows in ${nodeData.sheetName}`
-            : position === "under_each"
-              ? `Insert rows into ${nodeData.sheetName}`
-              : position === "under_group"
-                ? `Insert a row into ${nodeData.sheetName}`
-                : `Append to ${nodeData.sheetName}`
+        : nodeData.action === "find_heading"
+          ? `Find a heading in ${nodeData.sheetName}`
+          : nodeData.action === "update_row"
+            ? `Update a row in ${nodeData.sheetName}`
+            : nodeData.action === "color_rows"
+              ? `Color rows in ${nodeData.sheetName}`
+              : nodeData.action === "append_heading"
+                ? // A heading is placed by the same `position` as an appended row,
+                  // but "insert"/"append" would read as adding data — say what it
+                  // actually adds.
+                  `Add a heading to ${nodeData.sheetName}`
+                : position === "under_each"
+                  ? `Insert rows into ${nodeData.sheetName}`
+                  : position === "under_group"
+                    ? `Insert a row into ${nodeData.sheetName}`
+                    : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (

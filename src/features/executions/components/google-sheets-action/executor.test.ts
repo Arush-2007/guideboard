@@ -76,8 +76,30 @@ const publish = (async (msg: { status: string }) => {
 }) as unknown as NodeExecutorParams["publish"];
 
 // readSheetTable does `ky.get(url).json<T>()` — return the values payload.
-function mockRead(values: unknown[][]) {
-  kyGetMock.mockReturnValue({ json: async () => ({ values }) });
+/**
+ * Tab titles the fixtures in this file use. `mockRead` answers getSheetGrid with
+ * all of them, so a read test needn't restate which tab it is on — every
+ * row-reading action now looks the tab's merges up to tell headings from data,
+ * and `getSheetGrid` throws when the title is absent.
+ */
+const FIXTURE_TABS = ["Ledger", "Master", "Grouped", "Jobs", "Sheet1"];
+
+function mockRead(values: unknown[][], merges: unknown[] = []) {
+  kyGetMock.mockImplementation((url: string) => ({
+    json: async () =>
+      url.includes("/values/")
+        ? { values }
+        : {
+            sheets: FIXTURE_TABS.map((title, i) => ({
+              properties: {
+                sheetId: i,
+                title,
+                gridProperties: { rowCount: 1000 },
+              },
+              merges,
+            })),
+          },
+  }));
 }
 
 // As mockRead, but also answers getSheetGrid's metadata GET (same ky.get, a
@@ -158,6 +180,14 @@ type SheetsResult = Record<
     insertedUnderGroup?: boolean;
     anchorRow?: Record<string, string>;
     insertedRows?: Record<string, string>[];
+    // append_heading
+    headingText?: string;
+    mergedColumns?: number;
+    // find_heading
+    headings?: string[];
+    headingRowIndexes?: number[];
+    firstHeading?: string;
+    headingsOnTab?: number;
     // color_rows
     rowIndexes?: number[];
     colors?: string[];
@@ -2045,5 +2075,632 @@ describe("googleSheetsActionExecutor — color_rows", () => {
       run({ ...twoRules, colorRules: [rule("not-a-color", "Done")] }),
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(kyPostMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("googleSheetsActionExecutor — append_heading", () => {
+  const table = [
+    ["Service Buyer", "Job No", "Status"],
+    ["Acme", "0001", "Open"], // data row 0 → sheet row 2
+    ["Globex", "0002", "Open"], // data row 1 → sheet row 3
+    ["Acme", "0003", "Open"], // data row 2 → sheet row 4
+  ];
+
+  const heading = {
+    action: "append_heading",
+    spreadsheetId: "s",
+    sheetName: "Grouped",
+    headingText: "Invoices — March",
+  };
+
+  const matchAcme = [
+    { column: "Service Buyer", operator: "equals", value: "Acme" },
+  ];
+
+  /** The requests of the Nth batchUpdate, typed for the two heading shapes. */
+  function formatRequests(index: number) {
+    return (postBody(index).requests ?? []) as Array<{
+      repeatCell?: {
+        range: Record<string, number>;
+        cell: { userEnteredFormat: Record<string, unknown> };
+        fields: string;
+      };
+      mergeCells?: { range: Record<string, number>; mergeType: string };
+    }>;
+  }
+
+  it("writes the text to column A, then styles and merges the band", async () => {
+    mockReadWithGrid(table);
+
+    const result = await run(heading);
+
+    // The value goes to the first free row (5) at its ABSOLUTE range, as a
+    // ONE-cell row — Sheets leaves B..ZZ alone, which is what the merge then
+    // swallows.
+    expect(writtenRange(0).range).toBe("'Grouped'!A5:ZZ5");
+    expect(writtenRange(0).values).toEqual([["Invoices — March"]]);
+
+    // …then ONE format batchUpdate: style the band, THEN merge it. Order
+    // matters — a merge inherits the top-left cell's format.
+    expect(postBody(1).url).toContain(":batchUpdate");
+    expect(postBody(1).url).not.toContain("values:batchUpdate");
+    const requests = formatRequests(1);
+    expect(requests).toHaveLength(2);
+
+    // Sheet row 5 → grid row 4, across the 3-column header band.
+    const band = {
+      sheetId: 77,
+      startRowIndex: 4,
+      endRowIndex: 5,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    };
+    expect(requests[0].repeatCell?.range).toEqual(band);
+    expect(requests[0].repeatCell?.cell.userEnteredFormat).toEqual({
+      backgroundColor: { red: 1, green: 1, blue: 1 },
+      horizontalAlignment: "CENTER",
+      verticalAlignment: "MIDDLE",
+      textFormat: {
+        bold: true,
+        italic: false,
+        fontSize: 12,
+        foregroundColor: { red: 0, green: 0, blue: 0 },
+      },
+    });
+    // Only the sub-fields the heading owns — so the row keeps the tab's number
+    // format, borders and padding.
+    expect(requests[0].repeatCell?.fields).toBe(
+      "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)",
+    );
+    expect(requests[1].mergeCells).toEqual({
+      range: band,
+      mergeType: "MERGE_ALL",
+    });
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.action).toBe("append_heading");
+    expect(out.headingText).toBe("Invoices — March");
+    expect(out.rowIndex).toBe(5);
+    expect(out.mergedColumns).toBe(3);
+    // A heading has no columns, so it must not claim a header-keyed row.
+    expect(out.rowByHeader).toBeUndefined();
+  });
+
+  it("splits plan from write so a retry cannot add a second heading", async () => {
+    mockReadWithGrid(table);
+
+    await run(heading);
+
+    // The row number is settled in a memoized step BEFORE the write, exactly as
+    // a mapped append is — a replay rewrites the same cells rather than reading
+    // a sheet the landed write already changed. The merge is its own step, after
+    // the text exists.
+    expect(stepNames).toEqual([
+      "google-sheets-append-plan",
+      "google-sheets-append-write",
+      "google-sheets-style-heading-rows",
+    ]);
+  });
+
+  it("honours a custom format", async () => {
+    mockReadWithGrid(table);
+
+    await run({
+      ...heading,
+      headingFormat: {
+        bold: false,
+        italic: true,
+        fontSize: 18,
+        textColor: "#ff0000",
+        backgroundColor: "#000000",
+        align: "LEFT",
+      },
+    });
+
+    expect(formatRequests(1)[0].repeatCell?.cell.userEnteredFormat).toEqual({
+      backgroundColor: { red: 0, green: 0, blue: 0 },
+      horizontalAlignment: "LEFT",
+      verticalAlignment: "MIDDLE",
+      textFormat: {
+        bold: false,
+        italic: true,
+        fontSize: 18,
+        foregroundColor: { red: 1, green: 0, blue: 0 },
+      },
+    });
+  });
+
+  it("emits NO merge on a one-column tab (Sheets rejects a single-cell merge)", async () => {
+    mockReadWithGrid([["Only"], ["a"]]);
+
+    await run(heading);
+
+    const requests = formatRequests(1);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell).toBeDefined();
+    expect(requests.some((r) => r.mergeCells)).toBe(false);
+  });
+
+  it("clears the blankRowAbove separator in the SAME format call", async () => {
+    mockReadWithGrid(table);
+
+    const result = await run({ ...heading, blankRowAbove: true });
+
+    // Row 5 is skipped (left empty), the heading lands on row 6.
+    expect(writtenRange(0).range).toBe("'Grouped'!A6:ZZ6");
+
+    // One batchUpdate carries both: the heading's style + merge, and the
+    // separator (sheet row 5 → grid row 4) forced white.
+    const requests = formatRequests(1);
+    expect(requests).toHaveLength(3);
+    expect(requests[2].repeatCell?.range).toEqual({
+      sheetId: 77,
+      startRowIndex: 4,
+      endRowIndex: 5,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    });
+    expect(requests[2].repeatCell?.fields).toBe(
+      "userEnteredFormat.backgroundColor",
+    );
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(6);
+  });
+
+  it("refuses to merge a blank band when the text renders empty", async () => {
+    mockReadWithGrid(table);
+
+    // The template is non-empty (so the config schema passes), but the value it
+    // reads is missing — an unlabelled merged row would hide that.
+    await expect(
+      run({ ...heading, headingText: "@<AI_TEXT_1.output>@" }, {}),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a tab with no header row (nothing to merge across)", async () => {
+    mockReadWithGrid([]);
+
+    await expect(run(heading)).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("places a heading under a matched group and styles it there", async () => {
+    mockReadWithGrid(table);
+
+    // Globex sits MID-table (data row 1 → sheet row 3), so room has to be made
+    // — unlike a group that already ends at the bottom, which just writes the
+    // next free row.
+    const result = await run({
+      ...heading,
+      position: "under_group",
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Globex" },
+      ],
+    });
+
+    // Data row 1 → grid row 2, so the slot under it is grid row 3.
+    expect(postBody(0).requests).toEqual([
+      {
+        insertDimension: {
+          range: { sheetId: 77, dimension: "ROWS", startIndex: 3, endIndex: 4 },
+          inheritFromBefore: true,
+        },
+      },
+    ]);
+    expect(writtenRange(1).range).toBe("'Grouped'!A4:ZZ4");
+    expect(writtenRange(1).values).toEqual([["Invoices — March"]]);
+
+    // The insert inherited Globex's banding — the style pass overrides it.
+    // Sheet row 4 → grid row 3.
+    const requests = formatRequests(2);
+    expect(requests[0].repeatCell?.range.startRowIndex).toBe(3);
+    expect(requests[1].mergeCells?.mergeType).toBe("MERGE_ALL");
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.insertedUnderGroup).toBe(true);
+    expect(out.matchCount).toBe(1);
+    expect(out.headingText).toBe("Invoices — March");
+    expect(out.rowIndex).toBe(4);
+  });
+
+  it("resolves @<anchorRow.…>@ in the heading text, per anchor", async () => {
+    mockReadWithGrid(table);
+
+    const outcome = (await run({
+      ...heading,
+      position: "under_each",
+      headingText: "@<anchorRow.Job No>@ — follow-up",
+      conditions: matchAcme,
+    })) as unknown as FanOutOutcome;
+
+    // One heading under EACH Acme row, each naming the row it sits under.
+    expect(postBody(1).data).toEqual([
+      { range: "'Grouped'!A3:ZZ3", values: [["0001 — follow-up"]] },
+      { range: "'Grouped'!A6:ZZ6", values: [["0003 — follow-up"]] },
+    ]);
+
+    // A heading item carries its TEXT, not a header-keyed row.
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toEqual([
+      {
+        headingText: "0001 — follow-up",
+        rowIndex: 3,
+        anchorRow: {
+          "Service Buyer": "Acme",
+          "Job No": "0001",
+          Status: "Open",
+        },
+      },
+      {
+        headingText: "0003 — follow-up",
+        rowIndex: 6,
+        anchorRow: {
+          "Service Buyer": "Acme",
+          "Job No": "0003",
+          Status: "Open",
+        },
+      },
+    ]);
+
+    const summary = outcome.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(2);
+    expect(summary.insertedRows).toEqual([
+      { heading: "0001 — follow-up" },
+      { heading: "0003 — follow-up" },
+    ]);
+    expect(summary.insertedRowIndexes).toEqual([3, 6]);
+  });
+
+  it("a fan-out CHILD reshapes its seed and writes nothing", async () => {
+    mockReadWithGrid(table);
+
+    const result = await run(
+      { ...heading, position: "under_each", conditions: matchAcme },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          __fanOut: true,
+          index: 2,
+          total: 2,
+          item: {
+            headingText: "0003 — follow-up",
+            rowIndex: 6,
+            anchorRow: { "Job No": "0003" },
+          },
+        },
+      },
+    );
+
+    // The parent already inserted every heading — a child must not insert again.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.headingText).toBe("0003 — follow-up");
+    expect(out.rowIndex).toBe(6);
+    expect(out.matchCount).toBe(1);
+    expect(out.rowByHeader).toBeUndefined();
+  });
+
+  it("refuses a non-bottom heading with no filter (it would head the whole tab)", async () => {
+    mockReadWithGrid(table);
+
+    await expect(
+      run({ ...heading, position: "under_group", conditions: [] }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("googleSheetsActionExecutor — headings vs the reading actions", () => {
+  // A tab whose FIRST column is "Job No." with an "Acme" HEADING among the data.
+  // A merged heading keeps its text in the top-left cell, so that is exactly how
+  // the values API returns the row.
+  const withHeading = [
+    ["Job No.", "Name", "Status"],
+    ["0001", "Widget", "Open"], // data row 0 → sheet row 2
+    ["Acme"], //                   data row 1 → sheet row 3  ← the heading
+    ["0002", "Gadget", "Open"], // data row 2 → sheet row 4
+    ["Acme", "Gizmo", "Open"], //  data row 3 → sheet row 5  ← REAL data, same text
+  ];
+
+  /**
+   * Answers the values read AND the metadata read, with the heading's merge
+   * declared — grid row 2 (data row 1), anchored at column A, one row tall.
+   */
+  function mockWithMerge(values: unknown[][], merges: unknown[]) {
+    kyGetMock.mockImplementation((url: string) => ({
+      json: async () =>
+        url.includes("/values/")
+          ? { values }
+          : {
+              sheets: [
+                {
+                  properties: {
+                    sheetId: 77,
+                    title: "Jobs",
+                    gridProperties: { rowCount: 1000 },
+                  },
+                  merges,
+                },
+              ],
+            },
+    }));
+  }
+
+  const headingMerge = [
+    {
+      startRowIndex: 2,
+      endRowIndex: 3,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    },
+  ];
+
+  const findAcme = {
+    action: "find_rows",
+    spreadsheetId: "s",
+    sheetName: "Jobs",
+    conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+  };
+
+  it("find_rows does NOT return a heading whose text matches the filter", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(await run(findAcme)).GOOGLE_SHEETS_ACTION_1;
+
+    // Two rows hold "Acme" in the first column — the heading (row 3) and a real
+    // data row (row 5). Only the real one comes back.
+    expect(out.matchCount).toBe(1);
+    // Output keys are sanitized headers, so "Job No." loses its dot.
+    expect(out.firstRow).toEqual({
+      "Job No": "Acme",
+      Name: "Gizmo",
+      Status: "Open",
+    });
+  });
+
+  it("keeps a DATA row that merely looks like a heading (no merge on it)", async () => {
+    // Same tab, but the sheet reports NO merges — so row 3 is just a sparse data
+    // row, and hiding it would be data loss. This is why the merge ranges decide,
+    // not the row's shape.
+    mockWithMerge(withHeading, []);
+
+    const out = ctx(await run(findAcme)).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(2);
+  });
+
+  it("excludes a heading whose row carries stray content in another column", async () => {
+    // The shape a discarded optimisation used to mis-read: a genuine merged
+    // heading that also holds a leftover value, so "first column filled, rest
+    // empty" is false. Only the MERGE decides, so it is still excluded.
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["0001", "Widget", "Open"],
+        ["Acme", "", "leftover"], // merged heading + stray cell
+      ],
+      [
+        {
+          startRowIndex: 2,
+          endRowIndex: 3,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(await run(findAcme)).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+  });
+
+  it("update_row will not overwrite a heading by default", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_row",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+        columnMappings: { Status: "Closed" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    // Two rows read "Acme" in the first column; only the real data row (sheet
+    // row 5) is written. The heading is left alone.
+    expect(out.matchCount).toBe(1);
+    expect(out.rowIndex).toBe(5);
+  });
+
+  it("update_row CAN target a heading when scoped to headings", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_row",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        rowScope: "headings",
+        conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+        columnMappings: { "Job No.": "Renamed" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    // Now the opposite row: the heading at sheet row 3, not the data row.
+    expect(out.matchCount).toBe(1);
+    expect(out.rowIndex).toBe(3);
+  });
+
+  it("rowScope 'all' restores the pre-heading behaviour", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_row",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        rowScope: "all",
+        onMultipleMatches: "each",
+        conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+        columnMappings: { Status: "Closed" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(2);
+  });
+
+  it("find_heading ignores an onMultipleMatches inherited from find_rows", async () => {
+    // Switching a find_rows node to find_heading leaves "each" in its data, and
+    // the heading dialog shows no control to clear it. find_heading never fans
+    // out, so it must not hit the fan-out cap on an unreachable setting.
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleMatches: "each",
+        maxFanOutItems: 1,
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(1);
+  });
+
+  it("find_heading returns ONLY the heading, and reports where it is", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "find_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+    });
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(1);
+    expect(out.headings).toEqual(["Acme"]);
+    expect(out.headingRowIndexes).toEqual([3]);
+    expect(out.firstHeading).toBe("Acme");
+    expect(out.rowIndex).toBe(3);
+    // The real "Acme" data row is not a heading, so it is absent.
+    expect(outputs(outcome)).toContain("found");
+  });
+
+  it("find_heading matches case-insensitively", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "acme" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(1);
+  });
+
+  it("find_heading with no value lists every heading on the tab", async () => {
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["March"], // data row 0 → sheet row 2  ← heading
+        ["0001", "Widget", "Open"],
+        ["April"], // data row 2 → sheet row 4  ← heading
+      ],
+      [
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+        {
+          startRowIndex: 3,
+          endRowIndex: 4,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(out.headings).toEqual(["March", "April"]);
+    expect(out.headingRowIndexes).toEqual([2, 4]);
+  });
+
+  it("finds a heading even when its row has stray content in another column", async () => {
+    // The shape heuristic ("first column filled, rest empty") is only an
+    // optimisation for find_rows. If it were allowed to gate find_heading's
+    // merge lookup, this row — a genuine MERGED heading that happens to carry a
+    // leftover value further along — would come back as a silent zero result.
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["0001", "Widget", "Open"],
+        ["Acme", "", "leftover"], // merged heading + stray cell
+      ],
+      [
+        {
+          startRowIndex: 2,
+          endRowIndex: 3,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "Acme" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(1);
+    expect(out.headingRowIndexes).toEqual([3]);
+  });
+
+  it("reports how many headings the tab has, so a zero result is diagnosable", async () => {
+    // No merges at all — the tab has no headings, which is a different problem
+    // from "your search text matched nothing".
+    mockWithMerge(withHeading, []);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "Acme" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(0);
+    expect(out.headingsOnTab).toBe(0);
+  });
+
+  it("find_heading routes Not-found when no heading matches", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "find_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Globex" },
+    });
+
+    expect(outputs(outcome)).toEqual(["notfound"]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(0);
   });
 });

@@ -1,6 +1,7 @@
 import { NonRetriableError, RetryAfterError } from "inngest";
 import { HTTPError, type Options as KyOptions } from "ky";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "./http";
+import { type HeadingFormat, resolveHeadingFormat } from "./sheet-heading";
 
 /**
  * Shared Google Sheets v4 REST plumbing — the Sheets counterpart of
@@ -173,6 +174,14 @@ export function nextFreeSheetRow(table: SheetTable): number {
   return table.rows.length + 2;
 }
 
+/** A merged range as Sheets reports it (half-open, 0-based grid indexes). */
+export type SheetMergeRange = {
+  startRowIndex?: number;
+  endRowIndex?: number;
+  startColumnIndex?: number;
+  endColumnIndex?: number;
+};
+
 type SheetsMetaResponse = {
   sheets?: Array<{
     properties?: {
@@ -180,6 +189,7 @@ type SheetsMetaResponse = {
       title?: string;
       gridProperties?: { rowCount?: number };
     };
+    merges?: SheetMergeRange[];
   }>;
 };
 
@@ -192,7 +202,41 @@ export type SheetGrid = {
    * trimmed sheet must grow the grid (`appendDimension`) first.
    */
   rowCount: number;
+  /**
+   * Every merged range on the tab. This is what makes a HEADING row identifiable
+   * with certainty rather than by guesswork — see `headingDataRows`.
+   *
+   * ⚠️ `[]` unless the call passed `includeMerges: true`. An empty array from a
+   * default call means "not requested", NOT "this tab has none".
+   */
+  merges: SheetMergeRange[];
 };
+
+/**
+ * The DATA-row indexes (0-based, as in `SheetTable.rows`) that are heading rows.
+ *
+ * A heading is identified by the one thing that is actually true of it and of
+ * nothing else: its cells are MERGED, starting at column A, across a single row.
+ * That comes from the sheet's own structure, so a genuine data row that merely
+ * happens to have only its first column filled is never mistaken for one — which
+ * a "first cell filled, rest empty" heuristic would get wrong, and silently.
+ *
+ * Grid row 0 is the header, so data row i is grid row i + 1; anything at or above
+ * the header is ignored (a merged header is not a heading).
+ */
+export function headingDataRows(merges: SheetMergeRange[]): Set<number> {
+  const rows = new Set<number>();
+  for (const m of merges) {
+    const start = m.startRowIndex ?? 0;
+    const end = m.endRowIndex ?? start + 1;
+    // Anchored at column A, exactly one row tall, below the header row.
+    if ((m.startColumnIndex ?? 0) !== 0) continue;
+    if (end - start !== 1) continue;
+    if (start < 1) continue;
+    rows.add(start - 1);
+  }
+  return rows;
+}
 
 /**
  * Resolves a tab's `sheetId` + grid height. Case-insensitive title match.
@@ -202,16 +246,38 @@ export async function getSheetGrid({
   accessToken,
   spreadsheetId,
   sheetName,
+  includeMerges = false,
 }: {
   accessToken: string;
   spreadsheetId: string;
   sheetName: string;
+  /**
+   * Also fetch the tab's merged ranges (`merges`), which is what identifies
+   * heading rows. OFF by default: most callers here only want `sheetId` +
+   * `rowCount` — every append goes through `ensureGridRows`, and the whiten /
+   * heading-style / color paths all need the id alone. A workbook of report
+   * tabs can carry thousands of merge objects, and pulling them on every append
+   * would put that on the hot write path for nothing.
+   *
+   * Only the row-reading path, which must tell headings from data, asks for
+   * them. `merges` is `[]` when this is off — never trust it as "no merges"
+   * unless you requested them.
+   */
+  includeMerges?: boolean;
 }): Promise<SheetGrid> {
   const meta = await http
     .get(`${SHEETS_BASE}/${spreadsheetId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       searchParams: {
-        fields: "sheets.properties(sheetId,title,gridProperties.rowCount)",
+        // One `sheets(...)` group listing every sub-field. The equivalent
+        // `sheets.properties(...),sheets.merges` form works identically —
+        // verified against the live API with `scripts/dump-sheet-merges.ts`,
+        // which returns the same payload for both and for no mask at all. This
+        // form is preferred only because naming the parent once makes it obvious
+        // that adding a sub-field means editing one group.
+        fields: includeMerges
+          ? "sheets(properties(sheetId,title,gridProperties.rowCount),merges)"
+          : "sheets(properties(sheetId,title,gridProperties.rowCount))",
       },
       timeout: HTTP_TIMEOUT.READ,
     })
@@ -230,6 +296,7 @@ export async function getSheetGrid({
   return {
     sheetId: found.properties.sheetId,
     rowCount: found.properties.gridProperties?.rowCount ?? 0,
+    merges: found.merges ?? [],
   };
 }
 
@@ -400,4 +467,81 @@ export function whiteRowRequest(
       fields: "userEnteredFormat.backgroundColor",
     },
   };
+}
+
+/**
+ * The `batchUpdate` requests that turn one freshly-written row into a HEADING:
+ * the whole band styled from `format`, then merged into a single cell.
+ *
+ * Two requests, in this order and never separated — a merge inherits the
+ * top-left cell's format, so styling first is what makes the merged band come
+ * out uniform rather than carrying the old formatting of the cells it swallowed.
+ *
+ * `fields` names every sub-field written (rather than the whole
+ * `userEnteredFormat`) so a heading row keeps the number format, borders and
+ * padding of the tab it lives in; only the properties the user chose are
+ * touched.
+ *
+ * Both requests are IDEMPOTENT: `repeatCell` sets fixed values on fixed cells,
+ * and `mergeCells` over an already-identical merge is accepted and changes
+ * nothing. So an Inngest retry of the step carrying them repaints and re-merges
+ * to exactly the same result.
+ *
+ * `columnCount` is the table's width (the header row) — the same band
+ * `whiteRowRequest` clears and `color_rows` paints, so a heading stops where the
+ * table stops. A one-column table yields NO merge request: Sheets rejects a
+ * single-cell merge, and there is nothing to span anyway.
+ *
+ * `gridRow0` is the 0-based grid row: the header is grid row 0, so sheet row N
+ * is grid row N − 1.
+ */
+export function headingRowRequests({
+  sheetId,
+  gridRow0,
+  columnCount,
+  format,
+}: {
+  sheetId: number;
+  gridRow0: number;
+  columnCount: number;
+  format?: HeadingFormat | null;
+}): unknown[] {
+  const f = resolveHeadingFormat(format);
+  const range = {
+    sheetId,
+    startRowIndex: gridRow0,
+    endRowIndex: gridRow0 + 1,
+    startColumnIndex: 0,
+    // Exclusive bound — the full header width.
+    endColumnIndex: columnCount,
+  };
+
+  const requests: unknown[] = [
+    {
+      repeatCell: {
+        range,
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: hexToRgb(f.backgroundColor),
+            horizontalAlignment: f.align,
+            verticalAlignment: "MIDDLE",
+            textFormat: {
+              bold: f.bold,
+              italic: f.italic,
+              fontSize: f.fontSize,
+              foregroundColor: hexToRgb(f.textColor),
+            },
+          },
+        },
+        fields:
+          "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)",
+      },
+    },
+  ];
+
+  if (columnCount > 1) {
+    requests.push({ mergeCells: { range, mergeType: "MERGE_ALL" } });
+  }
+
+  return requests;
 }

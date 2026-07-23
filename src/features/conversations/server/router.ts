@@ -33,8 +33,8 @@ DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
 
-GOOGLE_SHEETS_ACTION supports four actions in its data: "append_row",
-"find_rows", "update_row" and "color_rows". find_rows and update_row select rows with an AND-ed
+GOOGLE_SHEETS_ACTION supports six actions in its data: "append_row",
+"append_heading", "find_rows", "find_heading", "update_row" and "color_rows". find_rows and update_row select rows with an AND-ed
 "conditions" array. find_rows with no conditions reads every row of the tab;
 every column is always returned. update_row overwrites the mapped columns of
 every row matching its conditions; unmapped columns keep their current value.
@@ -51,6 +51,29 @@ directly under the LAST matching row, i.e. below the group as a whole;
 "under_each" adds one row below EVERY matching row and then runs the steps after
 it once per added row (capped by "maxFanOutItems"). When nothing matches, one row
 starts a new group at the bottom of the tab.
+
+append_heading adds a SECTION TITLE row: one piece of text ("headingText") in a
+row whose cells are merged into a single band across the tab's columns. Use it
+when the user wants a title, section header or divider label in the sheet rather
+than a data row. It uses "position" and "conditions" exactly like append_row (so
+a heading can go at the bottom, under a group, or under every matching row), but
+it has NO "columnMappings" — "headingText" is required. Optional "headingFormat"
+sets { "bold", "italic", "fontSize", "textColor": "#RRGGBB",
+"backgroundColor": "#RRGGBB", "align": "LEFT"|"CENTER"|"RIGHT" }; omit it for a
+bold, centered, black-on-white heading.
+
+find_heading searches ONLY the heading rows added by append_heading, and never
+returns an ordinary data row. Use it whenever the user wants to find, check for,
+or locate a section title. It takes an optional "headingFilter":
+{ "operator": "equals"|"contains"|"not_equals"|"not_contains", "value": "..." };
+omit the value to return every heading on the tab. Matching ignores
+capitalisation. It branches "found" / "notfound" and reports "firstHeading",
+"headings", "headingRowIndexes" and "rowIndex".
+
+IMPORTANT: heading rows are INVISIBLE to find_rows — it skips them, so a filter
+that happens to equal a heading's text will never return it. find_heading is the
+only way to READ one. (update_row and color_rows still see heading rows, so a
+filter matching a heading's text can overwrite or paint it.)
 
 In an "under_*" append's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
 cell of the row the new row is placed under, so a new row can copy values from

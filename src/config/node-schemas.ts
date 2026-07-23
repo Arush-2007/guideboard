@@ -11,6 +11,11 @@ import {
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
+import {
+  headingFilterSchema,
+  headingFormatSchema,
+  ROW_SCOPES,
+} from "@/lib/sheet-heading";
 import { sheetsTriggerOptionsSchemaFields } from "@/lib/sheets-trigger-options";
 
 type AnyZodSchema = z.ZodTypeAny;
@@ -460,12 +465,21 @@ const googleSheetsActionSchema = z.preprocess(
       // that were never re-opened keep running instead of permafailing.
       action: z.preprocess(
         (v) => (v === "read_rows" ? "find_rows" : v),
-        z.enum(["append_row", "find_rows", "update_row", "color_rows"]),
+        z.enum([
+          "append_row",
+          "append_heading",
+          "find_rows",
+          "find_heading",
+          "update_row",
+          "color_rows",
+        ]),
       ),
       // Where an appended row lands: the bottom of the tab (default), below a
       // matched GROUP, or below EVERY matched row (which fans out one run per
       // inserted row). The last two use `conditions` to pick the group — what
-      // used to be the separate `insert_row_adjacent` action.
+      // used to be the separate `insert_row_adjacent` action. Shared by BOTH
+      // appending actions (append_row and append_heading) — they place a row
+      // identically and differ only in what that row contains.
       position: z.enum(["bottom", "under_group", "under_each"]).optional(),
       spreadsheetId: z.string().min(1, "Spreadsheet is required"),
       sheetName: z.string().min(1, "Sheet Name is required"),
@@ -481,6 +495,23 @@ const googleSheetsActionSchema = z.preprocess(
       // row placement is absolute (see `nextFreeSheetRow`), so the gap simply
       // stays empty.
       blankRowAbove: z.boolean().optional(),
+      // append_heading only: the single piece of text the merged heading row
+      // holds, templated like any other user-authored field. REQUIRED for that
+      // action — a heading row with nothing in it is just a blank row, which
+      // append_row already does.
+      headingText: z.string().optional(),
+      // append_heading only: how that text is typeset. Every field is optional;
+      // `resolveHeadingFormat` fills the rest. One shared fragment with the
+      // dialog, so neither side can strip a field the other saves.
+      headingFormat: headingFormatSchema.optional(),
+      // find_heading only: which headings to return. Absent ⇒ every heading on
+      // the tab.
+      headingFilter: headingFilterSchema.optional(),
+      // update_row / color_rows / a non-bottom append: which KIND of row the
+      // filter may select. Absent ⇒ "data", so a filter never touches a section
+      // title by accident. find_rows and find_heading do not read this — their
+      // scope is fixed by the action itself.
+      rowScope: z.enum(ROW_SCOPES).optional(),
       // AND-ed filter conditions, selecting rows for find_rows, update_row and a
       // non-bottom append alike (one row-matching mechanism, one editor, one
       // `matchRows`).
@@ -512,8 +543,10 @@ const googleSheetsActionSchema = z.preprocess(
       ...multiMatchConfigFields,
     })
     .superRefine((data, ctx) => {
-      // find_rows needs only spreadsheet + tab (already required above).
-      if (data.action === "find_rows") return;
+      // The two READ actions need only spreadsheet + tab (already required
+      // above). find_heading's filter is optional by design — with none it
+      // returns every heading on the tab.
+      if (data.action === "find_rows" || data.action === "find_heading") return;
 
       // color_rows uses neither columnMappings nor the shared `conditions` —
       // each rule carries its own filter — so it validates here and returns
@@ -547,9 +580,21 @@ const googleSheetsActionSchema = z.preprocess(
       const hasMappings = data.columnMappings
         ? Object.values(data.columnMappings).some((v) => v.trim())
         : false;
+      // Both appending actions place their row the same way, so the filter rule
+      // below applies to either one in a non-bottom position.
       const isUnderAppend =
-        data.action === "append_row" &&
+        (data.action === "append_row" || data.action === "append_heading") &&
         (data.position ?? "bottom") !== "bottom";
+
+      // append_heading writes ONE cell, not a mapping — its text is what must be
+      // there. Checked before the mapping rules, none of which apply to it.
+      if (data.action === "append_heading" && !data.headingText?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Heading text is required",
+          path: ["headingText"],
+        });
+      }
 
       // update_row must map at least one column — with none it writes nothing.
       // append_row needs NO mapping in any position: a row with every column
@@ -577,7 +622,9 @@ const googleSheetsActionSchema = z.preprocess(
           message:
             data.action === "update_row"
               ? "Add at least one condition — an empty filter would overwrite every row"
-              : "Add at least one condition — it picks the group the new row joins",
+              : data.action === "append_heading"
+                ? "Add at least one condition — it picks the group the heading is placed under"
+                : "Add at least one condition — it picks the group the new row joins",
           path: ["conditions"],
         });
       }

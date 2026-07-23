@@ -46,6 +46,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { VariableInput } from "@/components/variable-input";
 import type { PickerExtraGroup } from "@/components/variable-picker";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
@@ -58,6 +59,19 @@ import {
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import { anchorRowPath, sanitizeHeaderKey } from "@/lib/sheet-headers";
+import {
+  DEFAULT_HEADING_FORMAT,
+  HEADING_FONT_SIZE,
+  HEADING_MATCH_OPERATOR_LABELS,
+  HEADING_MATCH_OPERATORS,
+  type HeadingFormat,
+  headingFilterSchema,
+  headingFormatSchema,
+  ROW_SCOPE_LABELS,
+  ROW_SCOPES,
+  type RowScope,
+  resolveHeadingFormat,
+} from "@/lib/sheet-heading";
 import { useTRPC } from "@/trpc/client";
 
 // Conditions editor value shape. Operator reuses the single ROW_MATCH_OPERATORS
@@ -87,15 +101,31 @@ const colorRuleFormSchema = z.object({
 
 const formSchema = z
   .object({
-    action: z.enum(["append_row", "find_rows", "update_row", "color_rows"]),
-    // append_row only: where the new row lands.
+    action: z.enum([
+      "append_row",
+      "append_heading",
+      "find_rows",
+      "find_heading",
+      "update_row",
+      "color_rows",
+    ]),
+    // Appending actions only: where the new row lands.
     position: z.enum(["bottom", "under_group", "under_each"]).optional(),
     spreadsheetId: z.string().min(1, "Spreadsheet is required"),
     sheetName: z.string().min(1, "Tab name is required"),
     columnMappings: z.record(z.string(), z.string()).optional(),
     requiredColumns: z.array(z.string()).optional(),
-    // append_row + bottom only: also write a blank separator row above the new one.
+    // Appending actions + bottom only: also leave a blank separator row above.
     blankRowAbove: z.boolean().optional(),
+    // append_heading only. `headingFormat` reuses the ONE shared fragment so this
+    // resolver can't strip a style field on submit (the dual-schema gotcha).
+    headingText: z.string().optional(),
+    headingFormat: headingFormatSchema.optional(),
+    // find_heading only: the heading search. Optional — no value lists them all.
+    headingFilter: headingFilterSchema.optional(),
+    // update_row / color_rows / non-bottom append: which kind of row the filter
+    // may select. Absent ⇒ "data".
+    rowScope: z.enum(ROW_SCOPES).optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
     // color_rows only: the ordered rule list (first match wins).
     colorRules: z.array(colorRuleFormSchema).optional(),
@@ -115,8 +145,9 @@ const formSchema = z
       .optional(),
   })
   .superRefine((data, ctx) => {
-    // find_rows needs only a spreadsheet + tab (already required).
-    if (data.action === "find_rows") return;
+    // The two READ actions need only a spreadsheet + tab (already required).
+    // find_heading's search is optional — empty lists every heading.
+    if (data.action === "find_rows" || data.action === "find_heading") return;
 
     // color_rows uses neither columnMappings nor the shared `conditions` —
     // every rule carries its own filter. Mirrors the config schema's rule.
@@ -143,12 +174,25 @@ const formSchema = z
       return;
     }
 
+    // Both appending actions place their row the same way, so the filter rule
+    // below applies to either one in a non-bottom position.
     const isUnderAppend =
-      data.action === "append_row" && (data.position ?? "bottom") !== "bottom";
+      (data.action === "append_row" || data.action === "append_heading") &&
+      (data.position ?? "bottom") !== "bottom";
 
     const hasMappings = data.columnMappings
       ? Object.values(data.columnMappings).some((v) => v.trim())
       : false;
+
+    // append_heading writes one cell, not a mapping — its text is what must be
+    // there. Mirrors the config schema's rule.
+    if (data.action === "append_heading" && !data.headingText?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Heading text is required",
+        path: ["headingText"],
+      });
+    }
 
     // update_row must map at least one column — with none it writes nothing.
     // append_row needs NO mapping in any position: leaving every column blank
@@ -173,7 +217,9 @@ const formSchema = z
         message:
           data.action === "update_row"
             ? "Add at least one condition — an empty filter would overwrite every row"
-            : "Add at least one condition — it picks the group the new row joins",
+            : data.action === "append_heading"
+              ? "Add at least one condition — it picks the group the heading is placed under"
+              : "Add at least one condition — it picks the group the new row joins",
         path: ["conditions"],
       });
     }
@@ -337,6 +383,201 @@ function ColumnMappingPanel({
         </Button>
       </div>
     </WideOverlayPanel>
+  );
+}
+
+/**
+ * "Which rows may this filter touch?" — shared by every action that selects rows
+ * with the conditions editor. A heading is structurally an ordinary row, so
+ * without this a filter matching its text would overwrite or repaint a section
+ * title; this is also the only way to deliberately target one.
+ */
+function RowScopeSelect({
+  value,
+  onChange,
+  itemNoun,
+}: {
+  value: RowScope | undefined;
+  onChange: (next: RowScope) => void;
+  /** What the action does to the rows it selects, e.g. "changed", "colored". */
+  itemNoun: string;
+}) {
+  const scope = value ?? "data";
+  return (
+    <div className="space-y-2">
+      <Label>Which rows can be {itemNoun}</Label>
+      <Select value={scope} onValueChange={(v) => onChange(v as RowScope)}>
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {ROW_SCOPES.map((s) => (
+            <SelectItem key={s} value={s}>
+              {ROW_SCOPE_LABELS[s]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {scope === "headings"
+          ? `Only heading rows are ${itemNoun} — the merged section titles, never your data.`
+          : scope === "all"
+            ? `Both data and heading rows can be ${itemNoun}. A filter matching a heading's text will change the section title itself.`
+            : `Heading rows are skipped, so a filter can never ${
+                itemNoun === "changed" ? "overwrite" : "repaint"
+              } a section title by accident.`}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Presets offered by the heading's two color pickers. Text gets neutrals (a
+ * heading is read, not decorated); background gets tints light enough to keep
+ * black text legible — the palette a section header actually wants, rather than
+ * the saturated status colors `color_rows` uses to flag rows.
+ */
+const HEADING_TEXT_COLORS = ["#000000", "#374151", "#1e3a8a", "#7f1d1d"];
+const HEADING_BACKGROUND_COLORS = [
+  "#ffffff",
+  "#f3f4f6",
+  "#fef3c7",
+  "#dbeafe",
+  "#dcfce7",
+];
+
+/**
+ * The heading row's style controls: weight, slant, size, and the two colors,
+ * plus how the text sits inside its merged band.
+ *
+ * Controlled like the other editors here — the parent owns the value — and it
+ * always hands back a COMPLETE format (defaults resolved from the one shared
+ * `resolveHeadingFormat`), so what the dialog shows and what the executor writes
+ * can't disagree about an unset field.
+ */
+function HeadingStyleEditor({
+  value,
+  onChange,
+}: {
+  value: HeadingFormat | undefined;
+  onChange: (next: HeadingFormat) => void;
+}) {
+  const f = resolveHeadingFormat(value);
+  const update = (patch: Partial<HeadingFormat>) =>
+    onChange({ ...f, ...patch });
+
+  return (
+    <div className="space-y-4">
+      {/* The band as it will land in the sheet — same weight, slant, size,
+          colors and alignment, so the choices below are read rather than
+          imagined. */}
+      <div className="space-y-2">
+        <Label className="text-xs">Preview</Label>
+        <div
+          className="rounded-md border px-3 py-2"
+          style={{
+            backgroundColor: f.backgroundColor,
+            color: f.textColor,
+            fontWeight: f.bold ? 700 : 400,
+            fontStyle: f.italic ? "italic" : "normal",
+            fontSize: `${f.fontSize}px`,
+            textAlign:
+              f.align === "CENTER"
+                ? "center"
+                : f.align === "RIGHT"
+                  ? "right"
+                  : "left",
+          }}
+        >
+          Heading
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-6">
+        <span className="flex items-center gap-2 text-sm">
+          <Switch
+            aria-label="Bold"
+            checked={f.bold}
+            onCheckedChange={(bold) => update({ bold })}
+          />
+          Bold
+        </span>
+        <span className="flex items-center gap-2 text-sm">
+          <Switch
+            aria-label="Italic"
+            checked={f.italic}
+            onCheckedChange={(italic) => update({ italic })}
+          />
+          Italic
+        </span>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="space-y-2">
+          <Label className="text-xs" htmlFor="heading-font-size">
+            Font size
+          </Label>
+          <Input
+            id="heading-font-size"
+            type="number"
+            min={HEADING_FONT_SIZE.min}
+            max={HEADING_FONT_SIZE.max}
+            value={f.fontSize}
+            onChange={(e) => {
+              const n = Number.parseInt(e.target.value, 10);
+              // A half-typed field must not write NaN into the form (zod would
+              // reject the save with an error the user can't see from here) —
+              // fall back to the default until a real number is typed.
+              update({
+                fontSize: Number.isFinite(n)
+                  ? n
+                  : DEFAULT_HEADING_FORMAT.fontSize,
+              });
+            }}
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-xs">Alignment</Label>
+          <Select
+            value={f.align}
+            onValueChange={(align) =>
+              update({ align: align as HeadingFormat["align"] })
+            }
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="LEFT">Left</SelectItem>
+              <SelectItem value="CENTER">Center</SelectItem>
+              <SelectItem value="RIGHT">Right</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-6">
+        <span className="flex items-center gap-2 text-sm">
+          <ColorPicker
+            value={f.textColor}
+            onChange={(textColor) => update({ textColor })}
+            label="Heading text color"
+            presets={HEADING_TEXT_COLORS}
+          />
+          Text color
+        </span>
+        <span className="flex items-center gap-2 text-sm">
+          <ColorPicker
+            value={f.backgroundColor}
+            onChange={(backgroundColor) => update({ backgroundColor })}
+            label="Heading background color"
+            presets={HEADING_BACKGROUND_COLORS}
+          />
+          Background
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -530,6 +771,13 @@ export const GoogleSheetsActionDialog = ({
       columnMappings: defaultValues.columnMappings ?? {},
       requiredColumns: defaultValues.requiredColumns ?? [],
       blankRowAbove: defaultValues.blankRowAbove ?? false,
+      headingText: defaultValues.headingText ?? "",
+      // Resolved rather than passed through, so every control below is
+      // controlled from the first render (an undefined field would otherwise make
+      // its input flip from uncontrolled to controlled on first edit).
+      headingFormat: resolveHeadingFormat(defaultValues.headingFormat),
+      headingFilter: defaultValues.headingFilter ?? { operator: "equals" },
+      rowScope: defaultValues.rowScope ?? "data",
       // Backfill a stable UI id on saved conditions (older saves lacked one).
       conditions: (defaultValues.conditions ?? []).map((c) => ({
         ...c,
@@ -569,6 +817,13 @@ export const GoogleSheetsActionDialog = ({
   const position = form.watch("position") ?? "bottom";
   const colorRules = form.watch("colorRules") ?? [];
   const colorMatchMode = form.watch("onMultipleColorMatches") ?? "all";
+  const headingFormat = form.watch("headingFormat");
+  // Defaults filled once, for the collapsed style summary below.
+  const resolvedHeading = resolveHeadingFormat(headingFormat);
+  // The two row-ADDING actions share this whole block: same position control,
+  // same filter, same blank-separator toggle. Only the row's CONTENT differs.
+  const isAppending = action === "append_row" || action === "append_heading";
+  const isHeading = action === "append_heading";
   // Present for BOTH an array-level issue (no rules at all) and a per-rule one
   // (bad color / empty filter) — the latter carries no `.message` of its own,
   // which is why the summary below can't just read `.message`.
@@ -641,7 +896,35 @@ export const GoogleSheetsActionDialog = ({
       (node as { ref?: string | null } | undefined)?.ref,
     );
 
+    // Only emit the keys THIS action actually uses. The form keeps every field
+    // populated so each control stays controlled from first render, but writing
+    // all of them back would stamp a full heading style block onto every
+    // find_rows / update_row / color_rows node that was merely opened and saved.
+    //
+    // Omitting a key does NOT erase it: the canvas merges the payload over the
+    // node's existing data, so a node switched away from a heading action and
+    // back keeps the style it was given.
     const payload: GoogleSheetsActionSubmitValues = { ...values };
+    // DELETE, never `= undefined` — the canvas merges this over the node's saved
+    // data, and a present-but-undefined key would overwrite the saved value
+    // rather than leave it alone.
+    if (values.action !== "append_heading") {
+      delete payload.headingText;
+      delete payload.headingFormat;
+    }
+    if (values.action !== "find_heading") {
+      delete payload.headingFilter;
+    }
+    // Scope only means something where a filter selects rows to act on.
+    if (
+      values.action === "find_rows" ||
+      values.action === "find_heading" ||
+      (values.action === "append_row" &&
+        (values.position ?? "bottom") === "bottom")
+    ) {
+      delete payload.rowScope;
+    }
+
     if (values.action === "find_rows") {
       // Every column exposes two pickable fields: the value from the matched
       // row (the first match — or, in "each" mode, the current child run's
@@ -661,10 +944,16 @@ export const GoogleSheetsActionDialog = ({
           ];
         });
       }
-    } else if (values.action === "color_rows") {
-      // color_rows writes no columns, so it exposes no per-column paths. Leave
-      // `discoveredFields` untouched rather than emitting an empty list, so a
-      // node switched to this action and back keeps its saved fields.
+    } else if (
+      values.action === "color_rows" ||
+      values.action === "append_heading" ||
+      values.action === "find_heading"
+    ) {
+      // Neither writes columns, so neither exposes per-column paths — a heading
+      // is one merged cell, and its text is already a declared output field
+      // (`headingText` in node-outputs.ts). Leave `discoveredFields` untouched
+      // rather than emitting an empty list, so a node switched to one of these
+      // actions and back keeps its saved fields.
     } else if (headers.length > 0) {
       // append_row + update_row both emit `rowByHeader` — the row this run
       // wrote. Same paths, so a node switched between them keeps its
@@ -709,7 +998,13 @@ export const GoogleSheetsActionDialog = ({
                     </FormControl>
                     <SelectContent>
                       <SelectItem value="append_row">Append row</SelectItem>
+                      <SelectItem value="append_heading">
+                        Append row — heading
+                      </SelectItem>
                       <SelectItem value="find_rows">Find rows</SelectItem>
+                      <SelectItem value="find_heading">
+                        Find rows — heading
+                      </SelectItem>
                       <SelectItem value="update_row">Update row</SelectItem>
                       <SelectItem value="color_rows">Color rows</SelectItem>
                     </SelectContent>
@@ -732,6 +1027,19 @@ export const GoogleSheetsActionDialog = ({
                       This step has two outputs — <strong>Colored</strong> and{" "}
                       <strong>No match</strong>. Connect each to the branch that
                       should run when a row is or isn&apos;t colored.
+                    </FormDescription>
+                  ) : action === "append_heading" ? (
+                    <FormDescription>
+                      Adds a row holding a single piece of text, with its cells
+                      merged into one band across the tab&apos;s columns — a
+                      section title above the rows that follow it.
+                    </FormDescription>
+                  ) : action === "find_heading" ? (
+                    <FormDescription>
+                      Searches the tab&apos;s <strong>heading rows only</strong>
+                      &nbsp;— ordinary data rows are never returned. Two
+                      outputs, <strong>Found</strong> and{" "}
+                      <strong>Not found</strong>.
                     </FormDescription>
                   ) : null}
                   <FormMessage />
@@ -792,7 +1100,7 @@ export const GoogleSheetsActionDialog = ({
               )}
             />
 
-            {action === "append_row" ? (
+            {isAppending ? (
               <div className="space-y-4">
                 <div className="space-y-2">
                   <Label>Position</Label>
@@ -827,8 +1135,16 @@ export const GoogleSheetsActionDialog = ({
                   <WideOverlayPanel
                     open={filterOpen}
                     onOpenChange={setFilterOpen}
-                    title="Where the row goes"
-                    description="Add the row at the bottom of the tab, or place it under the rows that match a filter."
+                    title={
+                      isHeading
+                        ? "Where the heading goes"
+                        : "Where the row goes"
+                    }
+                    description={
+                      isHeading
+                        ? "Add the heading at the bottom of the tab, or place it under the rows that match a filter."
+                        : "Add the row at the bottom of the tab, or place it under the rows that match a filter."
+                    }
                   >
                     <div className="space-y-6">
                       <FormField
@@ -836,7 +1152,11 @@ export const GoogleSheetsActionDialog = ({
                         name="position"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Where the row goes</FormLabel>
+                            <FormLabel>
+                              {isHeading
+                                ? "Where the heading goes"
+                                : "Where the row goes"}
+                            </FormLabel>
                             <Select
                               onValueChange={field.onChange}
                               value={field.value ?? "bottom"}
@@ -860,10 +1180,18 @@ export const GoogleSheetsActionDialog = ({
                             </Select>
                             <FormDescription>
                               {position === "under_each"
-                                ? "One new row under each matching row. The steps after this one then run once per inserted row."
+                                ? `One new ${
+                                    isHeading ? "heading" : "row"
+                                  } under each matching row. The steps after this one then run once per inserted ${
+                                    isHeading ? "heading" : "row"
+                                  }.`
                                 : position === "under_group"
-                                  ? "One new row, directly under the last matching row — so it joins the bottom of the group."
-                                  : "The new row is added at the bottom of the tab."}
+                                  ? isHeading
+                                    ? "One heading, directly under the last matching row — so it sits at the bottom of that group."
+                                    : "One new row, directly under the last matching row — so it joins the bottom of the group."
+                                  : `The new ${
+                                      isHeading ? "heading" : "row"
+                                    } is added at the bottom of the tab.`}
                             </FormDescription>
                           </FormItem>
                         )}
@@ -878,8 +1206,9 @@ export const GoogleSheetsActionDialog = ({
                               <div className="space-y-0.5">
                                 <FormLabel>Leave a blank row above</FormLabel>
                                 <FormDescription>
-                                  Leaves one row empty just above the new row,
-                                  to separate it from the entries before it.
+                                  Leaves one row empty just above the new{" "}
+                                  {isHeading ? "heading" : "row"}, to separate
+                                  it from the entries before it.
                                 </FormDescription>
                               </div>
                               <FormControl>
@@ -915,10 +1244,17 @@ export const GoogleSheetsActionDialog = ({
                             />
                             <p className="text-xs text-muted-foreground">
                               At least one condition is required — it is what
-                              picks the group. If no row matches, the new row
-                              starts a new group at the bottom of the tab.
+                              picks the group. If no row matches, the new{" "}
+                              {isHeading ? "heading" : "row"} is added at the
+                              bottom of the tab instead.
                             </p>
                           </div>
+
+                          <RowScopeSelect
+                            value={form.watch("rowScope")}
+                            onChange={(next) => form.setValue("rowScope", next)}
+                            itemNoun="matched as the group"
+                          />
 
                           {position === "under_each" ? (
                             <FanOutCapInput
@@ -944,67 +1280,203 @@ export const GoogleSheetsActionDialog = ({
                   </WideOverlayPanel>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>
-                    {position === "bottom"
-                      ? "Match the columns"
-                      : "Columns to fill"}
-                  </Label>
-                  <ColumnsNotice
-                    isLoading={columnsQuery.isLoading}
-                    isError={columnsQuery.isError}
-                    hasSpreadsheet={Boolean(spreadsheetId)}
-                    headerCount={headers.length}
-                  />
-                  {headers.length > 0 ? (
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm text-muted-foreground">
-                        {mappedCount} of {headers.length} mapped
-                        {requiredColumns.length > 0
-                          ? ` · ${requiredColumns.length} required`
-                          : ""}
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setMappingOpen(true)}
-                      >
-                        Configure columns
-                      </Button>
-                    </div>
-                  ) : null}
-                  {form.formState.errors.columnMappings?.message ? (
-                    <p className="text-sm text-destructive">
-                      {String(form.formState.errors.columnMappings.message)}
-                    </p>
-                  ) : null}
+                {isHeading ? (
+                  <div className="space-y-4">
+                    <FormField
+                      control={form.control}
+                      name="headingText"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Heading text</FormLabel>
+                          <FormControl>
+                            <VariableInput
+                              placeholder="Invoices — March 2026"
+                              value={field.value ?? ""}
+                              onChange={field.onChange}
+                              currentNodeId={currentNodeId}
+                              workflowId={workflowId}
+                              // A non-bottom heading can name the group it sits
+                              // under, exactly as a mapped column can.
+                              extraGroups={
+                                position !== "bottom" ? anchorGroups : undefined
+                              }
+                              anchorClassName="ml-96"
+                            />
+                          </FormControl>
+                          <FormDescription>
+                            The one value the merged row holds. It spans every
+                            column in the tab&apos;s header row.
+                          </FormDescription>
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
 
-                  <ColumnMappingPanel
-                    open={mappingOpen}
-                    onOpenChange={setMappingOpen}
-                    title={
-                      position === "bottom"
+                    <div className="space-y-2">
+                      <Label>Style</Label>
+                      <div className="flex items-center justify-between gap-3">
+                        {/* The collapsed row says what the heading will LOOK
+                            like, in its own colors — the same trick the
+                            color_rules summary uses. */}
+                        <span
+                          className="min-w-0 flex-1 truncate rounded-md border px-3 py-1.5 text-sm"
+                          style={{
+                            backgroundColor: resolvedHeading.backgroundColor,
+                            color: resolvedHeading.textColor,
+                            fontWeight: resolvedHeading.bold ? 700 : 400,
+                            fontStyle: resolvedHeading.italic
+                              ? "italic"
+                              : "normal",
+                          }}
+                        >
+                          {resolvedHeading.fontSize}pt ·{" "}
+                          {resolvedHeading.align.toLowerCase()}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setMappingOpen(true)}
+                        >
+                          Configure style
+                        </Button>
+                      </div>
+                    </div>
+
+                    <WideOverlayPanel
+                      open={mappingOpen}
+                      onOpenChange={setMappingOpen}
+                      title="Heading style"
+                      description="How the merged heading row is typeset. Everything else about the row — borders, number format — is left as the tab already has it."
+                    >
+                      <HeadingStyleEditor
+                        value={headingFormat}
+                        onChange={(next) =>
+                          form.setValue("headingFormat", next, {
+                            shouldValidate: true,
+                          })
+                        }
+                      />
+                      <div className="mt-6 flex justify-end">
+                        <Button
+                          type="button"
+                          onClick={() => setMappingOpen(false)}
+                        >
+                          Done
+                        </Button>
+                      </div>
+                    </WideOverlayPanel>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <Label>
+                      {position === "bottom"
                         ? "Match the columns"
-                        : "Columns to fill"
+                        : "Columns to fill"}
+                    </Label>
+                    <ColumnsNotice
+                      isLoading={columnsQuery.isLoading}
+                      isError={columnsQuery.isError}
+                      hasSpreadsheet={Boolean(spreadsheetId)}
+                      headerCount={headers.length}
+                    />
+                    {headers.length > 0 ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm text-muted-foreground">
+                          {mappedCount} of {headers.length} mapped
+                          {requiredColumns.length > 0
+                            ? ` · ${requiredColumns.length} required`
+                            : ""}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setMappingOpen(true)}
+                        >
+                          Configure columns
+                        </Button>
+                      </div>
+                    ) : null}
+                    {form.formState.errors.columnMappings?.message ? (
+                      <p className="text-sm text-destructive">
+                        {String(form.formState.errors.columnMappings.message)}
+                      </p>
+                    ) : null}
+
+                    <ColumnMappingPanel
+                      open={mappingOpen}
+                      onOpenChange={setMappingOpen}
+                      title={
+                        position === "bottom"
+                          ? "Match the columns"
+                          : "Columns to fill"
+                      }
+                      description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
+                      headers={headers}
+                      value={columnMappings}
+                      onChange={(next) =>
+                        form.setValue("columnMappings", next, {
+                          shouldValidate: true,
+                        })
+                      }
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      requiredColumns={requiredColumns}
+                      onRequiredChange={setRequired}
+                      extraGroups={
+                        position !== "bottom" ? anchorGroups : undefined
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+            ) : action === "find_heading" ? (
+              // A search BOX, not the conditions editor: the column is implied
+              // (a heading's text always sits in the first column), so all that
+              // is left to choose is how to compare and what to compare against.
+              <div className="space-y-2">
+                <Label>Find the heading that…</Label>
+                <div className="flex items-start gap-2">
+                  <Select
+                    value={form.watch("headingFilter")?.operator ?? "equals"}
+                    onValueChange={(operator) =>
+                      form.setValue("headingFilter", {
+                        ...form.getValues("headingFilter"),
+                        operator:
+                          operator as (typeof HEADING_MATCH_OPERATORS)[number],
+                      })
                     }
-                    description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
-                    headers={headers}
-                    value={columnMappings}
-                    onChange={(next) =>
-                      form.setValue("columnMappings", next, {
-                        shouldValidate: true,
+                  >
+                    <SelectTrigger className="w-44 shrink-0">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {HEADING_MATCH_OPERATORS.map((op) => (
+                        <SelectItem key={op} value={op}>
+                          {HEADING_MATCH_OPERATOR_LABELS[op]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <VariableInput
+                    placeholder="Invoices — March 2026"
+                    value={form.watch("headingFilter")?.value ?? ""}
+                    onChange={(e) =>
+                      form.setValue("headingFilter", {
+                        ...form.getValues("headingFilter"),
+                        value: e.target.value,
                       })
                     }
                     currentNodeId={currentNodeId}
                     workflowId={workflowId}
-                    requiredColumns={requiredColumns}
-                    onRequiredChange={setRequired}
-                    extraGroups={
-                      position !== "bottom" ? anchorGroups : undefined
-                    }
+                    anchorClassName="ml-96"
                   />
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  Matching ignores capitalisation. Leave the box empty to return
+                  every heading on the tab.
+                </p>
               </div>
             ) : action === "find_rows" ? (
               <div className="space-y-2">
@@ -1184,6 +1656,13 @@ export const GoogleSheetsActionDialog = ({
                       colorRulesError as unknown as ColorRuleErrors | undefined
                     }
                   />
+                  <div className="mt-6">
+                    <RowScopeSelect
+                      value={form.watch("rowScope")}
+                      onChange={(next) => form.setValue("rowScope", next)}
+                      itemNoun="colored"
+                    />
+                  </div>
                   <p className="mt-4 text-xs text-muted-foreground">
                     The row is colored across its columns, up to the last one in
                     the header. Every rule needs at least one condition — a rule
@@ -1255,6 +1734,12 @@ export const GoogleSheetsActionDialog = ({
                         would overwrite every row.
                       </p>
                     </div>
+
+                    <RowScopeSelect
+                      value={form.watch("rowScope")}
+                      onChange={(next) => form.setValue("rowScope", next)}
+                      itemNoun="changed"
+                    />
 
                     <div className="space-y-2">
                       <MultiMatchSelect

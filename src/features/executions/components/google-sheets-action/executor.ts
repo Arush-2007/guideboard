@@ -21,6 +21,8 @@ import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import {
   ensureGridRows,
   getSheetGrid,
+  headingDataRows,
+  headingRowRequests,
   hexToRgb,
   nextFreeSheetRow,
   readSheetTable,
@@ -43,6 +45,13 @@ import { hasActiveRowCondition } from "@/lib/row-match-operators";
 import { stripTextForcing, toSheetsCellValue } from "@/lib/sheet-cells";
 import { ANCHOR_ROW_KEY, sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
+  DEFAULT_ROW_SCOPE,
+  type HeadingFilter,
+  type HeadingFormat,
+  type RowScope,
+  rowPassesScope,
+} from "@/lib/sheet-heading";
+import {
   buildRowByHeader,
   buildSheetRow,
   findBlankRequired,
@@ -55,7 +64,13 @@ import {
   UPDATE_ROW_OUTPUTS,
 } from "./handles";
 
-type SheetsAction = "append_row" | "find_rows" | "update_row" | "color_rows";
+type SheetsAction =
+  | "append_row"
+  | "append_heading"
+  | "find_rows"
+  | "find_heading"
+  | "update_row"
+  | "color_rows";
 
 /**
  * One `color_rows` rule: the background color, and the filter selecting the rows
@@ -82,9 +97,19 @@ type GoogleSheetsActionData = {
   // Headers that may not be blank on the row-creating actions (accessory "may
   // be blank" off).
   requiredColumns?: string[];
-  // append_row + bottom only: leave the first free row EMPTY as a separator and
-  // write the new row one lower. Nothing blank is ever sent to Sheets.
+  // append_row/append_heading + bottom only: leave the first free row EMPTY as a
+  // separator and write the new row one lower. Nothing blank is ever sent to
+  // Sheets.
   blankRowAbove?: boolean;
+  // append_heading only: the text of the merged heading row, and how it is
+  // typeset. `headingFormat` is filled from DEFAULT_HEADING_FORMAT at write time.
+  headingText?: string;
+  headingFormat?: HeadingFormat;
+  // find_heading only: which headings to return. Absent ⇒ all of them.
+  headingFilter?: HeadingFilter;
+  // update_row / color_rows / a non-bottom append: which KIND of row the filter
+  // may select. Absent ⇒ "data" — a filter never touches a heading by accident.
+  rowScope?: RowScope;
   // AND-ed row filter, shared by find_rows (which returns the matches),
   // update_row (which writes them) and a non-bottom append (for which they are
   // the GROUP the new row joins). Both write cases require at least one.
@@ -115,6 +140,65 @@ const ERROR_PREFIX = "Google Sheets Action";
  * this" ceiling the fan-out cap tops out at.
  */
 const MAX_COLORED_ROWS = MAX_FAN_OUT_ITEMS_LIMIT;
+
+/**
+ * How a row's values are interpreted on write.
+ *
+ * A DATA row uses `USER_ENTERED`, so numbers and dates parse as a user typing
+ * them would expect (padded ids are protected separately, by `forceTextIds`).
+ *
+ * A HEADING is `RAW`: it is a label, never a value, so it must land in the cell
+ * exactly as written. Under `USER_ENTERED` a heading of "0009" would be stored
+ * as the number 9 (the verified failure `sheet-cells.ts` documents), "March
+ * 2026" would become a date, and anything starting "=" would be evaluated as a
+ * formula — a section title showing #NAME? instead of its text. `RAW` is a
+ * better fix here than the force-text apostrophe the row builder uses, because
+ * it leaves no write artifact to strip back off when the heading is read again.
+ */
+const HEADING_SAFE_VALUE_INPUT = (isHeading: boolean) =>
+  isHeading ? "RAW" : "USER_ENTERED";
+
+/**
+ * The key a heading's text is stored under in a `rowsByHeader` row: the tab's
+ * FIRST column.
+ *
+ * `readSheetTable` keys a blank header as `colN`, so an empty A1 must resolve to
+ * `col1` rather than to "" — which would match no key at all and silently make
+ * every heading read as empty text (and every heading search return everything).
+ */
+function firstColumnKey(headers: string[]): string {
+  return (headers[0] ?? "").trim() || "col1";
+}
+
+/**
+ * The row filter behind "Find rows — heading". A heading's text always lives in
+ * the tab's FIRST column, so the column is supplied at run time from the live
+ * header row rather than saved into the node — a renamed first column then can't
+ * break a saved search.
+ *
+ * Case-insensitive by design: this is a search box for section titles, where
+ * "acme" not finding "Acme" would simply read as broken. (The general conditions
+ * editor keeps its explicit Restraints; this one has no such control to set.)
+ *
+ * An empty value yields NO conditions, which `matchRows` treats as vacuously
+ * true — every heading is returned. That is the intended "list the sections"
+ * default, and it is safe because this action only reads.
+ */
+function headingFilterConditions(
+  filter: HeadingFilter | undefined,
+  headers: string[],
+): RowMatchCondition[] {
+  const value = filter?.value?.trim();
+  if (!value) return [];
+  return [
+    {
+      column: firstColumnKey(headers),
+      operator: filter?.operator ?? "equals",
+      value,
+      ignoreCase: true,
+    },
+  ];
+}
 
 function parseValuesJson(raw: string): string[][] {
   let parsed: unknown;
@@ -181,8 +265,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
     );
   }
   const action = config.action ?? "append_row";
-  // append_row only: where the row lands. The two "under_*" positions run the
-  // group-insert path below; "bottom" (the default) is a plain append.
+  // The two row-ADDING actions. They place a row identically — same positions,
+  // same read/plan-then-write split, same grid growth — and differ only in what
+  // the row holds: append_row fills the mapped columns, append_heading writes one
+  // piece of text and then merges + styles the band. So both flow through the
+  // same two placement paths below, which branch on `isHeading` where the
+  // CONTENT differs.
+  const isHeading = action === "append_heading";
+  const isAppending = action === "append_row" || isHeading;
+  // Appending actions only: where the row lands. The two "under_*" positions run
+  // the group-insert path below; "bottom" (the default) is a plain append.
   const position: RowPosition = config.position ?? "bottom";
   const spreadsheetId = decode(
     renderTemplate(config.spreadsheetId ?? "", context),
@@ -250,7 +342,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       );
     }
 
-    if (action === "append_row" && position === "under_each") {
+    if (isAppending && position === "under_each") {
       // The parent already inserted every row (one per matched row) — a child
       // must not insert again. Its item carries the row it handled, where that
       // row landed, and the row it was placed under, so siblings are
@@ -265,7 +357,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
           matchCount: 1,
           insertedUnderGroup: true,
           rowIndex: item.rowIndex,
-          rowByHeader: item.row ?? {},
+          // A heading row has one cell, not columns — it carries its text where
+          // an appended data row carries its header-keyed row, so each action's
+          // single-row output shape is the same in every mode.
+          ...(isHeading
+            ? { headingText: item.headingText ?? "" }
+            : { rowByHeader: item.row ?? {} }),
           anchorRow: item.anchorRow ?? {},
           ...lineage,
         },
@@ -316,15 +413,90 @@ export const googleSheetsActionExecutor: NodeExecutor<
     "Content-Type": "application/json",
   };
 
+  const rowScope: RowScope = config.rowScope ?? DEFAULT_ROW_SCOPE;
+
+  /**
+   * Drop the matches this action's row scope excludes.
+   *
+   * A heading is structurally an ordinary row — its text sits in the first
+   * column, merging being only a display effect — so any filter matching that
+   * text would otherwise select it. Every FILTERING action funnels through here
+   * so "what counts as a row" is answered in exactly one place; `find_rows` and
+   * `find_heading` are the two whose answer is fixed by the action itself.
+   *
+   * `scope: "all"` needs no merge lookup, so the pre-heading behaviour costs
+   * nothing extra.
+   */
+  const applyRowScope = async <T extends { index: number }>(
+    matches: T[],
+    scope: RowScope,
+  ): Promise<T[]> => {
+    if (scope === "all" || matches.length === 0) return matches;
+    const headingRows = headingDataRows(
+      (
+        await getSheetGrid({
+          accessToken,
+          spreadsheetId,
+          sheetName,
+          includeMerges: true,
+        })
+      ).merges,
+    );
+    return matches.filter((m) =>
+      rowPassesScope(scope, headingRows.has(m.index)),
+    );
+  };
+
+  /**
+   * Run one batch of FORMAT requests against this tab, in its own Inngest step.
+   *
+   * The single place the "look the tab up, send one batchUpdate, map the error"
+   * shape lives. Callers supply only the requests, built from the tab's numeric
+   * `sheetId` — everything else (the step boundary, the retry semantics, the
+   * Sheets error mapping) is identical for every format pass and must stay that
+   * way, so it is written once.
+   *
+   * `idempotent: true` throughout: every request these callers build sets a FIXED
+   * format on FIXED cells (or merges an already-identical range), so an Inngest
+   * retry reproduces the same result rather than compounding.
+   *
+   * A no-op when `buildRequests` yields nothing, so a run with nothing to format
+   * makes no extra API call at all.
+   */
+  const applyFormatRequests = async (
+    stepName: string,
+    buildRequests: (sheetId: number) => unknown[],
+  ): Promise<void> => {
+    await step.run(stepName, async () => {
+      try {
+        const grid = await getSheetGrid({
+          accessToken,
+          spreadsheetId,
+          sheetName,
+        });
+        const requests = buildRequests(grid.sheetId);
+        if (requests.length === 0) return null;
+        await sheetsWrite(
+          sheetsBatchUpdateUrl(spreadsheetId),
+          {
+            headers: sheetsAuthHeaders(accessToken),
+            json: { requests },
+          },
+          { idempotent: true },
+        );
+        return null;
+      } catch (error) {
+        throw await toSheetsError(error);
+      }
+    });
+  };
+
   /**
    * Force the blank rows this run DELIBERATELY added to a solid-white background.
    * A blank row is never format-free: a `blankRowAbove` separator keeps the
    * banding at its grid slot, a blank bottom append can land on a banded row, and
    * a blank row inserted under a group inherits the color of the row above (see
-   * `whiteRowRequest`). One repeatCell per row, all in ONE batchUpdate, in its OWN
-   * step — idempotent (fixed white on fixed cells), so a retry repaints
-   * identically. A no-op on an empty list, so a run that added no blank row makes
-   * no extra call.
+   * `whiteRowRequest`).
    *
    * "Blank" is decided from CONFIG, not from the rendered row: a node adds a blank
    * row when it has no column mappings (or, for a bottom append, the
@@ -339,31 +511,58 @@ export const googleSheetsActionExecutor: NodeExecutor<
     columnCount: number,
   ): Promise<void> => {
     if (rowNumbers.length === 0 || columnCount === 0) return;
-    await step.run("google-sheets-whiten-blank-rows", async () => {
-      try {
-        const grid = await getSheetGrid({
-          accessToken,
-          spreadsheetId,
-          sheetName,
-        });
-        await sheetsWrite(
-          sheetsBatchUpdateUrl(spreadsheetId),
-          {
-            headers: sheetsAuthHeaders(accessToken),
-            json: {
-              requests: rowNumbers.map((n) =>
-                whiteRowRequest(grid.sheetId, n - 1, columnCount),
-              ),
-            },
-          },
-          // Fixed color on fixed cells — safe for Inngest to retry.
-          { idempotent: true },
-        );
-        return null;
-      } catch (error) {
-        throw await toSheetsError(error);
-      }
-    });
+    await applyFormatRequests("google-sheets-whiten-blank-rows", (sheetId) =>
+      rowNumbers.map((n) => whiteRowRequest(sheetId, n - 1, columnCount)),
+    );
+  };
+
+  /**
+   * Turn the row(s) this run wrote into HEADINGS: style each band from
+   * `headingFormat` and merge it into one cell (`headingRowRequests`). Any blank
+   * separator row added alongside is forced white in the SAME batchUpdate, so a
+   * "heading with a gap above it" costs one format call rather than two.
+   *
+   * Runs AFTER the value write — the text must exist before the cells are merged,
+   * or the merge would swallow an empty cell and the write would then land on a
+   * merged range.
+   *
+   * `rowNumbers` are 1-based sheet rows; each maps to grid row n − 1.
+   */
+  const styleHeadingRows = async (
+    headingRows: number[],
+    blankRows: number[],
+    columnCount: number,
+  ): Promise<void> => {
+    if (headingRows.length === 0 || columnCount === 0) return;
+    await applyFormatRequests("google-sheets-style-heading-rows", (sheetId) => [
+      ...headingRows.flatMap((n) =>
+        headingRowRequests({
+          sheetId,
+          gridRow0: n - 1,
+          columnCount,
+          format: config.headingFormat,
+        }),
+      ),
+      ...blankRows.map((n) => whiteRowRequest(sheetId, n - 1, columnCount)),
+    ]);
+  };
+
+  /**
+   * The heading row's single cell, rendered against `rowContext` (which carries
+   * the anchor row for a non-bottom placement, so a heading can name the group it
+   * sits under). Rejects an empty result loudly rather than merging a blank band:
+   * the config schema already requires the text, so an empty render means the
+   * template's upstream value was missing, and silently writing an unlabelled
+   * merged row would hide that.
+   */
+  const renderHeadingText = (rowContext: WorkflowContext): string => {
+    const text = renderTemplate(config.headingText ?? "", rowContext).trim();
+    if (!text) {
+      throw new NonRetriableError(
+        `${ERROR_PREFIX}: the heading text is empty — check the value it is built from`,
+      );
+    }
+    return text;
   };
 
   try {
@@ -424,10 +623,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
             { color: string; row: Record<string, string> }
           >();
           for (const rule of rules) {
-            for (const m of matchRows(
-              table.rowsByHeader,
-              rule.conditions,
-              context,
+            // Scope BEFORE claiming, so an excluded heading cannot consume a
+            // rule that a later rule would have applied to a real row.
+            for (const m of await applyRowScope(
+              matchRows(table.rowsByHeader, rule.conditions, context),
+              rowScope,
             )) {
               if (claimed.has(m.index)) continue;
               claimed.set(m.index, { color: rule.color, row: m.row });
@@ -580,7 +780,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     // target ranges instead of re-reading a sheet the landed write already
     // mutated (which could re-match a DIFFERENT row). The paired `step.run`s are
     // what make both safe.
-    if (action === "append_row" && position !== "bottom") {
+    if (isAppending && position !== "bottom") {
       // "under_each" fans out one run per inserted row; "under_group" (and any
       // other non-bottom value) drops one row below the whole group. Derived
       // from `position` — the old `insertUnder` field it superseded.
@@ -623,10 +823,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
               );
             }
 
-            const matches = matchRows(
-              table.rowsByHeader,
-              config.conditions ?? [],
-              context,
+            // The filter picks the GROUP the new row joins. Scoped, so a section
+            // title is never mistaken for the group's last row — which would drop
+            // the new row directly under a heading instead of under its data.
+            const matches = await applyRowScope(
+              matchRows(table.rowsByHeader, config.conditions ?? [], context),
+              rowScope,
             );
             // "each_row" starts one child run per inserted row. Enforce the cap
             // HERE, before the write — failing after N rows have landed would
@@ -662,6 +864,23 @@ export const googleSheetsActionExecutor: NodeExecutor<
                   ? {}
                   : buildRowByHeader(table.headers, table.rows[anchorIdx]);
 
+              // A heading is ONE cell — no mapping, no serial, no required
+              // columns. `@<anchorRow.…>@` still resolves, so the heading can
+              // name the group it is placed under.
+              if (isHeading) {
+                const headingText = renderHeadingText({
+                  ...context,
+                  [ANCHOR_ROW_KEY]: anchorRow,
+                });
+                return {
+                  anchorIdx,
+                  row: [headingText],
+                  anchorRow,
+                  headingText,
+                  rowByHeader: {},
+                };
+              }
+
               const row = buildSheetRow({
                 headers: table.headers,
                 mappings: columnMappings,
@@ -690,6 +909,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 anchorIdx,
                 row,
                 anchorRow,
+                // Kept on both shapes so `built` stays ONE type; only the
+                // heading action ever reads it.
+                headingText: "",
                 rowByHeader: buildRowByHeader(table.headers, row),
               };
             });
@@ -799,7 +1021,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
             {
               headers: sheetsAuthHeaders(accessToken),
               json: {
-                valueInputOption: "USER_ENTERED",
+                valueInputOption: HEADING_SAFE_VALUE_INPUT(isHeading),
                 data: placed.rows.map((r) => ({
                   range: sheetRange(
                     sheetName,
@@ -817,14 +1039,25 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       });
 
-      // A blank spacer inserted under a group inherited the group's color via
-      // `inheritFromBefore` above — repaint it white so the gap is clean. Keyed on
-      // CONFIG: with no column mappings every inserted row is a deliberate blank;
-      // a mapped insert keeps the group banding even if its values render empty.
-      await whitenBlankRows(
-        hasMappings ? [] : placed.rows.map((r) => r.rowIndex),
-        placed.columnCount,
-      );
+      if (isHeading) {
+        // Merge + style each inserted row. The insert used `inheritFromBefore`,
+        // so without this the heading would wear the group's banding.
+        await styleHeadingRows(
+          placed.rows.map((r) => r.rowIndex),
+          [],
+          placed.columnCount,
+        );
+      } else {
+        // A blank spacer inserted under a group inherited the group's color via
+        // `inheritFromBefore` above — repaint it white so the gap is clean. Keyed
+        // on CONFIG: with no column mappings every inserted row is a deliberate
+        // blank; a mapped insert keeps the group banding even if its values
+        // render empty.
+        await whitenBlankRows(
+          hasMappings ? [] : placed.rows.map((r) => r.rowIndex),
+          placed.columnCount,
+        );
+      }
 
       const first = placed.rows[0];
       // One item per inserted row: the row itself, where it landed, and the row
@@ -833,11 +1066,22 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // `placed.rows[].row` (the raw write array, carrying the serial's
       // text-forcing apostrophe) stays internal — `rowByHeader` is that same row
       // cleaned up, and recording both would be two answers to one question.
-      const items = placed.rows.map((r) => ({
-        row: r.rowByHeader,
-        rowIndex: r.rowIndex,
-        anchorRow: r.anchorRow,
-      }));
+      // A heading item carries its TEXT where a row item carries its columns —
+      // exactly the pair the fan-out child branch above reshapes back out, so a
+      // child's output has the same shape as a single-match run's.
+      const items = placed.rows.map((r) =>
+        isHeading
+          ? {
+              headingText: r.headingText,
+              rowIndex: r.rowIndex,
+              anchorRow: r.anchorRow,
+            }
+          : {
+              row: r.rowByHeader,
+              rowIndex: r.rowIndex,
+              anchorRow: r.anchorRow,
+            },
+      );
       const output: Record<string, unknown> = {
         action,
         // Stamped so the execution view and variable picker tell an under-append
@@ -848,7 +1092,14 @@ export const googleSheetsActionExecutor: NodeExecutor<
         matchCount: placed.matchCount,
         insertedUnderGroup: placed.insertedUnderGroup,
         rowIndex: first.rowIndex,
-        rowByHeader: first.rowByHeader,
+        // A heading carries its text where an appended row carries its columns
+        // (see the fan-out child branch above, which reshapes to the same pair).
+        ...(isHeading
+          ? {
+              headingText: first.headingText,
+              mergedColumns: placed.columnCount,
+            }
+          : { rowByHeader: first.rowByHeader }),
         anchorRow: first.anchorRow,
       };
       // Only "each_row" writes more than one row, and only then is the list
@@ -858,8 +1109,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // The row numbers ride alongside so the run view can say WHERE each added
       // row landed, which is the whole question this action answers.
       if (insertUnder === "each_row") {
-        output.insertedRows = items.slice(0, 100).map((i) => i.row);
-        output.insertedRowIndexes = items.slice(0, 100).map((i) => i.rowIndex);
+        // Read off `placed.rows` rather than the union-typed `items` above. A
+        // heading has no columns to grid, so it is recorded under a single
+        // "heading" key — the run view then renders one readable cell per
+        // inserted heading instead of an empty row.
+        output.insertedRows = placed.rows
+          .slice(0, 100)
+          .map((r) => (isHeading ? { heading: r.headingText } : r.rowByHeader));
+        output.insertedRowIndexes = placed.rows
+          .slice(0, 100)
+          .map((r) => r.rowIndex);
       }
 
       // Fan out one child per inserted row — but ONLY when rows were actually
@@ -892,7 +1151,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     // The row goes to an ABSOLUTE range, never `:append` (see `nextFreeSheetRow`
     // for why that heuristic is unsafe). The legacy raw-`range` + `values` path
     // has no mapping and falls through to the single-step switch below.
-    if (action === "append_row" && (hasMappings || !range)) {
+    if (isHeading || (action === "append_row" && (hasMappings || !range))) {
       // STEP 1 — read the tab, build the row, and settle exactly which row it
       // lands on (growing the grid if the tab was trimmed to its data).
       const planned = await step.run("google-sheets-append-plan", async () => {
@@ -904,30 +1163,37 @@ export const googleSheetsActionExecutor: NodeExecutor<
           });
           if (table.headers.length === 0) {
             throw new NonRetriableError(
-              `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
+              isHeading
+                ? `${ERROR_PREFIX}: the sheet has no header row (row 1), so there are no columns to merge the heading across`
+                : `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
             );
           }
 
-          const newRow = buildSheetRow({
-            headers: table.headers,
-            mappings: columnMappings,
-            context,
-            // Data rows (header-aligned) so a Serial Number custom-feature
-            // column autofills to max(existing)+1.
-            rows: table.rows,
-            // Keep every padded id (0006) as text — generated serial or a value
-            // referenced in from another sheet alike. USER_ENTERED would
-            // otherwise store it as a number and drop the leading zeros.
-            forceTextIds: true,
-          });
+          // A heading is ONE cell in column A, which the format step then merges
+          // across the table — so it uses neither the column mapping, the serial
+          // feature, nor the required-column rule.
+          const headingText = isHeading ? renderHeadingText(context) : "";
+          const newRow = isHeading
+            ? [headingText]
+            : buildSheetRow({
+                headers: table.headers,
+                mappings: columnMappings,
+                context,
+                // Data rows (header-aligned) so a Serial Number custom-feature
+                // column autofills to max(existing)+1.
+                rows: table.rows,
+                // Keep every padded id (0006) as text — generated serial or a
+                // value referenced in from another sheet alike. USER_ENTERED
+                // would otherwise store it as a number and drop the leading
+                // zeros.
+                forceTextIds: true,
+              });
 
           // Enforce required columns after the row is built (a serial cell is
           // always populated, so it never trips this).
-          const blankRequired = findBlankRequired(
-            table.headers,
-            newRow,
-            config.requiredColumns,
-          );
+          const blankRequired = isHeading
+            ? []
+            : findBlankRequired(table.headers, newRow, config.requiredColumns);
           if (blankRequired.length > 0) {
             throw new NonRetriableError(
               `${ERROR_PREFIX}: required column(s) may not be blank: ${blankRequired.join(", ")}`,
@@ -949,7 +1215,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
           return {
             rowIndex,
             row: newRow,
-            rowByHeader: buildRowByHeader(table.headers, newRow),
+            headingText,
+            rowByHeader: isHeading
+              ? {}
+              : buildRowByHeader(table.headers, newRow),
             columnCount: table.headers.length,
           };
         } catch (error) {
@@ -966,7 +1235,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
             {
               headers: sheetsAuthHeaders(accessToken),
               json: {
-                valueInputOption: "USER_ENTERED",
+                valueInputOption: HEADING_SAFE_VALUE_INPUT(isHeading),
                 data: [
                   {
                     range: sheetRange(
@@ -986,15 +1255,22 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       });
 
-      // Force the blank rows this append DELIBERATELY produced to white: the
-      // `blankRowAbove` separator (always blank), and the placed row itself when
-      // the node has no column mappings (a deliberately blank append). Both can
-      // otherwise show the sheet's alternating-row banding. A mapped row that
-      // renders empty is a data event, not a spacer — left banded.
+      // The blank rows this append DELIBERATELY produced, forced to white: the
+      // `blankRowAbove` separator (always blank), and — for append_row — the
+      // placed row itself when the node has no column mappings (a deliberately
+      // blank append). Both can otherwise show the sheet's alternating-row
+      // banding. A mapped row that renders empty is a data event, not a spacer —
+      // left banded. A heading row is never blank (its text is required), so only
+      // the separator above it qualifies.
       const blanks: number[] = [];
       if (config.blankRowAbove) blanks.push(planned.rowIndex - 1);
-      if (!hasMappings) blanks.push(planned.rowIndex);
-      await whitenBlankRows(blanks, planned.columnCount);
+      if (isHeading) {
+        // One batchUpdate: style + merge the heading, and clear the separator.
+        await styleHeadingRows([planned.rowIndex], blanks, planned.columnCount);
+      } else {
+        if (!hasMappings) blanks.push(planned.rowIndex);
+        await whitenBlankRows(blanks, planned.columnCount);
+      }
 
       await publish(
         nodeStatusChannel(userId).status({ nodeId, status: "success" }),
@@ -1011,9 +1287,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // Now exact rather than a guess, because we chose the row.
           rowIndex: planned.rowIndex,
           row: planned.row,
-          // Header-keyed view of the appended row so downstream nodes pick
-          // columns (force-text apostrophe + header dots stripped).
-          rowByHeader: planned.rowByHeader,
+          // A heading reports the text it wrote and how wide the merged band is;
+          // an appended row reports its header-keyed columns so downstream nodes
+          // can pick them (force-text apostrophe + header dots stripped).
+          ...(isHeading
+            ? {
+                headingText: planned.headingText,
+                mergedColumns: planned.columnCount,
+              }
+            : { rowByHeader: planned.rowByHeader }),
         },
       };
     }
@@ -1054,11 +1336,14 @@ export const googleSheetsActionExecutor: NodeExecutor<
             );
           }
 
-          // Same row-matching as find_rows: one editor, one matcher.
-          const matchedIndexes = matchRows(
-            table.rowsByHeader,
-            config.conditions ?? [],
-            context,
+          // Same row-matching as find_rows: one editor, one matcher. Scoped
+          // before anything is written — by default a filter written against
+          // your columns never overwrites a section title.
+          const matchedIndexes = (
+            await applyRowScope(
+              matchRows(table.rowsByHeader, config.conditions ?? [], context),
+              rowScope,
+            )
           ).map((m) => m.index);
 
           // The policy decides WHICH rows the write lands on, and it must be
@@ -1257,7 +1542,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         };
       }
 
-      if (action === "find_rows") {
+      if (action === "find_rows" || action === "find_heading") {
         try {
           const table = await readSheetTable({
             accessToken,
@@ -1273,10 +1558,53 @@ export const googleSheetsActionExecutor: NodeExecutor<
             .filter((c) => c.length > 0)
             .map((col) => [col, sanitizeHeaderKey(col)] as const);
 
-          const matches = matchRows(
+          const headingSearch = action === "find_heading";
+
+          // find_heading filters the FIRST column (where a merged heading keeps
+          // its text); find_rows uses the node's own conditions editor.
+          const rawMatches = matchRows(
             table.rowsByHeader,
-            config.conditions ?? [],
+            headingSearch
+              ? headingFilterConditions(config.headingFilter, table.headers)
+              : (config.conditions ?? []),
             context,
+          );
+
+          // HEADINGS ARE NOT DATA ROWS. `find_rows` must never return one, even
+          // when its filter happens to equal a heading's text (searching
+          // "Job No equals Acme" on a tab with an "Acme" heading otherwise hits
+          // it); `find_heading` returns nothing else.
+          //
+          // Membership is decided by the tab's real MERGE ranges, and ONLY by
+          // them — so a data row that merely looks like a heading is never
+          // wrongly hidden, and a real heading carrying a stray cell is never
+          // wrongly returned.
+          //
+          // There is no shape pre-filter gating this lookup. One was tried, to
+          // save an API call when no matched row "looked like" a heading, and it
+          // was wrong in both directions: it let a heading with a leftover value
+          // through find_rows as if it were data, and the same heuristic is one
+          // the heading search itself refuses to trust. A rule the code won't
+          // rely on for one action must not silently decide the other.
+          //
+          // The cost is one metadata read per row-reading run, and only rows are
+          // read here — the write paths never pay it (getSheetGrid defaults to
+          // omitting merges).
+          const headingRows = headingDataRows(
+            (
+              await getSheetGrid({
+                accessToken,
+                spreadsheetId,
+                sheetName,
+                includeMerges: true,
+              })
+            ).merges,
+          );
+
+          const matches = rawMatches.filter((m) =>
+            headingSearch
+              ? headingRows.has(m.index)
+              : !headingRows.has(m.index),
           );
 
           // Multi-match policy ("first"/"each"/"error") is applied OUTSIDE
@@ -1284,7 +1612,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // fan-out item, so its cap is enforced HERE on the true match count
           // (silently truncating children would be worse than failing) before
           // hauling the rows across the step checkpoint.
-          const mode = config.onMultipleMatches ?? "first";
+          //
+          // find_heading does NOT fan out, so it must not read this policy at
+          // all: a node switched over from find_rows keeps whatever
+          // `onMultipleMatches` it had, and the heading dialog shows no control
+          // to change it — so honouring an inherited "each" here would fail the
+          // run on the fan-out cap, with no way to fix it from the UI.
+          const mode = headingSearch
+            ? "first"
+            : (config.onMultipleMatches ?? "first");
           if (mode === "each") {
             assertFanOutCap(matches.length, config.maxFanOutItems, "row");
           }
@@ -1316,6 +1652,39 @@ export const googleSheetsActionExecutor: NodeExecutor<
             columnValues[key] = JSON.stringify(unique);
           }
 
+          // A heading has no columns, so it reports TEXT and WHERE — not the
+          // column grid find_rows returns. `headings`/`headingRowIndexes` are
+          // positionally paired; `firstHeading` + `rowIndex` are the single-match
+          // shortcuts a downstream node references.
+          if (headingSearch) {
+            const headings = matches.map((m) =>
+              getRowCell(m.row, firstColumnKey(table.headers)).trim(),
+            );
+            return {
+              ...context,
+              [outputKey]: {
+                action,
+                spreadsheetId,
+                sheetName,
+                matchCount: matches.length,
+                headings: headings.slice(0, 100),
+                // 1-based sheet rows: +1 for the 1-based grid, +1 for the header.
+                headingRowIndexes: matches
+                  .slice(0, 100)
+                  .map((m) => m.index + 2),
+                firstHeading: headings[0] ?? "",
+                rowIndex: matches.length > 0 ? matches[0].index + 2 : null,
+                // How many heading rows exist on the tab AT ALL, regardless of
+                // the search text. Without this a zero-result run is unreadable:
+                // it cannot distinguish "your text matched nothing" from
+                // "nothing on this tab is a merged heading in the first place"
+                // — the row was typed by hand, unmerged, or its merge spans more
+                // than one row. The run view leads with this number.
+                headingsOnTab: headingRows.size,
+              },
+            };
+          }
+
           return {
             ...context,
             [outputKey]: {
@@ -1339,9 +1708,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       }
 
-      // Exhaustiveness: the schema only admits append_row / find_rows /
-      // update_row (the legacy read_rows action was removed — find_rows with
-      // no conditions reads every row).
+      // Exhaustiveness: only the LEGACY raw-range append and find_rows reach
+      // this switch. Every other action returned above — append_heading always
+      // takes one of the two planned-placement paths, color_rows and update_row
+      // have their own, and the legacy read_rows action was removed (find_rows
+      // with no conditions reads every row).
       throw new NonRetriableError(
         `${ERROR_PREFIX}: unsupported action "${action}"`,
       );
@@ -1351,6 +1722,21 @@ export const googleSheetsActionExecutor: NodeExecutor<
     // outcome carries a symbol that would NOT survive the step's JSON
     // checkpoint round-trip.
     let outcome: WorkflowContext | FanOutOutcome | NodeOutcome = result;
+
+    // find_heading branches Found / Not found like find_rows, and reuses its
+    // handle ids so switching between the two read actions keeps the wired edges
+    // working. It has NO fan-out: acting once per heading is a bigger idea than
+    // this action's "search box" UI implies, so it is deliberately left out
+    // rather than half-exposed.
+    if (action === "find_heading") {
+      const output = result[outputKey] as Record<string, unknown>;
+      const matchCount =
+        typeof output.matchCount === "number" ? output.matchCount : 0;
+      outcome =
+        matchCount === 0
+          ? routed(result, [FIND_ROWS_OUTPUTS.NOT_FOUND])
+          : routeHappy(result, FIND_ROWS_OUTPUTS.FOUND);
+    }
 
     if (action === "find_rows") {
       const output = result[outputKey] as Record<string, unknown>;

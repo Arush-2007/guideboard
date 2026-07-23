@@ -891,6 +891,135 @@ const NodeRow = ({
         );
       }
 
+      // A heading row, in ANY position. It shares append_row's placement, but
+      // never its column grid: there is one merged cell, so what the run has to
+      // report is the TEXT, the row it landed on, and — off the bottom — the
+      // group it was placed under.
+      if (root?.action === "append_heading") {
+        const headingPosition = (root.position ?? "bottom") as string;
+        const atBottom = headingPosition === "bottom";
+        const headingText =
+          typeof root.headingText === "string" ? root.headingText : "";
+        const rowNumber =
+          typeof root.rowIndex === "number" ? root.rowIndex : null;
+        const count = typeof root.matchCount === "number" ? root.matchCount : 0;
+        const joinedGroup = root.insertedUnderGroup === true;
+        // Present only on the "under every matching row" PARENT — a child's
+        // reshaped output carries just the one heading it handled.
+        const addedHeadings = Array.isArray(root.insertedRows)
+          ? (root.insertedRows as Record<string, string>[])
+          : null;
+        const addedRowNumbers = Array.isArray(root.insertedRowIndexes)
+          ? (root.insertedRowIndexes as number[])
+          : null;
+        const perMatch = addedHeadings !== null && !isChildRun && joinedGroup;
+
+        const at = rowNumber !== null ? ` It is now row ${rowNumber}.` : "";
+        const summary = atBottom
+          ? `Added a heading row at the bottom of ${tab}, merged across its columns.${at}${
+              root.blankRowAbove === true
+                ? " A blank separator row was left directly above it."
+                : ""
+            }`
+          : !joinedGroup
+            ? // Nothing matched: still a success — the heading went to the bottom
+              // instead. In "per match" mode that also means NO fan-out happened,
+              // which the user chose "once per row" expecting.
+              `No rows in ${tab} matched the filter, so there was no group to head. The heading was added at the bottom of the tab instead.${at}${
+                addedHeadings !== null
+                  ? " Nothing was fanned out, so the steps after this one ran once."
+                  : ""
+              }`
+            : isChildRun && childTotal !== null
+              ? `Run ${childIndex} of ${childTotal} — this run is handling the heading below, one of the ${childTotal} this step added.`
+              : fannedOut !== null
+                ? fannedOut === 1
+                  ? `1 row in ${tab} matched the filter, and a heading was added directly below it. Started one run for it, so the steps after this one ran once.`
+                  : `${fannedOut} rows in ${tab} matched the filter, and a heading was added directly below each one. Started one run per heading, so the steps after this one ran ${fannedOut} times.`
+                : count === 1
+                  ? `Added a heading to ${tab}, directly below the row that matched.${at}`
+                  : `${count} rows in ${tab} matched the filter — they are the group. Added a heading directly below the last of them.${at}`;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>{summary}</SummaryMessage>
+            {atBottom ? null : (
+              <RowConditionsTable
+                conditions={conditionRows}
+                input={node.input}
+                unmatched={!joinedGroup}
+                unmatchedLabel="No rows matched these conditions, so the heading went to the bottom of the tab:"
+                // Not a failure — a heading was still written.
+                unmatchedTone="muted"
+              />
+            )}
+            {perMatch ? (
+              <RowsGrid
+                columns={["heading"]}
+                rows={addedHeadings as Record<string, string>[]}
+                rowLabels={addedRowNumbers?.map((n) => `Row ${n}`) ?? null}
+              />
+            ) : headingText ? (
+              <FieldTable
+                rows={[
+                  { label: "Heading", value: headingText },
+                  ...(rowNumber !== null
+                    ? [{ label: "Sheet row", value: rowNumber }]
+                    : []),
+                ]}
+              />
+            ) : null}
+          </div>
+        );
+      }
+
+      // A heading SEARCH. It returns no column grid — just which headings
+      // matched and where they are — so it renders as a short list rather than
+      // find_rows' spreadsheet view.
+      if (root?.action === "find_heading") {
+        const headings = Array.isArray(root.headings)
+          ? (root.headings as string[])
+          : [];
+        const headingRowIndexes = Array.isArray(root.headingRowIndexes)
+          ? (root.headingRowIndexes as number[])
+          : [];
+        const count =
+          typeof root.matchCount === "number"
+            ? root.matchCount
+            : headings.length;
+        // How many heading rows the tab has at all — what separates "your text
+        // matched nothing" from "this tab has no headings to search".
+        const onTab =
+          typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {count > 0
+                ? count === 1
+                  ? `Found 1 heading in ${tab}.`
+                  : `Found ${count} headings in ${tab}.`
+                : onTab === 0
+                  ? `${tab} has no heading rows at all, so there was nothing to search. A row only counts as a heading when its cells are actually MERGED across the tab, starting at column A — text that merely looks like a title, or was typed in by hand without merging, is an ordinary data row.`
+                  : onTab !== null
+                    ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched, and matching ignores capitalisation.`
+                    : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`}
+            </SummaryMessage>
+            {headings.length > 0 ? (
+              <RowsGrid
+                columns={["heading"]}
+                rows={headings.map((h) => ({ heading: h }))}
+                rowLabels={
+                  headingRowIndexes.length === headings.length
+                    ? headingRowIndexes.map((n) => `Row ${n}`)
+                    : null
+                }
+              />
+            ) : null}
+          </div>
+        );
+      }
+
       if (root?.action === "find_rows") {
         const columns = Array.isArray(root.columns)
           ? (root.columns as string[])

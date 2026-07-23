@@ -1,10 +1,15 @@
 /**
- * Output-handle contract for the Google Sheets action node. Three of its four
- * actions branch, so the handle set depends on the selected action — this file
- * is the single source both the canvas node (handle ids become each edge's
- * stored `fromOutput`) and the executor (which emits one set via `routed(...)`)
- * read, so the two sides can never drift. `append_row` keeps the single default
- * output (in every position) and appears nowhere here.
+ * Output-handle contract for the Google Sheets action node. The handle set
+ * depends on the selected action, so this file is the single source both the
+ * canvas node (handle ids become each edge's stored `fromOutput`) and the
+ * executor (which emits one set via `routed(...)`) read — the two sides can
+ * never drift.
+ *
+ * Of the six actions, FOUR branch: `find_rows` and `find_heading` (which share
+ * one handle pair, so switching between them keeps wired edges working),
+ * `update_row`, and `color_rows`. The two row-ADDING actions — `append_row` (in
+ * every position) and `append_heading` — always write, so they keep the single
+ * default output and appear nowhere here.
  */
 
 /** `find_rows`: routed by whether any row matched the filter. */
@@ -58,7 +63,12 @@ export const LEGACY_MAIN_OUTPUTS = ["main", "source-1"] as const;
 export function sheetsActionOutputHandles(
   action?: string,
 ): { id: string; label: string }[] | undefined {
-  if (action === "find_rows") return [...FIND_ROWS_OUTPUT_HANDLES];
+  // find_heading answers the same question ("did anything match?") and reuses
+  // find_rows' handle ids, so switching between the two read actions keeps every
+  // wired edge working.
+  if (action === "find_rows" || action === "find_heading") {
+    return [...FIND_ROWS_OUTPUT_HANDLES];
+  }
   if (action === "update_row") return [...UPDATE_ROW_OUTPUT_HANDLES];
   if (action === "color_rows") return [...COLOR_ROWS_OUTPUT_HANDLES];
   return undefined;
