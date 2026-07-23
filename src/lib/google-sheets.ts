@@ -213,6 +213,31 @@ export type SheetGrid = {
 };
 
 /**
+ * How many merged ranges on the tab sit below the header but do NOT qualify as
+ * headings — because they span more than one row, or start somewhere other than
+ * column A.
+ *
+ * Purely diagnostic, and it exists because "no headings found" is otherwise a
+ * dead end: the user is looking at something plainly merged, so being told the
+ * tab has none reads as a bug rather than as a rule they tripped. This number
+ * turns that into "2 merged rows here don't qualify, and here is why", which is
+ * the difference between a fixable sheet and a support conversation.
+ */
+export function nonHeadingMerges(merges: SheetMergeRange[]): number {
+  let count = 0;
+  for (const m of merges) {
+    const start = m.startRowIndex ?? 0;
+    const end = m.endRowIndex ?? start + 1;
+    // The header row is not a candidate at all, so a merged header is not a
+    // near miss — it is simply not in scope.
+    if (start < 1) continue;
+    const qualifies = (m.startColumnIndex ?? 0) === 0 && end - start === 1;
+    if (!qualifies) count++;
+  }
+  return count;
+}
+
+/**
  * The heading rows of a tab: DATA-row index (0-based, as in `SheetTable.rows`)
  * → how many columns that heading is actually MERGED across.
  *

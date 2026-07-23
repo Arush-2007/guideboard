@@ -25,6 +25,7 @@ import {
   headingRowRequests,
   hexToRgb,
   nextFreeSheetRow,
+  nonHeadingMerges,
   readSheetTable,
   sheetRange,
   sheetsAuthHeaders,
@@ -445,6 +446,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
     /** data row → the width it is actually merged across. */
     headingRows: Map<number, number>;
     sheetId: number;
+    /** Merged rows below the header that do NOT qualify — diagnostic only. */
+    nearMisses: number;
   }> | null = null;
   const readHeadings = () => {
     headingsCache ??= (async () => {
@@ -457,6 +460,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       return {
         headingRows: headingDataRows(grid.merges),
         sheetId: grid.sheetId,
+        nearMisses: nonHeadingMerges(grid.merges),
       };
     })();
     return headingsCache;
@@ -504,11 +508,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
   ): Promise<{
     matches: RowMatch[];
     headingsOnTab: number;
+    /** Merged rows on the tab that do not qualify as headings. */
+    nearMisses: number;
     sheetId: number;
     /** The width a given data row is merged across, for re-merging it safely. */
     mergedWidthOf: (dataRow: number) => number | undefined;
   }> => {
-    const { headingRows, sheetId } = await readHeadings();
+    const { headingRows, sheetId, nearMisses } = await readHeadings();
     const matches = await applyRowScope(
       matchRows(
         table.rowsByHeader,
@@ -520,6 +526,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
     return {
       matches,
       headingsOnTab: headingRows.size,
+      nearMisses,
       sheetId,
       mergedWidthOf: (dataRow) => headingRows.get(dataRow),
     };
@@ -893,10 +900,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 `${ERROR_PREFIX}: the sheet has no header row (row 1), so there is no column width to style the heading across`,
               );
             }
-            const { matches, headingsOnTab, mergedWidthOf } =
+            const { matches, headingsOnTab, nearMisses, mergedWidthOf } =
               await matchHeadings(table);
             if (matches.length === 0) {
-              return { matched: false as const, headingsOnTab, matchCount: 0 };
+              return {
+                matched: false as const,
+                headingsOnTab,
+                nearMisses,
+                matchCount: 0,
+              };
             }
 
             // "first" only: this action rewrites ONE heading. Rewriting several
@@ -911,6 +923,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
             return {
               matched: true as const,
               headingsOnTab,
+              nearMisses,
               matchCount: matches.length,
               // 1-based sheet row: +1 for the 1-based grid, +1 for the header.
               rowIndex: target.index + 2,
@@ -944,6 +957,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
               matched: false,
               matchCount: 0,
               headingsOnTab: planned.headingsOnTab,
+              nearMisses: planned.nearMisses,
             },
           },
           [UPDATE_ROW_OUTPUTS.NO_MATCH],
@@ -1037,12 +1051,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
               );
             }
 
-            const { matches, headingsOnTab, sheetId } =
+            const { matches, headingsOnTab, nearMisses, sheetId } =
               await matchHeadings(table);
             const summary = {
               matchCount: matches.length,
               coloredCount: matches.length,
               headingsOnTab,
+              nearMisses,
               headings: matches
                 .slice(0, 100)
                 .map((m) => headingTextOf(m, table)),
@@ -1505,6 +1520,19 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 : `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
             );
           }
+          // A heading IS its merge — that is the only thing that distinguishes
+          // it from a data row. Sheets rejects a single-cell merge, so on a
+          // one-column tab this would write text that no heading action could
+          // ever find, update or color again, and that find_rows would return as
+          // data. Fail loudly now rather than leave an invisible heading behind.
+          if (isHeading && table.headers.length < 2) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: "${sheetName}" has only one column, so a heading ` +
+                `row cannot be merged — and an unmerged heading is indistinguishable ` +
+                `from an ordinary row, so nothing would be able to find it later. ` +
+                `Add a second column, or use "Append row" instead.`,
+            );
+          }
 
           // A heading is ONE cell in column A, which the format step then merges
           // across the table — so it uses neither the column mapping, the serial
@@ -1919,11 +1947,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // read here — the write paths never pay it (getSheetGrid defaults to
           // omitting merges).
           let headingsOnTab = 0;
+          let nearMisses = 0;
           let matches: RowMatch[];
           if (headingSearch) {
             const found = await matchHeadings(table);
             matches = found.matches;
             headingsOnTab = found.headingsOnTab;
+            nearMisses = found.nearMisses;
           } else {
             matches = await applyRowScope(
               matchRows(table.rowsByHeader, config.conditions ?? [], context),
@@ -2003,6 +2033,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 // — the row was typed by hand, unmerged, or its merge spans more
                 // than one row. The run view leads with this number.
                 headingsOnTab,
+                // …and how many merged rows were REJECTED, which is what turns
+                // "this tab has no headings" from a dead end into a diagnosis.
+                nearMisses,
               },
             };
           }

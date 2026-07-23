@@ -188,6 +188,7 @@ type SheetsResult = Record<
     headingRowIndexes?: number[];
     firstHeading?: string;
     headingsOnTab?: number;
+    nearMisses?: number;
     previousHeading?: string;
     restyled?: boolean;
     color?: string;
@@ -2213,15 +2214,16 @@ describe("googleSheetsActionExecutor — append_heading", () => {
     });
   });
 
-  it("emits NO merge on a one-column tab (Sheets rejects a single-cell merge)", async () => {
-    mockReadWithGrid([["Only"], ["a"]]);
+  it("refuses a one-column tab, where a heading could never be found again", async () => {
+    // Sheets rejects a single-cell merge, so on a one-column tab this would
+    // write text carrying NO merge — and the merge is the only thing that makes
+    // a heading a heading. It would be invisible to every heading action
+    // forever, and find_rows would hand it back as data. Fail instead of
+    // leaving that behind.
+    mockReadWithGrid([["Only"], ["a"]], { title: "Grouped" });
 
-    await run(heading);
-
-    const requests = formatRequests(1);
-    expect(requests).toHaveLength(1);
-    expect(requests[0].repeatCell).toBeDefined();
-    expect(requests.some((r) => r.mergeCells)).toBe(false);
+    await expect(run(heading)).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
   });
 
   it("clears the blankRowAbove separator in the SAME format call", async () => {
@@ -2825,6 +2827,38 @@ describe("googleSheetsActionExecutor — headings vs the reading actions", () =>
         headingText: "Anything",
       }),
     ).rejects.toBeInstanceOf(NonRetriableError);
+  });
+
+  it("reports merged rows that do NOT qualify, so a dead end is diagnosable", async () => {
+    // Two merges that both look like headings to a human and neither of which
+    // qualifies: one spans two rows, one starts at column B. Without this count
+    // the run can only say "no headings", which reads as a bug to someone
+    // staring at a merged row.
+    mockWithMerge(withHeading, [
+      {
+        startRowIndex: 1,
+        endRowIndex: 3, // two rows tall
+        startColumnIndex: 0,
+        endColumnIndex: 3,
+      },
+      {
+        startRowIndex: 4,
+        endRowIndex: 5,
+        startColumnIndex: 1, // starts at column B
+        endColumnIndex: 3,
+      },
+    ]);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.headingsOnTab).toBe(0);
+    expect(out.nearMisses).toBe(2);
   });
 
   it("color_heading reads the tab's metadata ONCE, not twice", async () => {

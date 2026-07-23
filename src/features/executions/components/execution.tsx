@@ -319,8 +319,12 @@ const RowsGrid = ({
  * explain that a merged row is the only thing that counts, and repeating the
  * sentence per view is exactly how the wording drifts apart.
  */
-const NO_HEADINGS_HINT =
-  "A row only counts as a heading when its cells are actually MERGED across the tab, starting at column A — text that merely looks like a title, or was typed in by hand without merging, is an ordinary data row.";
+const noHeadingsHint = (nearMisses: number | null) =>
+  nearMisses && nearMisses > 0
+    ? nearMisses === 1
+      ? "This tab does have a merged row, but it doesn't qualify: a heading must start at column A and span exactly ONE row. A merge that begins further right, or covers two rows, is read as ordinary data."
+      : `This tab does have ${nearMisses} merged rows, but none of them qualify: a heading must start at column A and span exactly ONE row. A merge that begins further right, or covers two rows, is read as ordinary data.`
+    : "A row only counts as a heading when its cells are actually MERGED across the tab, starting at column A — text that merely looks like a title, or was typed in by hand without merging, is an ordinary data row.";
 
 /**
  * The headings a run acted on — matched by find, painted by colour. One shared
@@ -1031,6 +1035,8 @@ const NodeRow = ({
         // matched nothing" from "this tab has no headings to search".
         const onTab =
           typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
+        const nearMisses =
+          typeof root.nearMisses === "number" ? root.nearMisses : null;
 
         return (
           <div className="space-y-2">
@@ -1040,7 +1046,7 @@ const NodeRow = ({
                   ? `Found 1 heading in ${tab}.`
                   : `Found ${count} headings in ${tab}.`
                 : onTab === 0
-                  ? `${tab} has no heading rows at all, so there was nothing to search. A row only counts as a heading when its cells are actually MERGED across the tab, starting at column A — text that merely looks like a title, or was typed in by hand without merging, is an ordinary data row.`
+                  ? `${tab} has no heading rows at all, so there was nothing to search. ${noHeadingsHint(nearMisses)}`
                   : onTab !== null
                     ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched, and matching ignores capitalisation.`
                     : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`}
@@ -1064,6 +1070,8 @@ const NodeRow = ({
           typeof root.rowIndex === "number" ? root.rowIndex : null;
         const onTab =
           typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
+        const nearMisses =
+          typeof root.nearMisses === "number" ? root.nearMisses : null;
         const restyled = root.restyled === true;
 
         return (
@@ -1071,7 +1079,7 @@ const NodeRow = ({
             <SummaryMessage>
               {!matched
                 ? onTab === 0
-                  ? `${tab} has no heading rows at all, so there was nothing to update. ${NO_HEADINGS_HINT}`
+                  ? `${tab} has no heading rows at all, so there was nothing to update. ${noHeadingsHint(nearMisses)}`
                   : `No heading in ${tab} matched, so nothing was changed. This step only ever touches heading rows — your data is never affected.`
                 : before !== after
                   ? // Renamed, and possibly restyled on top.
@@ -1116,6 +1124,8 @@ const NodeRow = ({
             : headings.length;
         const onTab =
           typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
+        const nearMisses =
+          typeof root.nearMisses === "number" ? root.nearMisses : null;
         const color = typeof root.color === "string" ? root.color : null;
 
         return (
@@ -1123,7 +1133,7 @@ const NodeRow = ({
             <SummaryMessage>
               {colored === 0
                 ? onTab === 0
-                  ? `${tab} has no heading rows at all, so nothing was colored. ${NO_HEADINGS_HINT}`
+                  ? `${tab} has no heading rows at all, so nothing was colored. ${noHeadingsHint(nearMisses)}`
                   : `No heading in ${tab} matched, so nothing was colored.`
                 : colored === 1
                   ? `Colored 1 heading in ${tab}.`

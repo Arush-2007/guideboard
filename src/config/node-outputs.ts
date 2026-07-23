@@ -284,6 +284,16 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         example: "3",
         pickIf: isSheetsHeadingSelect,
       },
+      // Merged rows that do NOT qualify as headings (wrong start column, or
+      // spanning several rows). Diagnostic: it is what separates "this tab has
+      // nothing merged" from "what you merged doesn't count, and here's why".
+      {
+        path: "nearMisses",
+        label: "Merged rows that don't qualify as headings",
+        example: "1",
+        pickIf: isSheetsHeadingSelect,
+        developer: true,
+      },
       // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
       // the first match in "first"/"error" mode, and — in "each" (fan-out)
       // mode — the child run's own row (each child carries a reshaped output
