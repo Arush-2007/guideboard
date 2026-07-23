@@ -150,6 +150,16 @@ export const headingFilterSchema = z.object({
 
 export type HeadingFilter = z.infer<typeof headingFilterSchema>;
 
+/**
+ * `#RRGGBB` — the one colour `color_heading` paints every matching heading.
+ *
+ * Deliberately a single colour rather than `color_rows`' ordered rule list: the
+ * multi-colour case is already served by `color_rows` with
+ * `rowScope: "headings"`, and restating that editor here would be two doors into
+ * the same room. This action exists to make the common case one field.
+ */
+export const headingColorSchema = hexColor;
+
 export function resolveHeadingFormat(
   format?: HeadingFormat | null,
 ): Required<HeadingFormat> {

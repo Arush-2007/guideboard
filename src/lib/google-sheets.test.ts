@@ -268,7 +268,7 @@ describe("getSheetGrid", () => {
       { startRowIndex: 4, endRowIndex: 5, endColumnIndex: 3 },
     ]);
     // …and that omitted zero still reads as column A, so the row IS a heading.
-    expect(headingDataRows(grid.merges)).toEqual(new Set([3]));
+    expect(headingDataRows(grid.merges)).toEqual(new Map([[3, 3]]));
   });
 
   it("reports rowCount 0 when the tab has no gridProperties", async () => {
@@ -388,7 +388,7 @@ describe("headingDataRows", () => {
           endColumnIndex: 3,
         },
       ]),
-    ).toEqual(new Set([3]));
+    ).toEqual(new Map([[3, 3]]));
   });
 
   it("ignores merges that are not heading-shaped", () => {
@@ -416,7 +416,7 @@ describe("headingDataRows", () => {
           endColumnIndex: 3,
         },
       ]),
-    ).toEqual(new Set());
+    ).toEqual(new Map());
   });
 
   it("collects several headings, and is empty when the tab has no merges", () => {
@@ -435,7 +435,12 @@ describe("headingDataRows", () => {
           endColumnIndex: 2,
         },
       ]),
-    ).toEqual(new Set([0, 6]));
-    expect(headingDataRows([])).toEqual(new Set());
+    ).toEqual(
+      new Map([
+        [0, 2],
+        [6, 2],
+      ]),
+    );
+    expect(headingDataRows([])).toEqual(new Map());
   });
 });

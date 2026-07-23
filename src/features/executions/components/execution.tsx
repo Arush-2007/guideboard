@@ -314,6 +314,46 @@ const RowsGrid = ({
 // A written row as a spreadsheet would show it: the sheet's columns across the
 // top, and either the single row that was added, or the row BEFORE the write and
 // the row AFTER it stacked underneath with every changed cell highlighted.
+/**
+ * What "no headings at all" means, said once. All three heading actions have to
+ * explain that a merged row is the only thing that counts, and repeating the
+ * sentence per view is exactly how the wording drifts apart.
+ */
+const NO_HEADINGS_HINT =
+  "A row only counts as a heading when its cells are actually MERGED across the tab, starting at column A — text that merely looks like a title, or was typed in by hand without merging, is an ordinary data row.";
+
+/**
+ * The headings a run acted on — matched by find, painted by colour. One shared
+ * view, because both answer the same two questions: which headings, and what row
+ * each is on. Renders nothing when there are none, so callers need no guard.
+ */
+const HeadingListView = ({
+  headings,
+  rowIndexes,
+  colors = null,
+}: {
+  headings: string[];
+  rowIndexes: number[];
+  /** color_heading paints them all one colour; find passes none. */
+  colors?: string[] | null;
+}) => {
+  if (headings.length === 0) return null;
+  return (
+    <RowsGrid
+      columns={["heading"]}
+      rows={headings.map((h) => ({ heading: h }))}
+      // Only label rows when the two lists line up — a truncated pairing would
+      // put the wrong row number against a heading.
+      rowLabels={
+        rowIndexes.length === headings.length
+          ? rowIndexes.map((n) => `Row ${n}`)
+          : null
+      }
+      rowColors={colors}
+    />
+  );
+};
+
 const RowChangeGrid = ({
   columns,
   before,
@@ -1005,17 +1045,95 @@ const NodeRow = ({
                     ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched, and matching ignores capitalisation.`
                     : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`}
             </SummaryMessage>
-            {headings.length > 0 ? (
-              <RowsGrid
-                columns={["heading"]}
-                rows={headings.map((h) => ({ heading: h }))}
-                rowLabels={
-                  headingRowIndexes.length === headings.length
-                    ? headingRowIndexes.map((n) => `Row ${n}`)
-                    : null
-                }
+            <HeadingListView
+              headings={headings}
+              rowIndexes={headingRowIndexes}
+            />
+          </div>
+        );
+      }
+
+      // Renaming / restyling one section title.
+      if (root?.action === "update_heading") {
+        const matched = root.matched === true;
+        const before =
+          typeof root.previousHeading === "string" ? root.previousHeading : "";
+        const after =
+          typeof root.headingText === "string" ? root.headingText : "";
+        const rowNumber =
+          typeof root.rowIndex === "number" ? root.rowIndex : null;
+        const onTab =
+          typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
+        const restyled = root.restyled === true;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {!matched
+                ? onTab === 0
+                  ? `${tab} has no heading rows at all, so there was nothing to update. ${NO_HEADINGS_HINT}`
+                  : `No heading in ${tab} matched, so nothing was changed. This step only ever touches heading rows — your data is never affected.`
+                : before !== after
+                  ? // Renamed, and possibly restyled on top.
+                    `Renamed the heading in ${tab} from “${before}” to “${after}”.${
+                      rowNumber !== null ? ` It is row ${rowNumber}.` : ""
+                    }${restyled ? " It was restyled too." : ""}`
+                  : restyled
+                    ? `Restyled the heading “${after}” in ${tab}.${
+                        rowNumber !== null ? ` It is row ${rowNumber}.` : ""
+                      }`
+                    : // Matched, but the new text was identical and no restyle
+                      // was asked for. Nothing changed, and the line must not
+                      // claim a formatting write that never happened.
+                      `The heading “${after}” in ${tab} already read exactly that, so nothing was changed.`}
+            </SummaryMessage>
+            {matched && before !== after ? (
+              <FieldTable
+                rows={[
+                  { label: "Was", value: before },
+                  { label: "Now", value: after },
+                  ...(rowNumber !== null
+                    ? [{ label: "Sheet row", value: rowNumber }]
+                    : []),
+                ]}
               />
             ) : null}
+          </div>
+        );
+      }
+
+      // Painting section titles one colour.
+      if (root?.action === "color_heading") {
+        const headings = Array.isArray(root.headings)
+          ? (root.headings as string[])
+          : [];
+        const headingRowIndexes = Array.isArray(root.headingRowIndexes)
+          ? (root.headingRowIndexes as number[])
+          : [];
+        const colored =
+          typeof root.coloredCount === "number"
+            ? root.coloredCount
+            : headings.length;
+        const onTab =
+          typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
+        const color = typeof root.color === "string" ? root.color : null;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {colored === 0
+                ? onTab === 0
+                  ? `${tab} has no heading rows at all, so nothing was colored. ${NO_HEADINGS_HINT}`
+                  : `No heading in ${tab} matched, so nothing was colored.`
+                : colored === 1
+                  ? `Colored 1 heading in ${tab}.`
+                  : `Colored ${colored} headings in ${tab}.`}
+            </SummaryMessage>
+            <HeadingListView
+              headings={headings}
+              rowIndexes={headingRowIndexes}
+              colors={color ? headings.map(() => color) : null}
+            />
           </div>
         );
       }

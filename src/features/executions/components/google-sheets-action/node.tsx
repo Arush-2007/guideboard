@@ -32,7 +32,9 @@ type GoogleSheetsActionNodeData = {
     | "find_rows"
     | "find_heading"
     | "update_row"
-    | "color_rows";
+    | "update_heading"
+    | "color_rows"
+    | "color_heading";
   position?: "bottom" | "under_group" | "under_each";
   spreadsheetId?: string;
   sheetName?: string;
@@ -112,20 +114,24 @@ export const GoogleSheetsActionNode = memo(
         ? `Find rows in ${nodeData.sheetName}`
         : nodeData.action === "find_heading"
           ? `Find a heading in ${nodeData.sheetName}`
-          : nodeData.action === "update_row"
-            ? `Update a row in ${nodeData.sheetName}`
-            : nodeData.action === "color_rows"
-              ? `Color rows in ${nodeData.sheetName}`
-              : nodeData.action === "append_heading"
-                ? // A heading is placed by the same `position` as an appended row,
-                  // but "insert"/"append" would read as adding data — say what it
-                  // actually adds.
-                  `Add a heading to ${nodeData.sheetName}`
-                : position === "under_each"
-                  ? `Insert rows into ${nodeData.sheetName}`
-                  : position === "under_group"
-                    ? `Insert a row into ${nodeData.sheetName}`
-                    : `Append to ${nodeData.sheetName}`
+          : nodeData.action === "update_heading"
+            ? `Update a heading in ${nodeData.sheetName}`
+            : nodeData.action === "color_heading"
+              ? `Color headings in ${nodeData.sheetName}`
+              : nodeData.action === "update_row"
+                ? `Update a row in ${nodeData.sheetName}`
+                : nodeData.action === "color_rows"
+                  ? `Color rows in ${nodeData.sheetName}`
+                  : nodeData.action === "append_heading"
+                    ? // A heading is placed by the same `position` as an appended row,
+                      // but "insert"/"append" would read as adding data — say what it
+                      // actually adds.
+                      `Add a heading to ${nodeData.sheetName}`
+                    : position === "under_each"
+                      ? `Insert rows into ${nodeData.sheetName}`
+                      : position === "under_group"
+                        ? `Insert a row into ${nodeData.sheetName}`
+                        : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (

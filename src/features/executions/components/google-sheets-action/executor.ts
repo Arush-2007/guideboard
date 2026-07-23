@@ -40,7 +40,12 @@ import {
   type MultiMatchMode,
   readFanOutSeed,
 } from "@/lib/multi-match";
-import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
+import {
+  getRowCell,
+  matchRows,
+  type RowMatch,
+  type RowMatchCondition,
+} from "@/lib/row-match";
 import { hasActiveRowCondition } from "@/lib/row-match-operators";
 import { stripTextForcing, toSheetsCellValue } from "@/lib/sheet-cells";
 import { ANCHOR_ROW_KEY, sanitizeHeaderKey } from "@/lib/sheet-headers";
@@ -70,7 +75,9 @@ type SheetsAction =
   | "find_rows"
   | "find_heading"
   | "update_row"
-  | "color_rows";
+  | "update_heading"
+  | "color_rows"
+  | "color_heading";
 
 /**
  * One `color_rows` rule: the background color, and the filter selecting the rows
@@ -110,6 +117,10 @@ type GoogleSheetsActionData = {
   // update_row / color_rows / a non-bottom append: which KIND of row the filter
   // may select. Absent ⇒ "data" — a filter never touches a heading by accident.
   rowScope?: RowScope;
+  // update_heading only: also re-apply `headingFormat` to the row it rewrites.
+  restyleHeading?: boolean;
+  // color_heading only: the one colour every matching heading is painted.
+  headingColor?: string;
   // AND-ed row filter, shared by find_rows (which returns the matches),
   // update_row (which writes them) and a non-bottom append (for which they are
   // the GROUP the new row joins). Both write cases require at least one.
@@ -416,6 +427,42 @@ export const googleSheetsActionExecutor: NodeExecutor<
   const rowScope: RowScope = config.rowScope ?? DEFAULT_ROW_SCOPE;
 
   /**
+   * The tab's heading rows — and the tab's numeric id, which the same metadata
+   * response already carries.
+   *
+   * THE single place a merge lookup happens. Every consumer goes through here:
+   * `applyRowScope` (which decides what counts as a row for the filtering
+   * actions) and `matchHeadings` (which the three heading actions share). Two
+   * copies of "fetch merges, derive headings" would let the heading actions and
+   * `rowScope: "headings"` silently disagree about what a heading is.
+   *
+   * Memoised for the run, because it is the expensive read (`includeMerges`) and
+   * every caller wants the same answer: a colour pass previously paid for it
+   * twice — once to find the headings, once more just to learn the `sheetId`
+   * that first response already held.
+   */
+  let headingsCache: Promise<{
+    /** data row → the width it is actually merged across. */
+    headingRows: Map<number, number>;
+    sheetId: number;
+  }> | null = null;
+  const readHeadings = () => {
+    headingsCache ??= (async () => {
+      const grid = await getSheetGrid({
+        accessToken,
+        spreadsheetId,
+        sheetName,
+        includeMerges: true,
+      });
+      return {
+        headingRows: headingDataRows(grid.merges),
+        sheetId: grid.sheetId,
+      };
+    })();
+    return headingsCache;
+  };
+
+  /**
    * Drop the matches this action's row scope excludes.
    *
    * A heading is structurally an ordinary row — its text sits in the first
@@ -432,20 +479,57 @@ export const googleSheetsActionExecutor: NodeExecutor<
     scope: RowScope,
   ): Promise<T[]> => {
     if (scope === "all" || matches.length === 0) return matches;
-    const headingRows = headingDataRows(
-      (
-        await getSheetGrid({
-          accessToken,
-          spreadsheetId,
-          sheetName,
-          includeMerges: true,
-        })
-      ).merges,
-    );
+    const { headingRows } = await readHeadings();
     return matches.filter((m) =>
       rowPassesScope(scope, headingRows.has(m.index)),
     );
   };
+
+  /**
+   * The HEADING rows of a tab that match this node's `headingFilter`, in sheet
+   * order — the one question all three heading actions ask.
+   *
+   * `find_heading` returns them, `update_heading` rewrites the first, and
+   * `color_heading` paints them all; sharing this means "which rows are
+   * headings, and which of those did the user mean?" is answered once. Two
+   * facts decide it, and both live here: membership comes only from the tab's
+   * real merge ranges, and the search runs against the tab's first column
+   * (where a merged heading keeps its text).
+   *
+   * Also returns the tab's TOTAL heading count, which is what lets a zero-match
+   * run say whether the text matched nothing or the tab simply has no headings.
+   */
+  const matchHeadings = async (
+    table: Awaited<ReturnType<typeof readSheetTable>>,
+  ): Promise<{
+    matches: RowMatch[];
+    headingsOnTab: number;
+    sheetId: number;
+    /** The width a given data row is merged across, for re-merging it safely. */
+    mergedWidthOf: (dataRow: number) => number | undefined;
+  }> => {
+    const { headingRows, sheetId } = await readHeadings();
+    const matches = await applyRowScope(
+      matchRows(
+        table.rowsByHeader,
+        headingFilterConditions(config.headingFilter, table.headers),
+        context,
+      ),
+      "headings",
+    );
+    return {
+      matches,
+      headingsOnTab: headingRows.size,
+      sheetId,
+      mergedWidthOf: (dataRow) => headingRows.get(dataRow),
+    };
+  };
+
+  /** The heading text of a matched row: its first-column cell, trimmed. */
+  const headingTextOf = (
+    match: RowMatch,
+    table: Awaited<ReturnType<typeof readSheetTable>>,
+  ): string => getRowCell(match.row, firstColumnKey(table.headers)).trim();
 
   /**
    * Run one batch of FORMAT requests against this tab, in its own Inngest step.
@@ -768,6 +852,259 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // the branch is about whether a row was COLORED. (They agree today — a
       // matched row is always painted — but coloredCount states what the branch
       // actually means.)
+      return painted.coloredCount === 0
+        ? routed(output, [COLOR_ROWS_OUTPUTS.NO_MATCH])
+        : routeHappy(output, COLOR_ROWS_OUTPUTS.COLORED);
+    }
+
+    // Rewrite the heading a filter selects, and optionally restyle it. The
+    // ergonomic twin of `update_row` + `rowScope: "headings"` — same underlying
+    // operation, but the column is implied and the search is one box.
+    if (action === "update_heading") {
+      // Restyling re-applies `headingFormat`. With none saved that would resolve
+      // to DEFAULT_HEADING_FORMAT and silently overwrite whatever styling the
+      // heading already had — "also restyle it" means keep it looking like a
+      // heading, never reset it to this app's defaults. Fail instead.
+      if (config.restyleHeading === true && !config.headingFormat) {
+        throw new NonRetriableError(
+          `${ERROR_PREFIX}: "restyle the heading" is on but the node has no saved ` +
+            `style, so restyling would reset the heading to default formatting. ` +
+            `Set the style, or turn restyling off to change only the text.`,
+        );
+      }
+
+      // STEP 1 — read, find the heading, and settle exactly what will be
+      // written. Memoized, so the write below replays this target rather than
+      // re-reading a tab its own landed write already changed.
+      const planned = await step.run(
+        "google-sheets-update-heading-plan",
+        async () => {
+          try {
+            const table = await readSheetTable({
+              accessToken,
+              spreadsheetId,
+              sheetName,
+            });
+            // Same guard color_heading and the update_row plan both carry. Without
+            // it a header-less tab yields columnCount 0, `styleHeadingRows`
+            // early-returns, and the run reports a restyle that never happened.
+            if (table.headers.length === 0) {
+              throw new NonRetriableError(
+                `${ERROR_PREFIX}: the sheet has no header row (row 1), so there is no column width to style the heading across`,
+              );
+            }
+            const { matches, headingsOnTab, mergedWidthOf } =
+              await matchHeadings(table);
+            if (matches.length === 0) {
+              return { matched: false as const, headingsOnTab, matchCount: 0 };
+            }
+
+            // "first" only: this action rewrites ONE heading. Rewriting several
+            // to the same text would collapse distinct sections into duplicates,
+            // which is never what a rename means.
+            const target = matches[0];
+            const previousHeading = headingTextOf(target, table);
+            const newText = config.headingText?.trim()
+              ? renderHeadingText(context)
+              : previousHeading;
+
+            return {
+              matched: true as const,
+              headingsOnTab,
+              matchCount: matches.length,
+              // 1-based sheet row: +1 for the 1-based grid, +1 for the header.
+              rowIndex: target.index + 2,
+              previousHeading,
+              headingText: newText,
+              // The width the heading is ACTUALLY merged across, not today's
+              // header count. A heading merged when the tab had 3 columns stays
+              // 3 wide after a 4th is added; re-merging it over 4 would overlap
+              // the existing merge, which Sheets rejects — and it would fail
+              // AFTER the text write had already landed. Falls back to the
+              // header width only if the merge somehow reports none.
+              columnCount: mergedWidthOf(target.index) || table.headers.length,
+            };
+          } catch (error) {
+            throw await toSheetsError(error);
+          }
+        },
+      );
+
+      if (!planned.matched) {
+        await publish(
+          nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+        );
+        return routed(
+          {
+            ...context,
+            [outputKey]: {
+              action,
+              spreadsheetId,
+              sheetName,
+              matched: false,
+              matchCount: 0,
+              headingsOnTab: planned.headingsOnTab,
+            },
+          },
+          [UPDATE_ROW_OUTPUTS.NO_MATCH],
+        );
+      }
+
+      // STEP 2 — write the text. A SINGLE-CELL range (`A7`, not `A7:ZZ7`): the
+      // anchor is the only cell a merge actually has, so this never writes
+      // across a merged band. RAW because a heading is a label — see
+      // HEADING_SAFE_VALUE_INPUT.
+      if (config.headingText?.trim()) {
+        await step.run("google-sheets-update-heading-write", async () => {
+          try {
+            await sheetsWrite(
+              sheetsValuesBatchUpdateUrl(spreadsheetId),
+              {
+                headers: sheetsAuthHeaders(accessToken),
+                json: {
+                  valueInputOption: HEADING_SAFE_VALUE_INPUT(true),
+                  data: [
+                    {
+                      range: sheetRange(sheetName, `A${planned.rowIndex}`),
+                      values: [[planned.headingText]],
+                    },
+                  ],
+                },
+              },
+              { idempotent: true },
+            );
+            return null;
+          } catch (error) {
+            throw await toSheetsError(error);
+          }
+        });
+      }
+
+      // STEP 3 — optional restyle. The row is ALREADY merged, and re-merging an
+      // identical range is a no-op, so this re-applies the format cleanly.
+      if (config.restyleHeading === true) {
+        await styleHeadingRows([planned.rowIndex], [], planned.columnCount);
+      }
+
+      await publish(
+        nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+      );
+      return routeHappy(
+        {
+          ...context,
+          [outputKey]: {
+            action,
+            spreadsheetId,
+            sheetName,
+            matched: true,
+            matchCount: planned.matchCount,
+            headingsOnTab: planned.headingsOnTab,
+            rowIndex: planned.rowIndex,
+            headingText: planned.headingText,
+            // The text BEFORE this run, so the execution page can show what
+            // changed — and so a rename is auditable.
+            previousHeading: planned.previousHeading,
+            restyled: config.restyleHeading === true,
+          },
+        },
+        UPDATE_ROW_OUTPUTS.UPDATED,
+      );
+    }
+
+    // Paint every heading a filter selects. ONE step: colouring never changes a
+    // cell's value, so a replayed read re-matches exactly the same rows and the
+    // repaint is a no-op — the same reasoning color_rows relies on.
+    if (action === "color_heading") {
+      const color = config.headingColor?.trim();
+      if (!color) {
+        throw new NonRetriableError(
+          `${ERROR_PREFIX}: coloring headings needs a color`,
+        );
+      }
+
+      const painted = await step.run(
+        "google-sheets-color-heading",
+        async () => {
+          try {
+            const table = await readSheetTable({
+              accessToken,
+              spreadsheetId,
+              sheetName,
+            });
+            if (table.headers.length === 0) {
+              throw new NonRetriableError(
+                `${ERROR_PREFIX}: the sheet has no header row (row 1) to color up to`,
+              );
+            }
+
+            const { matches, headingsOnTab, sheetId } =
+              await matchHeadings(table);
+            const summary = {
+              matchCount: matches.length,
+              coloredCount: matches.length,
+              headingsOnTab,
+              headings: matches
+                .slice(0, 100)
+                .map((m) => headingTextOf(m, table)),
+              headingRowIndexes: matches.slice(0, 100).map((m) => m.index + 2),
+              color,
+            };
+            // Nothing matched ⇒ nothing to write, and no second call.
+            if (matches.length === 0) return summary;
+
+            // Same ceiling color_rows enforces: one repeatCell per painted row,
+            // checked BEFORE the write so an over-broad filter fails cleanly
+            // instead of building a batch too large to send.
+            if (matches.length > MAX_COLORED_ROWS) {
+              throw new NonRetriableError(
+                `${ERROR_PREFIX}: ${matches.length} headings match, which is more ` +
+                  `than this step colors in one run (${MAX_COLORED_ROWS}). ` +
+                  `Narrow the search.`,
+              );
+            }
+
+            // `sheetId` came back with the merges above — no second metadata
+            // read. `hexToRgb` throws on a malformed colour while the requests
+            // are built, i.e. before anything is written.
+            await sheetsWrite(
+              sheetsBatchUpdateUrl(spreadsheetId),
+              {
+                headers: sheetsAuthHeaders(accessToken),
+                json: {
+                  requests: matches.map((m) => ({
+                    repeatCell: {
+                      range: {
+                        sheetId,
+                        startRowIndex: m.index + 1,
+                        endRowIndex: m.index + 2,
+                        startColumnIndex: 0,
+                        endColumnIndex: table.headers.length,
+                      },
+                      cell: {
+                        userEnteredFormat: { backgroundColor: hexToRgb(color) },
+                      },
+                      fields: "userEnteredFormat.backgroundColor",
+                    },
+                  })),
+                },
+              },
+              // Fixed colour on fixed cells — safe for Inngest to retry.
+              { idempotent: true },
+            );
+            return summary;
+          } catch (error) {
+            throw await toSheetsError(error);
+          }
+        },
+      );
+
+      await publish(
+        nodeStatusChannel(userId).status({ nodeId, status: "success" }),
+      );
+      const output = {
+        ...context,
+        [outputKey]: { action, spreadsheetId, sheetName, ...painted },
+      };
       return painted.coloredCount === 0
         ? routed(output, [COLOR_ROWS_OUTPUTS.NO_MATCH])
         : routeHappy(output, COLOR_ROWS_OUTPUTS.COLORED);
@@ -1560,20 +1897,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
           const headingSearch = action === "find_heading";
 
-          // find_heading filters the FIRST column (where a merged heading keeps
-          // its text); find_rows uses the node's own conditions editor.
-          const rawMatches = matchRows(
-            table.rowsByHeader,
-            headingSearch
-              ? headingFilterConditions(config.headingFilter, table.headers)
-              : (config.conditions ?? []),
-            context,
-          );
-
-          // HEADINGS ARE NOT DATA ROWS. `find_rows` must never return one, even
-          // when its filter happens to equal a heading's text (searching
-          // "Job No equals Acme" on a tab with an "Acme" heading otherwise hits
-          // it); `find_heading` returns nothing else.
+          // HEADINGS ARE NOT DATA ROWS. `find_heading` returns nothing else
+          // (via the shared `matchHeadings`), and `find_rows` must never return
+          // one — even when its filter happens to equal a heading's text
+          // (searching "Job No equals Acme" on a tab with an "Acme" heading
+          // otherwise hits it).
           //
           // Membership is decided by the tab's real MERGE ranges, and ONLY by
           // them — so a data row that merely looks like a heading is never
@@ -1590,22 +1918,18 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // The cost is one metadata read per row-reading run, and only rows are
           // read here — the write paths never pay it (getSheetGrid defaults to
           // omitting merges).
-          const headingRows = headingDataRows(
-            (
-              await getSheetGrid({
-                accessToken,
-                spreadsheetId,
-                sheetName,
-                includeMerges: true,
-              })
-            ).merges,
-          );
-
-          const matches = rawMatches.filter((m) =>
-            headingSearch
-              ? headingRows.has(m.index)
-              : !headingRows.has(m.index),
-          );
+          let headingsOnTab = 0;
+          let matches: RowMatch[];
+          if (headingSearch) {
+            const found = await matchHeadings(table);
+            matches = found.matches;
+            headingsOnTab = found.headingsOnTab;
+          } else {
+            matches = await applyRowScope(
+              matchRows(table.rowsByHeader, config.conditions ?? [], context),
+              "data",
+            );
+          }
 
           // Multi-match policy ("first"/"each"/"error") is applied OUTSIDE
           // this step (see below) — but "each" needs every matched row as a
@@ -1657,9 +1981,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // positionally paired; `firstHeading` + `rowIndex` are the single-match
           // shortcuts a downstream node references.
           if (headingSearch) {
-            const headings = matches.map((m) =>
-              getRowCell(m.row, firstColumnKey(table.headers)).trim(),
-            );
+            const headings = matches.map((m) => headingTextOf(m, table));
             return {
               ...context,
               [outputKey]: {
@@ -1680,7 +2002,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 // "nothing on this tab is a merged heading in the first place"
                 // — the row was typed by hand, unmerged, or its merge spans more
                 // than one row. The run view leads with this number.
-                headingsOnTab: headingRows.size,
+                headingsOnTab,
               },
             };
           }

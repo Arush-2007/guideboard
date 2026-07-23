@@ -12,6 +12,7 @@ import {
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import {
+  headingColorSchema,
   headingFilterSchema,
   headingFormatSchema,
   ROW_SCOPES,
@@ -471,7 +472,9 @@ const googleSheetsActionSchema = z.preprocess(
           "find_rows",
           "find_heading",
           "update_row",
+          "update_heading",
           "color_rows",
+          "color_heading",
         ]),
       ),
       // Where an appended row lands: the bottom of the tab (default), below a
@@ -504,9 +507,15 @@ const googleSheetsActionSchema = z.preprocess(
       // `resolveHeadingFormat` fills the rest. One shared fragment with the
       // dialog, so neither side can strip a field the other saves.
       headingFormat: headingFormatSchema.optional(),
-      // find_heading only: which headings to return. Absent ⇒ every heading on
-      // the tab.
+      // The heading actions that SELECT one: find_heading (which to return),
+      // update_heading (which to rewrite), color_heading (which to paint).
+      // Absent ⇒ every heading on the tab.
       headingFilter: headingFilterSchema.optional(),
+      // update_heading only: also re-apply `headingFormat` to the row it
+      // rewrites. Off ⇒ change the text and leave the styling exactly as it is.
+      restyleHeading: z.boolean().optional(),
+      // color_heading only: the single colour every matching heading is painted.
+      headingColor: headingColorSchema.optional(),
       // update_row / color_rows / a non-bottom append: which KIND of row the
       // filter may select. Absent ⇒ "data", so a filter never touches a section
       // title by accident. find_rows and find_heading do not read this — their
@@ -547,6 +556,35 @@ const googleSheetsActionSchema = z.preprocess(
       // above). find_heading's filter is optional by design — with none it
       // returns every heading on the tab.
       if (data.action === "find_rows" || data.action === "find_heading") return;
+
+      // update_heading rewrites the heading it finds. Its filter is optional
+      // (no filter ⇒ every heading), but it must be given SOMETHING to do —
+      // with neither new text nor a restyle it would read the tab and write
+      // nothing, which is a misconfiguration rather than a no-op worth running.
+      if (data.action === "update_heading") {
+        if (!data.headingText?.trim() && data.restyleHeading !== true) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message:
+              "Give the heading new text, or turn on “Also restyle it” — otherwise this step would change nothing",
+            path: ["headingText"],
+          });
+        }
+        return;
+      }
+
+      // color_heading paints the headings its filter selects. The colour is the
+      // one thing it cannot default.
+      if (data.action === "color_heading") {
+        if (!data.headingColor?.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Pick a color",
+            path: ["headingColor"],
+          });
+        }
+        return;
+      }
 
       // color_rows uses neither columnMappings nor the shared `conditions` —
       // each rule carries its own filter — so it validates here and returns

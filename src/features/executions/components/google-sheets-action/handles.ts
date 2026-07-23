@@ -5,11 +5,12 @@
  * executor (which emits one set via `routed(...)`) read — the two sides can
  * never drift.
  *
- * Of the six actions, FOUR branch: `find_rows` and `find_heading` (which share
- * one handle pair, so switching between them keeps wired edges working),
- * `update_row`, and `color_rows`. The two row-ADDING actions — `append_row` (in
- * every position) and `append_heading` — always write, so they keep the single
- * default output and appear nowhere here.
+ * Of the eight actions, SIX branch — three pairs, each a row-level action and
+ * its heading twin sharing one handle set so switching between them keeps every
+ * wired edge working: `find_rows`/`find_heading`, `update_row`/`update_heading`,
+ * and `color_rows`/`color_heading`. The two row-ADDING actions — `append_row`
+ * (in every position) and `append_heading` — always write, so they keep the
+ * single default output and appear nowhere here.
  */
 
 /** `find_rows`: routed by whether any row matched the filter. */
@@ -69,7 +70,13 @@ export function sheetsActionOutputHandles(
   if (action === "find_rows" || action === "find_heading") {
     return [...FIND_ROWS_OUTPUT_HANDLES];
   }
-  if (action === "update_row") return [...UPDATE_ROW_OUTPUT_HANDLES];
-  if (action === "color_rows") return [...COLOR_ROWS_OUTPUT_HANDLES];
+  // Each heading action shares the handle ids of its row-level twin, for the
+  // same reason: switching between them keeps every wired edge working.
+  if (action === "update_row" || action === "update_heading") {
+    return [...UPDATE_ROW_OUTPUT_HANDLES];
+  }
+  if (action === "color_rows" || action === "color_heading") {
+    return [...COLOR_ROWS_OUTPUT_HANDLES];
+  }
   return undefined;
 }

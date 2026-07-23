@@ -87,6 +87,19 @@ const isSheetsHeading = (data: Record<string, unknown> | null | undefined) =>
 const isSheetsFindHeading = (
   data: Record<string, unknown> | null | undefined,
 ) => sheetsAction(data) === "find_heading";
+const isSheetsUpdateHeading = (
+  data: Record<string, unknown> | null | undefined,
+) => sheetsAction(data) === "update_heading";
+const isSheetsColorHeading = (
+  data: Record<string, unknown> | null | undefined,
+) => sheetsAction(data) === "color_heading";
+/** Any action that SELECTS headings — all three report `headingsOnTab`. */
+const isSheetsHeadingSelect = (
+  data: Record<string, unknown> | null | undefined,
+) =>
+  isSheetsFindHeading(data) ||
+  isSheetsUpdateHeading(data) ||
+  isSheetsColorHeading(data);
 // A non-bottom append (formerly the insert_row_adjacent action) — an append_row
 // whose `position` drops the row under a matched group / rows. It emits the
 // group/anchor fields a plain bottom append does not. A legacy insert node was
@@ -205,11 +218,34 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       // append_heading only: the text the merged row was given, AFTER its
       // template was rendered — so a downstream step can repeat the section
       // title it just wrote.
+      // append_heading writes it; update_heading rewrites it. Same key, so a
+      // reference survives a switch between them.
       {
         path: "headingText",
         label: "The heading text that was written",
         example: "Invoices — March 2026",
-        pickIf: isSheetsHeading,
+        pickIf: (data) => isSheetsHeading(data) || isSheetsUpdateHeading(data),
+      },
+      // update_heading only: whether the style was re-applied as well. Branch on
+      // it to tell a rename apart from a rename-and-restyle.
+      {
+        path: "restyled",
+        label: "Whether the heading was restyled (true/false)",
+        example: "true",
+        pickIf: isSheetsUpdateHeading,
+      },
+      // update_heading only: the text BEFORE this run changed it.
+      {
+        path: "previousHeading",
+        label: "The heading text before this step changed it",
+        pickIf: isSheetsUpdateHeading,
+      },
+      // color_heading only.
+      {
+        path: "color",
+        label: "The color the headings were painted",
+        example: "#fef3c7",
+        pickIf: isSheetsColorHeading,
       },
       // How wide the merged band ended up: the tab's header width at write time.
       {
@@ -230,13 +266,15 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       {
         path: "headings",
         label: "Every matching heading",
-        pickIf: isSheetsFindHeading,
+        pickIf: (data) =>
+          isSheetsFindHeading(data) || isSheetsColorHeading(data),
       },
       {
         path: "headingRowIndexes",
         label: "The sheet row number of each matching heading",
         example: "[7, 21]",
-        pickIf: isSheetsFindHeading,
+        pickIf: (data) =>
+          isSheetsFindHeading(data) || isSheetsColorHeading(data),
       },
       // How many headings the tab has AT ALL, regardless of the search. Branch
       // on it to tell "nothing matched" from "this tab has no headings yet".
@@ -244,7 +282,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "headingsOnTab",
         label: "How many headings the tab has in total",
         example: "3",
-        pickIf: isSheetsFindHeading,
+        pickIf: isSheetsHeadingSelect,
       },
       // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
       // the first match in "first"/"error" mode, and — in "each" (fan-out)
@@ -268,7 +306,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
           isSheetsUpdate(data) ||
           isSheetsColor(data) ||
           isSheetsAppendUnder(data) ||
-          isSheetsFindHeading(data),
+          isSheetsHeadingSelect(data),
       },
       // color_rows only: how many rows were actually painted — the same as
       // matchCount in "all" mode, exactly one in "first"/"last".
@@ -276,7 +314,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "coloredCount",
         label: "How many rows were colored",
         example: "1",
-        pickIf: isSheetsColor,
+        pickIf: (data) => isSheetsColor(data) || isSheetsColorHeading(data),
       },
       // update_row only.
       {
@@ -290,7 +328,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "matched",
         label: "Whether a row was found to update (true/false)",
         example: "true",
-        pickIf: isSheetsUpdate,
+        pickIf: (data) => isSheetsUpdate(data) || isSheetsUpdateHeading(data),
       },
       // under-append only. False ⇒ nothing matched, so the row started a new
       // group at the bottom instead of joining one.
@@ -320,8 +358,9 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
           // A heading reports its row in EVERY position — unlike a bottom
           // append_row, whose answer is "the row after the last one".
           isSheetsHeading(data) ||
-          // find_heading reports the first match's row.
-          isSheetsFindHeading(data),
+          // The heading SELECTORS report the row they acted on too.
+          isSheetsFindHeading(data) ||
+          isSheetsUpdateHeading(data),
       },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],

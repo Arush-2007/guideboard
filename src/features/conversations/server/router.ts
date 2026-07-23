@@ -33,8 +33,9 @@ DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
 
-GOOGLE_SHEETS_ACTION supports six actions in its data: "append_row",
-"append_heading", "find_rows", "find_heading", "update_row" and "color_rows". find_rows and update_row select rows with an AND-ed
+GOOGLE_SHEETS_ACTION supports eight actions in its data: "append_row",
+"append_heading", "find_rows", "find_heading", "update_row", "update_heading",
+"color_rows" and "color_heading". find_rows and update_row select rows with an AND-ed
 "conditions" array. find_rows with no conditions reads every row of the tab;
 every column is always returned. update_row overwrites the mapped columns of
 every row matching its conditions; unmapped columns keep their current value.
@@ -70,10 +71,22 @@ omit the value to return every heading on the tab. Matching ignores
 capitalisation. It branches "found" / "notfound" and reports "firstHeading",
 "headings", "headingRowIndexes" and "rowIndex".
 
-IMPORTANT: heading rows are INVISIBLE to find_rows — it skips them, so a filter
-that happens to equal a heading's text will never return it. find_heading is the
-only way to READ one. (update_row and color_rows still see heading rows, so a
-filter matching a heading's text can overwrite or paint it.)
+update_heading renames a section title; color_heading paints matching section
+titles one "headingColor" ("#RRGGBB"). Both take the same optional
+"headingFilter" as find_heading. update_heading needs "headingText" (the new
+text); it rewrites ONE heading and reports "previousHeading" alongside
+"headingText". PREFER text-only renames: only set "restyleHeading": true when
+the user explicitly asks to change how the heading LOOKS, and when you do you
+MUST also supply the full "headingFormat" they asked for — restyling re-applies
+that format, so turning it on without one would overwrite the heading's existing
+styling (and is rejected).
+
+IMPORTANT: heading rows are NEVER selected by a filter written against your
+columns. find_rows, update_row and color_rows all skip them by default, so a
+filter that happens to equal a heading's text will not return, overwrite or
+paint it. To reach a heading use find_heading / update_heading / color_heading,
+or set "rowScope" to "headings" on update_row or color_rows (its values are
+"data" — the default — "headings", and "all").
 
 In an "under_*" append's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
 cell of the row the new row is placed under, so a new row can copy values from

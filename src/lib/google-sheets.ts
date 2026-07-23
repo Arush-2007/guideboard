@@ -213,19 +213,29 @@ export type SheetGrid = {
 };
 
 /**
- * The DATA-row indexes (0-based, as in `SheetTable.rows`) that are heading rows.
+ * The heading rows of a tab: DATA-row index (0-based, as in `SheetTable.rows`)
+ * → how many columns that heading is actually MERGED across.
  *
- * A heading is identified by the one thing that is actually true of it and of
- * nothing else: its cells are MERGED, starting at column A, across a single row.
- * That comes from the sheet's own structure, so a genuine data row that merely
+ * A heading is identified by the one thing that is true of it and of nothing
+ * else: its cells are MERGED, starting at column A, across a single row. That
+ * comes from the sheet's own structure, so a genuine data row that merely
  * happens to have only its first column filled is never mistaken for one — which
  * a "first cell filled, rest empty" heuristic would get wrong, and silently.
+ *
+ * A Map rather than a Set because the WIDTH is load-bearing, not incidental: a
+ * heading merged when the tab had 3 columns stays 3 wide after a 4th is added,
+ * and anything re-merging it must use the width it actually has. Merging a range
+ * that overlaps an existing merge is rejected by Sheets, so re-deriving the width
+ * from today's header row would fail the write. `.has()` and `.size` read the
+ * same as on a Set, so membership callers are unaffected.
  *
  * Grid row 0 is the header, so data row i is grid row i + 1; anything at or above
  * the header is ignored (a merged header is not a heading).
  */
-export function headingDataRows(merges: SheetMergeRange[]): Set<number> {
-  const rows = new Set<number>();
+export function headingDataRows(
+  merges: SheetMergeRange[],
+): Map<number, number> {
+  const rows = new Map<number, number>();
   for (const m of merges) {
     const start = m.startRowIndex ?? 0;
     const end = m.endRowIndex ?? start + 1;
@@ -233,7 +243,7 @@ export function headingDataRows(merges: SheetMergeRange[]): Set<number> {
     if ((m.startColumnIndex ?? 0) !== 0) continue;
     if (end - start !== 1) continue;
     if (start < 1) continue;
-    rows.add(start - 1);
+    rows.set(start - 1, m.endColumnIndex ?? 0);
   }
   return rows;
 }

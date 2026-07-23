@@ -65,6 +65,8 @@ import {
   HEADING_MATCH_OPERATOR_LABELS,
   HEADING_MATCH_OPERATORS,
   type HeadingFormat,
+  type HeadingMatchOperator,
+  headingColorSchema,
   headingFilterSchema,
   headingFormatSchema,
   ROW_SCOPE_LABELS,
@@ -107,7 +109,9 @@ const formSchema = z
       "find_rows",
       "find_heading",
       "update_row",
+      "update_heading",
       "color_rows",
+      "color_heading",
     ]),
     // Appending actions only: where the new row lands.
     position: z.enum(["bottom", "under_group", "under_each"]).optional(),
@@ -126,6 +130,10 @@ const formSchema = z
     // update_row / color_rows / non-bottom append: which kind of row the filter
     // may select. Absent ⇒ "data".
     rowScope: z.enum(ROW_SCOPES).optional(),
+    // update_heading only: also re-apply the style to the row it rewrites.
+    restyleHeading: z.boolean().optional(),
+    // color_heading only: the one colour every matching heading is painted.
+    headingColor: headingColorSchema.optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
     // color_rows only: the ordered rule list (first match wins).
     colorRules: z.array(colorRuleFormSchema).optional(),
@@ -148,6 +156,30 @@ const formSchema = z
     // The two READ actions need only a spreadsheet + tab (already required).
     // find_heading's search is optional — empty lists every heading.
     if (data.action === "find_rows" || data.action === "find_heading") return;
+
+    // Mirrors the config schema: a heading update must actually do something.
+    if (data.action === "update_heading") {
+      if (!data.headingText?.trim() && data.restyleHeading !== true) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Give the heading new text, or turn on “Also restyle it” — otherwise this step would change nothing",
+          path: ["headingText"],
+        });
+      }
+      return;
+    }
+
+    if (data.action === "color_heading") {
+      if (!data.headingColor?.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Pick a color",
+          path: ["headingColor"],
+        });
+      }
+      return;
+    }
 
     // color_rows uses neither columnMappings nor the shared `conditions` —
     // every rule carries its own filter. Mirrors the config schema's rule.
@@ -383,6 +415,65 @@ function ColumnMappingPanel({
         </Button>
       </div>
     </WideOverlayPanel>
+  );
+}
+
+/**
+ * The heading search box, shared by all three actions that select a heading —
+ * find, update and colour. A search BOX rather than the conditions editor: a
+ * heading's text always sits in the tab's first column, so the column is implied
+ * and only "how to compare" and "compare to what" are left to choose.
+ */
+function HeadingFilterInput({
+  value,
+  onChange,
+  currentNodeId,
+  workflowId,
+  label,
+  emptyHint,
+}: {
+  value: { operator?: HeadingMatchOperator; value?: string } | undefined;
+  onChange: (next: { operator?: HeadingMatchOperator; value?: string }) => void;
+  currentNodeId: string;
+  workflowId?: string;
+  label: string;
+  /** What happens when the box is left empty — it differs per action. */
+  emptyHint: string;
+}) {
+  return (
+    <div className="space-y-2">
+      <Label>{label}</Label>
+      <div className="flex items-start gap-2">
+        <Select
+          value={value?.operator ?? "equals"}
+          onValueChange={(operator) =>
+            onChange({ ...value, operator: operator as HeadingMatchOperator })
+          }
+        >
+          <SelectTrigger className="w-44 shrink-0">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {HEADING_MATCH_OPERATORS.map((op) => (
+              <SelectItem key={op} value={op}>
+                {HEADING_MATCH_OPERATOR_LABELS[op]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <VariableInput
+          placeholder="Invoices — March 2026"
+          value={value?.value ?? ""}
+          onChange={(e) => onChange({ ...value, value: e.target.value })}
+          currentNodeId={currentNodeId}
+          workflowId={workflowId}
+          anchorClassName="ml-96"
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Matching ignores capitalisation. {emptyHint}
+      </p>
+    </div>
   );
 }
 
@@ -778,6 +869,8 @@ export const GoogleSheetsActionDialog = ({
       headingFormat: resolveHeadingFormat(defaultValues.headingFormat),
       headingFilter: defaultValues.headingFilter ?? { operator: "equals" },
       rowScope: defaultValues.rowScope ?? "data",
+      restyleHeading: defaultValues.restyleHeading ?? false,
+      headingColor: defaultValues.headingColor ?? HEADING_BACKGROUND_COLORS[1],
       // Backfill a stable UI id on saved conditions (older saves lacked one).
       conditions: (defaultValues.conditions ?? []).map((c) => ({
         ...c,
@@ -908,17 +1001,33 @@ export const GoogleSheetsActionDialog = ({
     // DELETE, never `= undefined` — the canvas merges this over the node's saved
     // data, and a present-but-undefined key would overwrite the saved value
     // rather than leave it alone.
-    if (values.action !== "append_heading") {
+    // `headingText` + `headingFormat` belong to the two actions that WRITE a
+    // heading; `headingFilter` to the three that SELECT one.
+    if (
+      values.action !== "append_heading" &&
+      values.action !== "update_heading"
+    ) {
       delete payload.headingText;
       delete payload.headingFormat;
     }
-    if (values.action !== "find_heading") {
+    if (
+      values.action !== "find_heading" &&
+      values.action !== "update_heading" &&
+      values.action !== "color_heading"
+    ) {
       delete payload.headingFilter;
     }
-    // Scope only means something where a filter selects rows to act on.
+    if (values.action !== "update_heading") delete payload.restyleHeading;
+    if (values.action !== "color_heading") delete payload.headingColor;
+    // `rowScope` only means something where a CONDITIONS filter picks rows and
+    // the action could legitimately touch either kind. The heading actions fix
+    // their own scope, and saving "data" ("skip heading rows") onto one of them
+    // would state the exact opposite of what it does.
     if (
       values.action === "find_rows" ||
       values.action === "find_heading" ||
+      values.action === "update_heading" ||
+      values.action === "color_heading" ||
       (values.action === "append_row" &&
         (values.position ?? "bottom") === "bottom")
     ) {
@@ -947,7 +1056,9 @@ export const GoogleSheetsActionDialog = ({
     } else if (
       values.action === "color_rows" ||
       values.action === "append_heading" ||
-      values.action === "find_heading"
+      values.action === "find_heading" ||
+      values.action === "update_heading" ||
+      values.action === "color_heading"
     ) {
       // Neither writes columns, so neither exposes per-column paths — a heading
       // is one merged cell, and its text is already a declared output field
@@ -1006,7 +1117,13 @@ export const GoogleSheetsActionDialog = ({
                         Find rows — heading
                       </SelectItem>
                       <SelectItem value="update_row">Update row</SelectItem>
+                      <SelectItem value="update_heading">
+                        Update row — heading
+                      </SelectItem>
                       <SelectItem value="color_rows">Color rows</SelectItem>
+                      <SelectItem value="color_heading">
+                        Color rows — heading
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                   {action === "find_rows" ? (
@@ -1040,6 +1157,18 @@ export const GoogleSheetsActionDialog = ({
                       &nbsp;— ordinary data rows are never returned. Two
                       outputs, <strong>Found</strong> and{" "}
                       <strong>Not found</strong>.
+                    </FormDescription>
+                  ) : action === "update_heading" ? (
+                    <FormDescription>
+                      Renames a section title, and optionally restyles it. Only
+                      heading rows are touched — never your data. Two outputs,{" "}
+                      <strong>Updated</strong> and <strong>No match</strong>.
+                    </FormDescription>
+                  ) : action === "color_heading" ? (
+                    <FormDescription>
+                      Paints matching section titles one color. Only heading
+                      rows are touched — never your data. Two outputs,{" "}
+                      <strong>Colored</strong> and <strong>No match</strong>.
                     </FormDescription>
                   ) : null}
                   <FormMessage />
@@ -1432,51 +1561,121 @@ export const GoogleSheetsActionDialog = ({
                 )}
               </div>
             ) : action === "find_heading" ? (
-              // A search BOX, not the conditions editor: the column is implied
-              // (a heading's text always sits in the first column), so all that
-              // is left to choose is how to compare and what to compare against.
-              <div className="space-y-2">
-                <Label>Find the heading that…</Label>
-                <div className="flex items-start gap-2">
-                  <Select
-                    value={form.watch("headingFilter")?.operator ?? "equals"}
-                    onValueChange={(operator) =>
-                      form.setValue("headingFilter", {
-                        ...form.getValues("headingFilter"),
-                        operator:
-                          operator as (typeof HEADING_MATCH_OPERATORS)[number],
+              <HeadingFilterInput
+                value={form.watch("headingFilter")}
+                onChange={(next) => form.setValue("headingFilter", next)}
+                currentNodeId={currentNodeId}
+                workflowId={workflowId}
+                label="Find the heading that…"
+                emptyHint="Leave the box empty to return every heading on the tab."
+              />
+            ) : action === "update_heading" ? (
+              <div className="space-y-6">
+                <HeadingFilterInput
+                  value={form.watch("headingFilter")}
+                  onChange={(next) => form.setValue("headingFilter", next)}
+                  currentNodeId={currentNodeId}
+                  workflowId={workflowId}
+                  label="Update the heading that…"
+                  emptyHint="Leave the box empty to update the first heading on the tab."
+                />
+
+                <FormField
+                  control={form.control}
+                  name="headingText"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>New heading text</FormLabel>
+                      <FormControl>
+                        <VariableInput
+                          placeholder="Invoices — April 2026"
+                          value={field.value ?? ""}
+                          onChange={field.onChange}
+                          currentNodeId={currentNodeId}
+                          workflowId={workflowId}
+                          anchorClassName="ml-96"
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        Leave this empty to keep the heading&apos;s text and
+                        only restyle it.
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="restyleHeading"
+                  render={({ field }) => (
+                    <FormItem className="flex items-center justify-between gap-3 rounded-md border p-3">
+                      <div className="space-y-0.5">
+                        <FormLabel>Also restyle it</FormLabel>
+                        <FormDescription>
+                          Re-apply the style below. Off leaves the heading
+                          looking exactly as it does now.
+                        </FormDescription>
+                      </div>
+                      <FormControl>
+                        <Switch
+                          checked={field.value === true}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                    </FormItem>
+                  )}
+                />
+
+                {form.watch("restyleHeading") === true ? (
+                  <HeadingStyleEditor
+                    value={headingFormat}
+                    onChange={(next) =>
+                      form.setValue("headingFormat", next, {
+                        shouldValidate: true,
                       })
                     }
-                  >
-                    <SelectTrigger className="w-44 shrink-0">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {HEADING_MATCH_OPERATORS.map((op) => (
-                        <SelectItem key={op} value={op}>
-                          {HEADING_MATCH_OPERATOR_LABELS[op]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <VariableInput
-                    placeholder="Invoices — March 2026"
-                    value={form.watch("headingFilter")?.value ?? ""}
-                    onChange={(e) =>
-                      form.setValue("headingFilter", {
-                        ...form.getValues("headingFilter"),
-                        value: e.target.value,
-                      })
-                    }
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    anchorClassName="ml-96"
                   />
+                ) : null}
+              </div>
+            ) : action === "color_heading" ? (
+              <div className="space-y-6">
+                <HeadingFilterInput
+                  value={form.watch("headingFilter")}
+                  onChange={(next) => form.setValue("headingFilter", next)}
+                  currentNodeId={currentNodeId}
+                  workflowId={workflowId}
+                  label="Color the heading that…"
+                  emptyHint="Leave the box empty to color every heading on the tab."
+                />
+
+                <div className="space-y-2">
+                  <Label>Color</Label>
+                  <div className="flex items-center gap-3">
+                    <ColorPicker
+                      value={
+                        form.watch("headingColor") ??
+                        HEADING_BACKGROUND_COLORS[1]
+                      }
+                      onChange={(next) => form.setValue("headingColor", next)}
+                      label="Heading background color"
+                      presets={HEADING_BACKGROUND_COLORS}
+                    />
+                    <span className="text-sm text-muted-foreground">
+                      Painted across the heading&apos;s merged band.
+                    </span>
+                  </div>
+                  {form.formState.errors.headingColor?.message ? (
+                    <p className="text-sm text-destructive">
+                      {String(form.formState.errors.headingColor.message)}
+                    </p>
+                  ) : null}
+                  <p className="text-xs text-muted-foreground">
+                    Every matching heading gets this one color. For different
+                    colors per heading, use <strong>Color rows</strong> with its
+                    row scope set to headings.
+                  </p>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Matching ignores capitalisation. Leave the box empty to return
-                  every heading on the tab.
-                </p>
               </div>
             ) : action === "find_rows" ? (
               <div className="space-y-2">

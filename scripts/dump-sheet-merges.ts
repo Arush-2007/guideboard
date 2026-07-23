@@ -172,15 +172,17 @@ async function inspect(
         console.log(`    raw: ${JSON.stringify(merges)}`);
         // What the app would conclude from exactly this payload.
         const detected = headingDataRows(merges as never);
+        const dataRows = [...detected.keys()];
         console.log(
           `    → headingDataRows: ${
             detected.size === 0
               ? "NONE — every merge failed a rule below"
-              : `data rows ${[...detected].join(", ")} (sheet rows ${[
-                  ...detected,
-                ]
-                  .map((n) => n + 2)
-                  .join(", ")})`
+              : dataRows
+                  .map(
+                    (n) =>
+                      `data row ${n} (sheet row ${n + 2}, merged ${detected.get(n)} cols)`,
+                  )
+                  .join("; ")
           }`,
         );
         // Why each merge passed or failed, so a rejection is never a mystery.
