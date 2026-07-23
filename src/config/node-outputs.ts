@@ -284,6 +284,14 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         example: "3",
         pickIf: isSheetsHeadingSelect,
       },
+      // find_heading: how many headings this run actually acted on (all of them,
+      // or one in first/last mode) — matchCount is how many MATCHED.
+      {
+        path: "actedCount",
+        label: "How many headings this step used",
+        example: "1",
+        pickIf: isSheetsFindHeading,
+      },
       // Merged rows that do NOT qualify as headings (wrong start column, or
       // spanning several rows). Diagnostic: it is what separates "this tab has
       // nothing merged" from "what you merged doesn't count, and here's why".

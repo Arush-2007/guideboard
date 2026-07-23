@@ -331,6 +331,21 @@ const noHeadingsHint = (nearMisses: number | null) =>
  * view, because both answer the same two questions: which headings, and what row
  * each is on. Renders nothing when there are none, so callers need no guard.
  */
+/**
+ * The heading-run fields common to find_heading and color_heading, pulled off a
+ * recorded output root with the same defensive coercion each view was repeating:
+ * the two lists default to empty, the two tab-level counts to null (absent ⇒
+ * "not recorded", which the summaries render differently from zero).
+ */
+const readHeadingRun = (root: Record<string, unknown>) => ({
+  headings: Array.isArray(root.headings) ? (root.headings as string[]) : [],
+  headingRowIndexes: Array.isArray(root.headingRowIndexes)
+    ? (root.headingRowIndexes as number[])
+    : [],
+  onTab: typeof root.headingsOnTab === "number" ? root.headingsOnTab : null,
+  nearMisses: typeof root.nearMisses === "number" ? root.nearMisses : null,
+});
+
 const HeadingListView = ({
   headings,
   rowIndexes,
@@ -1021,35 +1036,38 @@ const NodeRow = ({
       // matched and where they are — so it renders as a short list rather than
       // find_rows' spreadsheet view.
       if (root?.action === "find_heading") {
-        const headings = Array.isArray(root.headings)
-          ? (root.headings as string[])
-          : [];
-        const headingRowIndexes = Array.isArray(root.headingRowIndexes)
-          ? (root.headingRowIndexes as number[])
-          : [];
+        const { headings, headingRowIndexes, onTab, nearMisses } =
+          readHeadingRun(root);
+        // matchCount is how many headings MATCHED; the mode may have narrowed
+        // what was acted on (first/last), which `headings` reflects.
         const count =
           typeof root.matchCount === "number"
             ? root.matchCount
             : headings.length;
-        // How many heading rows the tab has at all — what separates "your text
-        // matched nothing" from "this tab has no headings to search".
-        const onTab =
-          typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
-        const nearMisses =
-          typeof root.nearMisses === "number" ? root.nearMisses : null;
+        const acted =
+          typeof root.actedCount === "number" ? root.actedCount : count;
 
         return (
           <div className="space-y-2">
             <SummaryMessage>
-              {count > 0
-                ? count === 1
-                  ? `Found 1 heading in ${tab}.`
-                  : `Found ${count} headings in ${tab}.`
-                : onTab === 0
-                  ? `${tab} has no heading rows at all, so there was nothing to search. ${noHeadingsHint(nearMisses)}`
-                  : onTab !== null
-                    ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched, and matching ignores capitalisation.`
-                    : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`}
+              {isChildRun && childTotal !== null
+                ? `Run ${childIndex} of ${childTotal} — this run is handling heading ${childIndex} of the ${childTotal} that matched.`
+                : // A fan-out only records a parent when ≥1 heading matched — a
+                  // 0-match run routes Not-found before fanning out — so
+                  // fannedOut is always ≥1 here.
+                  fannedOut !== null
+                  ? `${fannedOut} heading${fannedOut === 1 ? "" : "s"} in ${tab} matched. Started one run per heading, so the steps after this one ran ${fannedOut} time${fannedOut === 1 ? "" : "s"}.`
+                  : count === 0
+                    ? onTab === 0
+                      ? `${tab} has no heading rows at all, so there was nothing to search. ${noHeadingsHint(nearMisses)}`
+                      : onTab !== null
+                        ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched, and matching ignores capitalisation.`
+                        : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`
+                    : acted < count
+                      ? `${count} headings in ${tab} matched; this step used only ${acted === 1 ? "one" : acted}, and the rest were ignored.`
+                      : count === 1
+                        ? `Found 1 heading in ${tab}.`
+                        : `Found ${count} headings in ${tab}.`}
             </SummaryMessage>
             <HeadingListView
               headings={headings}
@@ -1068,10 +1086,7 @@ const NodeRow = ({
           typeof root.headingText === "string" ? root.headingText : "";
         const rowNumber =
           typeof root.rowIndex === "number" ? root.rowIndex : null;
-        const onTab =
-          typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
-        const nearMisses =
-          typeof root.nearMisses === "number" ? root.nearMisses : null;
+        const { onTab, nearMisses } = readHeadingRun(root);
         const restyled = root.restyled === true;
 
         return (
@@ -1112,32 +1127,36 @@ const NodeRow = ({
 
       // Painting section titles one colour.
       if (root?.action === "color_heading") {
-        const headings = Array.isArray(root.headings)
-          ? (root.headings as string[])
-          : [];
-        const headingRowIndexes = Array.isArray(root.headingRowIndexes)
-          ? (root.headingRowIndexes as number[])
-          : [];
+        const { headings, headingRowIndexes, onTab, nearMisses } =
+          readHeadingRun(root);
+        const matched =
+          typeof root.matchCount === "number"
+            ? root.matchCount
+            : headings.length;
         const colored =
           typeof root.coloredCount === "number"
             ? root.coloredCount
             : headings.length;
-        const onTab =
-          typeof root.headingsOnTab === "number" ? root.headingsOnTab : null;
-        const nearMisses =
-          typeof root.nearMisses === "number" ? root.nearMisses : null;
         const color = typeof root.color === "string" ? root.color : null;
 
         return (
           <div className="space-y-2">
             <SummaryMessage>
-              {colored === 0
-                ? onTab === 0
-                  ? `${tab} has no heading rows at all, so nothing was colored. ${noHeadingsHint(nearMisses)}`
-                  : `No heading in ${tab} matched, so nothing was colored.`
-                : colored === 1
-                  ? `Colored 1 heading in ${tab}.`
-                  : `Colored ${colored} headings in ${tab}.`}
+              {isChildRun && childTotal !== null
+                ? `Run ${childIndex} of ${childTotal} — this run is handling the heading below, one of the ${childTotal} that were colored.`
+                : // fannedOut is always ≥1 here: a 0-match run routes No-match
+                  // before fanning out.
+                  fannedOut !== null
+                  ? `${fannedOut} heading${fannedOut === 1 ? "" : "s"} in ${tab} matched and ${fannedOut === 1 ? "was" : "were"} colored. Started one run per heading, so the steps after this one ran ${fannedOut} time${fannedOut === 1 ? "" : "s"}.`
+                  : colored === 0
+                    ? onTab === 0
+                      ? `${tab} has no heading rows at all, so nothing was colored. ${noHeadingsHint(nearMisses)}`
+                      : `No heading in ${tab} matched, so nothing was colored.`
+                    : matched > colored
+                      ? `${matched} headings in ${tab} matched, but only ${colored === 1 ? "one was" : `${colored} were`} colored.`
+                      : colored === 1
+                        ? `Colored 1 heading in ${tab}.`
+                        : `Colored ${colored} headings in ${tab}.`}
             </SummaryMessage>
             <HeadingListView
               headings={headings}

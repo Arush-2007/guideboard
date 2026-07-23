@@ -71,6 +71,14 @@ omit the value to return every heading on the tab. Matching ignores
 capitalisation. It branches "found" / "notfound" and reports "firstHeading",
 "headings", "headingRowIndexes" and "rowIndex".
 
+find_heading and color_heading accept "onMultipleHeadings" for when several
+headings match: "first" (topmost), "last" (bottom-most), "all" (every one; the
+default for both — find lists them all, color paints them all, and the steps
+after run ONCE), or "each" (every one, and the steps after run once per heading,
+capped by "maxFanOutItems"). Use "each" when the user wants to act on every
+section, e.g. "post a summary for each heading". update_heading has no such
+option — it always renames the single first match.
+
 update_heading renames a section title; color_heading paints matching section
 titles one "headingColor" ("#RRGGBB"). Both take the same optional
 "headingFilter" as find_heading. update_heading needs "headingText" (the new

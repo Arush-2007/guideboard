@@ -62,9 +62,12 @@ import { anchorRowPath, sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
   DEFAULT_HEADING_FORMAT,
   HEADING_FONT_SIZE,
+  HEADING_MATCH_MODE_LABELS,
+  HEADING_MATCH_MODES,
   HEADING_MATCH_OPERATOR_LABELS,
   HEADING_MATCH_OPERATORS,
   type HeadingFormat,
+  type HeadingMatchMode,
   type HeadingMatchOperator,
   headingColorSchema,
   headingFilterSchema,
@@ -134,6 +137,8 @@ const formSchema = z
     restyleHeading: z.boolean().optional(),
     // color_heading only: the one colour every matching heading is painted.
     headingColor: headingColorSchema.optional(),
+    // find_heading / color_heading: which of several matching headings to act on.
+    onMultipleHeadings: z.enum(HEADING_MATCH_MODES).optional(),
     conditions: z.array(rowConditionFormSchema).optional(),
     // color_rows only: the ordered rule list (first match wins).
     colorRules: z.array(colorRuleFormSchema).optional(),
@@ -473,6 +478,66 @@ function HeadingFilterInput({
       <p className="text-xs text-muted-foreground">
         Matching ignores capitalisation. {emptyHint}
       </p>
+    </div>
+  );
+}
+
+/**
+ * "When several headings match, which ones?" — shared by find_heading and
+ * color_heading, which ask exactly the same question of exactly the same set.
+ *
+ * `each` is the only mode that fans out, so the fan-out cap appears only for it
+ * — a "max" input beside a mode that runs once would be meaningless.
+ */
+function HeadingMatchModeSelect({
+  value,
+  onChange,
+  maxItems,
+  onMaxItemsChange,
+  verb,
+}: {
+  value: HeadingMatchMode | undefined;
+  onChange: (next: HeadingMatchMode) => void;
+  maxItems: number | undefined;
+  onMaxItemsChange: (next: number | undefined) => void;
+  /** What the action does to a heading, e.g. "returned", "colored". */
+  verb: string;
+}) {
+  const mode = value ?? "all";
+  return (
+    <div className="space-y-2">
+      <Label>When several headings match</Label>
+      <Select
+        value={mode}
+        onValueChange={(v) => onChange(v as HeadingMatchMode)}
+      >
+        <SelectTrigger className="w-full">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {HEADING_MATCH_MODES.map((m) => (
+            <SelectItem key={m} value={m}>
+              {HEADING_MATCH_MODE_LABELS[m]}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <p className="text-xs text-muted-foreground">
+        {mode === "first"
+          ? `Only the topmost matching heading is ${verb}; the rest are left alone.`
+          : mode === "last"
+            ? `Only the bottom-most matching heading is ${verb}; the rest are left alone.`
+            : mode === "each"
+              ? `Every matching heading is ${verb}, and the steps after this one run once per heading.`
+              : `Every matching heading is ${verb}. The steps after this one still run once.`}
+      </p>
+      {mode === "each" ? (
+        <FanOutCapInput
+          itemNoun="heading"
+          maxItems={maxItems}
+          onMaxItemsChange={onMaxItemsChange}
+        />
+      ) : null}
     </div>
   );
 }
@@ -871,6 +936,9 @@ export const GoogleSheetsActionDialog = ({
       rowScope: defaultValues.rowScope ?? "data",
       restyleHeading: defaultValues.restyleHeading ?? false,
       headingColor: defaultValues.headingColor ?? HEADING_BACKGROUND_COLORS[1],
+      // find keeps "all" (list every match, run once), color keeps "all" (paint
+      // every match) — each action's original behaviour.
+      onMultipleHeadings: defaultValues.onMultipleHeadings ?? "all",
       // Backfill a stable UI id on saved conditions (older saves lacked one).
       conditions: (defaultValues.conditions ?? []).map((c) => ({
         ...c,
@@ -1019,6 +1087,10 @@ export const GoogleSheetsActionDialog = ({
     }
     if (values.action !== "update_heading") delete payload.restyleHeading;
     if (values.action !== "color_heading") delete payload.headingColor;
+    // Only the two heading SELECTORS read the mode.
+    if (values.action !== "find_heading" && values.action !== "color_heading") {
+      delete payload.onMultipleHeadings;
+    }
     // `rowScope` only means something where a CONDITIONS filter picks rows and
     // the action could legitimately touch either kind. The heading actions fix
     // their own scope, and saving "data" ("skip heading rows") onto one of them
@@ -1569,7 +1641,17 @@ export const GoogleSheetsActionDialog = ({
                 label="Find the heading that…"
                 emptyHint="Leave the box empty to return every heading on the tab."
               />
-            ) : action === "update_heading" ? (
+            ) : null}
+            {action === "find_heading" ? (
+              <HeadingMatchModeSelect
+                value={form.watch("onMultipleHeadings")}
+                onChange={(m) => form.setValue("onMultipleHeadings", m)}
+                maxItems={form.watch("maxFanOutItems")}
+                onMaxItemsChange={(n) => form.setValue("maxFanOutItems", n)}
+                verb="returned"
+              />
+            ) : null}
+            {action === "update_heading" ? (
               <div className="space-y-6">
                 <HeadingFilterInput
                   value={form.watch("headingFilter")}
@@ -1664,6 +1746,17 @@ export const GoogleSheetsActionDialog = ({
                     <span className="text-sm text-muted-foreground">
                       Painted across the heading&apos;s merged band.
                     </span>
+                  </div>
+                  <div className="pt-2">
+                    <HeadingMatchModeSelect
+                      value={form.watch("onMultipleHeadings")}
+                      onChange={(m) => form.setValue("onMultipleHeadings", m)}
+                      maxItems={form.watch("maxFanOutItems")}
+                      onMaxItemsChange={(n) =>
+                        form.setValue("maxFanOutItems", n)
+                      }
+                      verb="colored"
+                    />
                   </div>
                   {form.formState.errors.headingColor?.message ? (
                     <p className="text-sm text-destructive">

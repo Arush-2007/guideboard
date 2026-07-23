@@ -108,6 +108,48 @@ export function rowPassesScope(scope: RowScope, isHeading: boolean): boolean {
 }
 
 /**
+ * What a heading action does when its search matches SEVERAL headings.
+ *
+ * One vocabulary shared by every heading action, so "which of the matches?"
+ * reads the same wherever it is asked. It deliberately spans both ideas the
+ * row-level actions split across two separate fields — WHICH rows to act on
+ * (`color_rows`' first/last/all) and WHETHER to run the following steps per row
+ * (`find_rows`' fan-out) — because for a heading they are one question.
+ *
+ * - `first` / `last` — act on just the topmost / bottom-most match.
+ * - `all`   — act on every match; the steps after this one still run ONCE.
+ * - `each`  — act on every match AND run the steps after this one once per
+ *             heading (fan-out, capped by `maxFanOutItems`).
+ *
+ * `all` is what makes `each` safe to add: without it there would be no way to
+ * say "every heading, but don't fan out", which is what colouring has always
+ * done — so turning fan-out on would have silently changed existing workflows.
+ */
+export const HEADING_MATCH_MODES = ["first", "last", "all", "each"] as const;
+export type HeadingMatchMode = (typeof HEADING_MATCH_MODES)[number];
+
+export const HEADING_MATCH_MODE_LABELS: Record<HeadingMatchMode, string> = {
+  first: "Only the topmost matching heading",
+  last: "Only the bottom-most matching heading",
+  all: "Every matching heading",
+  each: "Every matching heading, one run each",
+};
+
+/**
+ * Narrows matches to the ones a mode selects. `all` and `each` both act on
+ * every match — they differ only in whether the run fans out afterwards, which
+ * is decided outside this function.
+ */
+export function selectHeadingMatches<T>(
+  matches: T[],
+  mode: HeadingMatchMode,
+): T[] {
+  if (mode === "first") return matches.slice(0, 1);
+  if (mode === "last") return matches.slice(-1);
+  return matches;
+}
+
+/**
  * The operators the "Find rows — heading" action offers.
  *
  * A deliberate subset of the row-match set: a heading always holds text (its

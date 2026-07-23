@@ -12,6 +12,7 @@ import {
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import {
+  HEADING_MATCH_MODES,
   headingColorSchema,
   headingFilterSchema,
   headingFormatSchema,
@@ -516,6 +517,12 @@ const googleSheetsActionSchema = z.preprocess(
       restyleHeading: z.boolean().optional(),
       // color_heading only: the single colour every matching heading is painted.
       headingColor: headingColorSchema.optional(),
+      // find_heading / color_heading: what to do when SEVERAL headings match —
+      // the topmost, the bottom-most, all of them, or all of them with one run
+      // per heading. Absent ⇒ the action's own default (find keeps "first",
+      // color keeps "all", both of which preserve their original behaviour).
+      // "each" is capped by the shared `maxFanOutItems`.
+      onMultipleHeadings: z.enum(HEADING_MATCH_MODES).optional(),
       // update_row / color_rows / a non-bottom append: which KIND of row the
       // filter may select. Absent ⇒ "data", so a filter never touches a section
       // title by accident. find_rows and find_heading do not read this — their

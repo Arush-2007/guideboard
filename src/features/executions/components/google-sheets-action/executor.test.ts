@@ -189,6 +189,7 @@ type SheetsResult = Record<
     firstHeading?: string;
     headingsOnTab?: number;
     nearMisses?: number;
+    actedCount?: number;
     previousHeading?: string;
     restyled?: boolean;
     color?: string;
@@ -2989,6 +2990,179 @@ describe("googleSheetsActionExecutor — headings vs the reading actions", () =>
     expect(outputs(outcome)).toEqual(["no_match"]);
     expect(kyPostMock).not.toHaveBeenCalled();
     expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.coloredCount).toBe(0);
+  });
+
+  const threeHeadings = [
+    ["Job No.", "Name", "Status"],
+    ["March"], // data row 0 → sheet row 2
+    ["0001", "Widget", "Open"],
+    ["April"], // data row 2 → sheet row 4
+    ["May"], //  data row 3 → sheet row 5
+  ];
+  const threeMerges = [0, 2, 3].map((r) => ({
+    startRowIndex: r + 1,
+    endRowIndex: r + 2,
+    startColumnIndex: 0,
+    endColumnIndex: 3,
+  }));
+
+  it("find_heading 'first' returns the topmost; 'last' the bottom-most", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const first = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleHeadings: "first",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(first.headings).toEqual(["March"]);
+    expect(first.matchCount).toBe(3);
+    expect(first.actedCount).toBe(1);
+
+    mockWithMerge(threeHeadings, threeMerges);
+    const last = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleHeadings: "last",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(last.headings).toEqual(["May"]);
+    expect(last.headingRowIndexes).toEqual([5]);
+  });
+
+  it("find_heading 'each' fans out one run per heading", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const outcome = await run({
+      action: "find_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      onMultipleHeadings: "each",
+    });
+
+    expect(isFanOut(outcome)).toBe(true);
+    const fan = outcome as unknown as FanOutOutcome;
+    // Each item carries its heading plus the tab-level facts a child must be
+    // able to report without an API call.
+    expect(fan.items).toEqual([
+      { heading: "March", rowIndex: 2, headingsOnTab: 3, nearMisses: 0 },
+      { heading: "April", rowIndex: 4, headingsOnTab: 3, nearMisses: 0 },
+      { heading: "May", rowIndex: 5, headingsOnTab: 3, nearMisses: 0 },
+    ]);
+    const summary = fan.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(3);
+    // The fan-out fuel must not survive into the recorded output.
+    expect(summary.items).toBeUndefined();
+  });
+
+  it("a find_heading 'each' CHILD reshapes its seed and reads nothing", async () => {
+    const result = await run(
+      {
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleHeadings: "each",
+      },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          __fanOut: true,
+          index: 2,
+          total: 3,
+          item: {
+            heading: "April",
+            rowIndex: 4,
+            headingsOnTab: 3,
+            nearMisses: 0,
+          },
+        },
+      },
+    );
+
+    expect(kyGetMock).not.toHaveBeenCalled();
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.firstHeading).toBe("April");
+    expect(out.headings).toEqual(["April"]);
+    expect(out.rowIndex).toBe(4);
+    expect(out.matchCount).toBe(1);
+    // Tab-level facts resolve in the child, so a downstream reference to them
+    // is not silently empty in "each" mode.
+    expect(out.actedCount).toBe(1);
+    expect(out.headingsOnTab).toBe(3);
+  });
+
+  it("color_heading 'first' paints only the topmost of several matches", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const out = ctx(
+      await run({
+        action: "color_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingColor: "#fef3c7",
+        onMultipleHeadings: "first",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    const requests = (postBody(0).requests ?? []) as Array<{
+      repeatCell: { range: { startRowIndex: number } };
+    }>;
+    // Only March's row (data row 0 → grid row 1) is painted.
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(1);
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(1);
+  });
+
+  it("color_heading 'each' paints all AND fans out one run per heading", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const outcome = await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingColor: "#fef3c7",
+      onMultipleHeadings: "each",
+    });
+
+    // All three painted in the single batchUpdate…
+    const requests = (postBody(0).requests ?? []) as unknown[];
+    expect(requests).toHaveLength(3);
+    // …and a fan-out afterwards.
+    expect(isFanOut(outcome)).toBe(true);
+    const fan = outcome as unknown as FanOutOutcome;
+    expect(fan.items).toHaveLength(3);
+    expect(
+      (fan.context.GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>).fannedOut,
+    ).toBe(3);
+  });
+
+  it("a color_heading 'each' CHILD reshapes its seed and paints nothing", async () => {
+    const result = await run(
+      {
+        action: "color_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingColor: "#fef3c7",
+        onMultipleHeadings: "each",
+      },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          __fanOut: true,
+          index: 1,
+          total: 3,
+          item: { heading: "March", rowIndex: 2 },
+        },
+      },
+    );
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.coloredCount).toBe(1);
+    expect(out.headings).toEqual(["March"]);
+    expect(out.color).toBe("#fef3c7");
   });
 
   it("color_heading refuses a malformed color before writing", async () => {

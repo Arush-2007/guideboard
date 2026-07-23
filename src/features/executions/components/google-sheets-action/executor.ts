@@ -54,8 +54,10 @@ import {
   DEFAULT_ROW_SCOPE,
   type HeadingFilter,
   type HeadingFormat,
+  type HeadingMatchMode,
   type RowScope,
   rowPassesScope,
+  selectHeadingMatches,
 } from "@/lib/sheet-heading";
 import {
   buildRowByHeader,
@@ -122,6 +124,9 @@ type GoogleSheetsActionData = {
   restyleHeading?: boolean;
   // color_heading only: the one colour every matching heading is painted.
   headingColor?: string;
+  // find_heading / color_heading: which of several matching headings to act on,
+  // and whether the following steps run once or once per heading.
+  onMultipleHeadings?: HeadingMatchMode;
   // AND-ed row filter, shared by find_rows (which returns the matches),
   // update_row (which writes them) and a non-bottom append (for which they are
   // the GROUP the new row joins). Both write cases require at least one.
@@ -381,6 +386,44 @@ export const googleSheetsActionExecutor: NodeExecutor<
       };
     }
 
+    // A heading fan-out child: the parent already found (and, for colouring,
+    // already painted) every heading, so this run must touch nothing. It
+    // reshapes its one item into the SAME single-match output shape a "first"
+    // run produces, so a downstream reference resolves identically in every
+    // mode.
+    if (action === "find_heading" || action === "color_heading") {
+      const heading = typeof item.heading === "string" ? item.heading : "";
+      const rowIndex = typeof item.rowIndex === "number" ? item.rowIndex : null;
+      const shared = {
+        action,
+        spreadsheetId,
+        sheetName,
+        matchCount: 1,
+        headings: [heading],
+        headingRowIndexes: rowIndex === null ? [] : [rowIndex],
+        rowIndex,
+        // Tab-level facts carried on the seed, so every pickable field resolves
+        // in a child exactly as it does in a non-fan-out run.
+        headingsOnTab:
+          typeof item.headingsOnTab === "number" ? item.headingsOnTab : 0,
+        nearMisses: typeof item.nearMisses === "number" ? item.nearMisses : 0,
+        ...lineage,
+      };
+      return routeHappy(
+        {
+          ...context,
+          [outputKey]:
+            action === "color_heading"
+              ? { ...shared, coloredCount: 1, color: config.headingColor }
+              : // A child acted on exactly its one heading.
+                { ...shared, actedCount: 1, firstHeading: heading },
+        },
+        action === "color_heading"
+          ? COLOR_ROWS_OUTPUTS.COLORED
+          : FIND_ROWS_OUTPUTS.FOUND,
+      );
+    }
+
     const columnValues: Record<string, string> = {};
     for (const [key, value] of Object.entries(item)) {
       columnValues[key] = JSON.stringify([value]);
@@ -531,6 +574,34 @@ export const googleSheetsActionExecutor: NodeExecutor<
       mergedWidthOf: (dataRow) => headingRows.get(dataRow),
     };
   };
+
+  /**
+   * How this run treats several matching headings. Each action keeps the
+   * default that preserves what it did before the mode existed: a search acted
+   * on the topmost match, colouring painted every one.
+   */
+  const headingMode = (fallback: HeadingMatchMode): HeadingMatchMode =>
+    config.onMultipleHeadings ?? fallback;
+
+  /**
+   * One fan-out item per heading — the shape a child run is reshaped back from.
+   * Carries the heading itself plus the two TAB-LEVEL facts every child must be
+   * able to report (`headingsOnTab`, `nearMisses`): a child does no API call, so
+   * anything it can't carry it can't answer, and both are pickable variables. It
+   * is a little redundant to repeat them per item, but they are two small numbers
+   * and this is the only channel a child reads from.
+   */
+  const headingItems = (
+    matches: RowMatch[],
+    table: Awaited<ReturnType<typeof readSheetTable>>,
+    tab: { headingsOnTab: number; nearMisses: number },
+  ) =>
+    matches.map((m) => ({
+      heading: headingTextOf(m, table),
+      rowIndex: m.index + 2,
+      headingsOnTab: tab.headingsOnTab,
+      nearMisses: tab.nearMisses,
+    }));
 
   /** The heading text of a matched row: its first-column cell, trimmed. */
   const headingTextOf = (
@@ -1035,6 +1106,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
           `${ERROR_PREFIX}: coloring headings needs a color`,
         );
       }
+      // Defaults to "all": painting every match is what this action did before
+      // the mode existed, and "each" adds fan-out on top rather than replacing
+      // it — so an existing node keeps behaving exactly as it was verified.
+      const mode = headingMode("all");
+      // "each" fans out afterwards and a paint cannot be un-painted, so the
+      // nested-fan-out guard runs BEFORE the write.
+      if (mode === "each") assertNoForeignFanOut(context, outputKey);
 
       const painted = await step.run(
         "google-sheets-color-heading",
@@ -1051,10 +1129,29 @@ export const googleSheetsActionExecutor: NodeExecutor<
               );
             }
 
-            const { matches, headingsOnTab, nearMisses, sheetId } =
-              await matchHeadings(table);
+            const {
+              matches: allMatches,
+              headingsOnTab,
+              nearMisses,
+              sheetId,
+            } = await matchHeadings(table);
+            // Narrow to what this mode paints BEFORE anything else, so the
+            // summary, the cap and the write all describe the same rows.
+            const matches = selectHeadingMatches(allMatches, mode);
+
+            // "each" starts one child run per painted heading. Its cap is
+            // enforced here, before the write — failing after N headings were
+            // painted would leave the sheet changed by a run the user capped.
+            if (mode === "each") {
+              assertFanOutCap(matches.length, config.maxFanOutItems, "heading");
+            }
+
             const summary = {
-              matchCount: matches.length,
+              // How many headings MATCHED the search — all of them, even when
+              // only the topmost is painted. Same meaning as color_rows'
+              // matchCount, so a downstream branch reads the true count.
+              matchCount: allMatches.length,
+              // How many this run actually painted.
               coloredCount: matches.length,
               headingsOnTab,
               nearMisses,
@@ -1062,6 +1159,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 .slice(0, 100)
                 .map((m) => headingTextOf(m, table)),
               headingRowIndexes: matches.slice(0, 100).map((m) => m.index + 2),
+              items: headingItems(matches, table, {
+                headingsOnTab,
+                nearMisses,
+              }),
               color,
             };
             // Nothing matched ⇒ nothing to write, and no second call.
@@ -1116,13 +1217,29 @@ export const googleSheetsActionExecutor: NodeExecutor<
       await publish(
         nodeStatusChannel(userId).status({ nodeId, status: "success" }),
       );
+      // `items` is fan-out fuel, not part of the recorded output — strip it
+      // so a run record never carries the list twice.
+      const { items, ...recorded } = painted;
       const output = {
         ...context,
-        [outputKey]: { action, spreadsheetId, sheetName, ...painted },
+        [outputKey]: { action, spreadsheetId, sheetName, ...recorded },
       };
-      return painted.coloredCount === 0
-        ? routed(output, [COLOR_ROWS_OUTPUTS.NO_MATCH])
-        : routeHappy(output, COLOR_ROWS_OUTPUTS.COLORED);
+      if (painted.coloredCount === 0) {
+        return routed(output, [COLOR_ROWS_OUTPUTS.NO_MATCH]);
+      }
+      // In "each" mode, one child run per painted heading. Applied OUTSIDE the
+      // step — the branded fan-out outcome carries a symbol that would not
+      // survive a step's JSON checkpoint.
+      const outcome = applyMultiMatchPolicy({
+        mode: mode === "each" ? "each" : "first",
+        maxItems: config.maxFanOutItems,
+        items,
+        context,
+        outputKey,
+        output: { action, spreadsheetId, sheetName, ...recorded },
+        itemNoun: "heading",
+      });
+      return routeHappy(outcome, COLOR_ROWS_OUTPUTS.COLORED);
     }
 
     // A non-bottom append and update_row live OUTSIDE the single-step switch
@@ -1948,35 +2065,49 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // omitting merges).
           let headingsOnTab = 0;
           let nearMisses = 0;
+          let totalMatched = 0;
           let matches: RowMatch[];
           if (headingSearch) {
             const found = await matchHeadings(table);
-            matches = found.matches;
             headingsOnTab = found.headingsOnTab;
             nearMisses = found.nearMisses;
+            totalMatched = found.matches.length;
+            // Narrow to what the mode acts on. Defaults to "all": listing every
+            // match and running the following steps ONCE is exactly what this
+            // action did before the mode existed, so an existing node is
+            // unaffected. ("first" would have quietly truncated `headings` to a
+            // single entry — a real behaviour change dressed up as a default.)
+            matches = selectHeadingMatches(found.matches, headingMode("all"));
           } else {
             matches = await applyRowScope(
               matchRows(table.rowsByHeader, config.conditions ?? [], context),
               "data",
             );
+            totalMatched = matches.length;
           }
 
-          // Multi-match policy ("first"/"each"/"error") is applied OUTSIDE
-          // this step (see below) — but "each" needs every matched row as a
-          // fan-out item, so its cap is enforced HERE on the true match count
-          // (silently truncating children would be worse than failing) before
-          // hauling the rows across the step checkpoint.
+          // Multi-match policy is applied OUTSIDE this step (see below) — but
+          // "each" needs every match as a fan-out item, so its cap is enforced
+          // HERE on the true count (silently truncating children would be worse
+          // than failing) before hauling the rows across the step checkpoint.
           //
-          // find_heading does NOT fan out, so it must not read this policy at
-          // all: a node switched over from find_rows keeps whatever
-          // `onMultipleMatches` it had, and the heading dialog shows no control
-          // to change it — so honouring an inherited "each" here would fail the
-          // run on the fan-out cap, with no way to fix it from the UI.
+          // The two actions read DIFFERENT fields: find_rows uses the shared
+          // `onMultipleMatches` (first/each/error), find_heading its own
+          // `onMultipleHeadings` (first/last/all/each). Keeping them apart is
+          // what stops a node switched between the two from inheriting a policy
+          // its dialog cannot show — which previously failed runs on a cap the
+          // user could not see, let alone clear.
           const mode = headingSearch
-            ? "first"
+            ? headingMode("all") === "each"
+              ? "each"
+              : "first"
             : (config.onMultipleMatches ?? "first");
           if (mode === "each") {
-            assertFanOutCap(matches.length, config.maxFanOutItems, "row");
+            assertFanOutCap(
+              matches.length,
+              config.maxFanOutItems,
+              headingSearch ? "heading" : "row",
+            );
           }
 
           // Stored rows are capped ("each" keeps them all — the cap above
@@ -2018,7 +2149,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 action,
                 spreadsheetId,
                 sheetName,
-                matchCount: matches.length,
+                // How many headings MATCHED the search — all of them, even
+                // when the mode acts on only one. Same meaning as find_rows'
+                // matchCount, so a downstream branch reads the true count.
+                matchCount: totalMatched,
+                // How many this run actually acted on: one in first/last, all
+                // of them in all/each. `headings` describes THESE.
+                actedCount: matches.length,
                 headings: headings.slice(0, 100),
                 // 1-based sheet rows: +1 for the 1-based grid, +1 for the header.
                 headingRowIndexes: matches
@@ -2026,6 +2163,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
                   .map((m) => m.index + 2),
                 firstHeading: headings[0] ?? "",
                 rowIndex: matches.length > 0 ? matches[0].index + 2 : null,
+                // Fan-out fuel in "each" mode; stripped from the recorded output
+                // below so the run record never carries the list twice.
+                items: headingItems(matches, table, {
+                  headingsOnTab,
+                  nearMisses,
+                }),
                 // How many heading rows exist on the tab AT ALL, regardless of
                 // the search text. Without this a zero-result run is unreadable:
                 // it cannot distinguish "your text matched nothing" from
@@ -2084,13 +2227,33 @@ export const googleSheetsActionExecutor: NodeExecutor<
     // this action's "search box" UI implies, so it is deliberately left out
     // rather than half-exposed.
     if (action === "find_heading") {
-      const output = result[outputKey] as Record<string, unknown>;
+      const { items, ...output } = result[outputKey] as Record<string, unknown>;
       const matchCount =
         typeof output.matchCount === "number" ? output.matchCount : 0;
-      outcome =
-        matchCount === 0
-          ? routed(result, [FIND_ROWS_OUTPUTS.NOT_FOUND])
-          : routeHappy(result, FIND_ROWS_OUTPUTS.FOUND);
+      // `items` is fan-out fuel, never part of the record — the headings it
+      // carries are already in `headings`.
+      const recorded = { ...result, [outputKey]: output };
+
+      if (matchCount === 0) {
+        // Nothing matched — route Not-found. This bypasses the policy entirely:
+        // in "each" mode a 0-match run would otherwise fan out zero children and
+        // mark the whole downstream SKIPPED, when Not-found is what should run.
+        outcome = routed(recorded, [FIND_ROWS_OUTPUTS.NOT_FOUND]);
+      } else {
+        const mode = headingMode("all");
+        outcome = routeHappy(
+          applyMultiMatchPolicy({
+            mode: mode === "each" ? "each" : "first",
+            maxItems: config.maxFanOutItems,
+            items: Array.isArray(items) ? items : [],
+            context: recorded,
+            outputKey,
+            output,
+            itemNoun: "heading",
+          }),
+          FIND_ROWS_OUTPUTS.FOUND,
+        );
+      }
     }
 
     if (action === "find_rows") {
