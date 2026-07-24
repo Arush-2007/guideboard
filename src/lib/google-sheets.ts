@@ -79,7 +79,17 @@ export function sheetsValuesUrl(
  * EVERY range this app sends to Sheets must be built here.
  */
 export function sheetRange(sheetName: string, range: string): string {
-  return `'${sheetName.trim().replace(/'/g, "''")}'!${range}`;
+  return `${quoteSheetName(sheetName)}!${range}`;
+}
+
+/**
+ * The tab title alone, quoted for A1 notation (apostrophes doubled) — a valid
+ * `ranges` value on its own, meaning "the whole tab". The single place that
+ * escaping rule lives, shared by `sheetRange` and any range-scoped read, so the
+ * "built here" chokepoint above holds for a bare title too.
+ */
+export function quoteSheetName(sheetName: string): string {
+  return `'${sheetName.trim().replace(/'/g, "''")}'`;
 }
 
 /** URL for spreadsheets.batchUpdate (structural + formatting edits). */
@@ -313,6 +323,15 @@ export async function getSheetGrid({
         fields: includeMerges
           ? "sheets(properties(sheetId,title,gridProperties.rowCount),merges)"
           : "sheets(properties(sheetId,title,gridProperties.rowCount))",
+        // Scope the read to THIS tab only when we asked for merges. Without a
+        // range, `spreadsheets.get` returns the merges of EVERY tab in the
+        // workbook — thousands of objects on a multi-report book — and we then
+        // discard all but the one matched below. A `ranges` of the tab title
+        // restricts the returned sheets (and their merges) to that tab. Left off
+        // the properties-only path: it is the hot write path, carries little per
+        // tab, and every merge-reading caller reads the tab's values first (so a
+        // bad tab already fails there with a clear error before reaching here).
+        ...(includeMerges ? { ranges: quoteSheetName(sheetName) } : {}),
       },
       timeout: HTTP_TIMEOUT.READ,
     })

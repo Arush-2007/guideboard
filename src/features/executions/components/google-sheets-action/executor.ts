@@ -1134,6 +1134,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
               headingsOnTab,
               nearMisses,
               sheetId,
+              mergedWidthOf,
             } = await matchHeadings(table);
             // Narrow to what this mode paints BEFORE anything else, so the
             // summary, the cap and the write all describe the same rows.
@@ -1194,7 +1195,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
                         startRowIndex: m.index + 1,
                         endRowIndex: m.index + 2,
                         startColumnIndex: 0,
-                        endColumnIndex: table.headers.length,
+                        // Paint exactly the heading's OWN merged width, not the
+                        // tab's current header count. A heading merged narrower
+                        // than the tab (e.g. added before later columns were)
+                        // would otherwise get a colour band wider than its merge
+                        // — and wider than update_heading's restyle, which sizes
+                        // the same row via mergedWidthOf. Falls back to the
+                        // header count when a row's width can't be resolved.
+                        endColumnIndex:
+                          mergedWidthOf(m.index) || table.headers.length,
                       },
                       cell: {
                         userEnteredFormat: { backgroundColor: hexToRgb(color) },
@@ -2110,33 +2119,6 @@ export const googleSheetsActionExecutor: NodeExecutor<
             );
           }
 
-          // Stored rows are capped ("each" keeps them all — the cap above
-          // already bounds the count); the per-column value lists below are
-          // computed over ALL matches so a downstream `in_list` is complete.
-          // Cells are trimmed so `firstRow`/`rows` agree with `columnValues`.
-          const rowLimit = mode === "each" ? matches.length : 100;
-          const rows = matches.slice(0, rowLimit).map((m) => {
-            const out: Record<string, string> = {};
-            for (const [col, key] of keyed) {
-              out[key] = getRowCell(m.row, col).trim();
-            }
-            return out;
-          });
-
-          const columnValues: Record<string, string> = {};
-          for (const [col, key] of keyed) {
-            const seen = new Set<string>();
-            const unique: string[] = [];
-            for (const m of matches) {
-              const v = getRowCell(m.row, col).trim();
-              if (v && !seen.has(v)) {
-                seen.add(v);
-                unique.push(v);
-              }
-            }
-            columnValues[key] = JSON.stringify(unique);
-          }
-
           // A heading has no columns, so it reports TEXT and WHERE — not the
           // column grid find_rows returns. `headings`/`headingRowIndexes` are
           // positionally paired; `firstHeading` + `rowIndex` are the single-match
@@ -2183,6 +2165,35 @@ export const googleSheetsActionExecutor: NodeExecutor<
             };
           }
 
+          // Stored rows are capped ("each" keeps them all — the cap above
+          // already bounds the count); the per-column value lists below are
+          // computed over ALL matches so a downstream `in_list` is complete.
+          // Cells are trimmed so `firstRow`/`rows` agree with `columnValues`.
+          // Built only on the find_rows path: find_heading returned above and
+          // uses neither, so computing them for it was pure wasted iteration.
+          const rowLimit = mode === "each" ? matches.length : 100;
+          const rows = matches.slice(0, rowLimit).map((m) => {
+            const out: Record<string, string> = {};
+            for (const [col, key] of keyed) {
+              out[key] = getRowCell(m.row, col).trim();
+            }
+            return out;
+          });
+
+          const columnValues: Record<string, string> = {};
+          for (const [col, key] of keyed) {
+            const seen = new Set<string>();
+            const unique: string[] = [];
+            for (const m of matches) {
+              const v = getRowCell(m.row, col).trim();
+              if (v && !seen.has(v)) {
+                seen.add(v);
+                unique.push(v);
+              }
+            }
+            columnValues[key] = JSON.stringify(unique);
+          }
+
           return {
             ...context,
             [outputKey]: {
@@ -2206,11 +2217,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
         }
       }
 
-      // Exhaustiveness: only the LEGACY raw-range append and find_rows reach
-      // this switch. Every other action returned above — append_heading always
-      // takes one of the two planned-placement paths, color_rows and update_row
-      // have their own, and the legacy read_rows action was removed (find_rows
-      // with no conditions reads every row).
+      // Exhaustiveness guard — unreachable for any real action. Both read
+      // actions (find_rows AND find_heading) returned from the shared block
+      // just above, and every write action returned from its own path earlier:
+      // the append paths, color_rows/color_heading, and update_row/update_heading.
+      // The legacy read_rows action was removed (find_rows with no conditions
+      // reads every row). Reaching here means an action string with no handler
+      // — a bug, not user error.
       throw new NonRetriableError(
         `${ERROR_PREFIX}: unsupported action "${action}"`,
       );

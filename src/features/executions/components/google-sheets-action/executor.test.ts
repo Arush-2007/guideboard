@@ -2938,6 +2938,43 @@ describe("googleSheetsActionExecutor — headings vs the reading actions", () =>
     expect(outputs(outcome)).toContain("colored");
   });
 
+  it("color_heading paints the heading's OWN merge width, not the tab's wider header", async () => {
+    // The "Acme" heading is merged only 2 columns wide, though the tab now has
+    // 3 columns. The paint band must match the merge (endColumnIndex 2), not the
+    // header count (3): painting to 3 would colour a cell outside the merge and
+    // disagree with update_heading's restyle, which sizes the row by this same
+    // merged width.
+    const narrowMerge = [
+      {
+        startRowIndex: 2,
+        endRowIndex: 3,
+        startColumnIndex: 0,
+        endColumnIndex: 2,
+      },
+    ];
+    mockWithMerge(withHeading, narrowMerge);
+
+    await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+      headingColor: "#fef3c7",
+    });
+
+    const requests = (postBody(0).requests ?? []) as Array<{
+      repeatCell: { range: Record<string, number> };
+    }>;
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range).toEqual({
+      sheetId: 77,
+      startRowIndex: 2,
+      endRowIndex: 3,
+      startColumnIndex: 0,
+      endColumnIndex: 2,
+    });
+  });
+
   it("color_heading with no filter paints every heading", async () => {
     mockWithMerge(
       [
