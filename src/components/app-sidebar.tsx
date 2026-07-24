@@ -63,14 +63,18 @@ const menuItems = [
   },
 ];
 
-export const AppSidebar = () => {
+type SidebarUser = { name: string; email: string; image?: string | null };
+
+export const AppSidebar = ({ user: initialUser }: { user: SidebarUser }) => {
   const router = useRouter();
   const pathname = usePathname();
   const guardNav = useNavGuard();
   // Client-side session so the footer card reflects a rename or a new avatar
-  // without waiting out the server session's cookie cache.
+  // without waiting out the server session's cookie cache. Falls back to the
+  // server-seeded user so the first render matches SSR (see layout) rather than
+  // flashing a placeholder — a client/server mismatch that broke hydration.
   const { data: session } = authClient.useSession();
-  const user = session?.user;
+  const user = session?.user ?? initialUser;
 
   // The workflow editor (/workflows/<id>) renders a heavy React Flow canvas in
   // the content area. Animating the rail width resizes that canvas every frame
@@ -160,26 +164,22 @@ export const AppSidebar = () => {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <SidebarMenuButton
-                  tooltip={user?.name ?? "Account"}
+                  tooltip={user.name}
                   className="h-12 gap-x-3 rounded-xl px-2 transition-all duration-200 hover:bg-sidebar-accent/80 group-data-[collapsible=icon]:!h-10 group-data-[collapsible=icon]:!w-8 group-data-[collapsible=icon]:!p-0.5"
                 >
-                  {user ? (
-                    <UserAvatar
-                      name={user.name}
-                      email={user.email}
-                      image={user.image}
-                      className="size-8"
-                      fallbackClassName="text-xs"
-                    />
-                  ) : (
-                    <span className="size-8 shrink-0 animate-pulse rounded-full bg-sidebar-accent" />
-                  )}
+                  <UserAvatar
+                    name={user.name}
+                    email={user.email}
+                    image={user.image}
+                    className="size-8"
+                    fallbackClassName="text-xs"
+                  />
                   <div className="min-w-0 text-left group-data-[collapsible=icon]:hidden">
                     <p className="truncate text-[13px] font-semibold leading-tight">
-                      {user?.name ?? "Loading…"}
+                      {user.name}
                     </p>
                     <p className="truncate text-[11px] leading-tight text-muted-foreground">
-                      {user?.email ?? ""}
+                      {user.email}
                     </p>
                   </div>
                 </SidebarMenuButton>
