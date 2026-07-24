@@ -203,6 +203,17 @@ const calculatorSchema = z
   })
   .passthrough();
 
+// The Code node carries a single field: the user's JavaScript source. Its
+// SYNTAX is deliberately not validated here — the QuickJS sandbox is the one
+// place that can judge whether the code parses and runs, and it does so at run
+// time against the real input. Validating shape here and meaning there keeps one
+// grammar in one place (mirrors the Calculator).
+const codeSchema = z
+  .object({
+    code: z.string().min(1, "Write some code to run"),
+  })
+  .passthrough();
+
 const openAiFamilySchema = apiPromptSchema.passthrough();
 
 const aiTextSchema = z
@@ -833,6 +844,7 @@ const nodeConfigSchemas: Record<NodeType, AnyZodSchema> = {
   [NodeType.RECORD_LOOKUP]: recordLookupSchema,
   [NodeType.CONVERT]: convertSchema,
   [NodeType.CALCULATOR]: calculatorSchema,
+  [NodeType.CODE]: codeSchema,
   [NodeType.GEMINI]: openAiFamilySchema,
   [NodeType.OPENAI]: openAiFamilySchema,
   [NodeType.DISCORD]: discordSchema,

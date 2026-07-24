@@ -562,6 +562,20 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       },
     ],
   },
+  // The Code node's output is whatever the user's code returns, so its SHAPE is
+  // not knowable ahead of time. It is stored whole under `result`; the picker
+  // offers that single entry, and a downstream node drills into it by hand
+  // (`@<CODE_1.result.total>@`) exactly as it would any nested value.
+  [NodeType.CODE]: {
+    rootKind: "perNode",
+    fields: [
+      {
+        path: "result",
+        label: "Result (whatever your code returns)",
+        example: '{ "total": 1416 }',
+      },
+    ],
+  },
   // Resume Parser output (built-in or Affinda provider both map onto this).
   [NodeType.RESUME_PARSER]: {
     rootKind: "perNode",

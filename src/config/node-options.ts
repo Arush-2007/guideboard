@@ -4,6 +4,7 @@ import {
   Calculator,
   ClipboardCheck,
   Clock,
+  Code2,
   FileText,
   Filter,
   GlobeIcon,
@@ -151,6 +152,13 @@ export const executionNodeOptions: NodeOption[] = [
     description:
       "Do arithmetic on values from earlier steps — add, subtract, multiply, divide, remainder, and round",
     icon: Calculator,
+  },
+  {
+    type: NodeType.CODE,
+    label: "Code",
+    description:
+      "Run your own JavaScript on data from earlier steps and return a value — filter, map, reshape, or compute anything",
+    icon: Code2,
   },
   {
     type: NodeType.DISCORD,

@@ -22,6 +22,7 @@ const STATUS_EMITTING_NODE_TYPES: ReadonlySet<NodeType> = new Set([
   NodeType.RECORD_LOOKUP,
   NodeType.CONVERT,
   NodeType.CALCULATOR,
+  NodeType.CODE,
   NodeType.MANUAL_TRIGGER,
   NodeType.GOOGLE_FORM_TRIGGER,
   NodeType.TYPEFORM_TRIGGER,

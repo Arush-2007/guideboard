@@ -98,6 +98,8 @@ export const nodeSummaries: Partial<Record<NodeType, NodeSummary>> = {
       ? `Calculated ${expression} = ${output.result}.`
       : `Calculated ${output.result}.`;
   },
+  [NodeType.CODE]: ({ output }) =>
+    output && "result" in output ? "Ran your code." : null,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: () => "Reply posted to the comment.",
   [NodeType.YOUTUBE_REPLY_COMMENT]: () => "Reply posted to the comment.",
 };
