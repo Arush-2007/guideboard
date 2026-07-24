@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  changedFieldNames,
   computeWatchedColumns,
-  hashRow,
+  hashCells,
   planSheetsPollChanges,
   readSnapshot,
   resolveColumnIndices,
@@ -10,8 +11,8 @@ import {
   watchColumnsSignature,
 } from "./sheets-poll-diff";
 
-const hashes = (rows: string[][], columns?: number[]) =>
-  rows.map((row) => hashRow(row, columns));
+const cells = (rows: string[][], columns?: number[]) =>
+  rows.map((row) => hashCells(row, columns));
 
 describe("planSheetsPollChanges", () => {
   it("fires an added change for each appended row", () => {
@@ -19,13 +20,13 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows,
       lastRowCount: 2, // header + one existing row
-      oldHashes: hashes(rows.slice(0, 2)),
+      oldCellHashes: cells(rows.slice(0, 2)),
       triggerOn: "added_or_updated",
     });
 
     expect(changes).toEqual([
-      { rowIndex: 3, changeType: "added" },
-      { rowIndex: 4, changeType: "added" },
+      { rowIndex: 3, changeType: "added", changedColumns: [] },
+      { rowIndex: 4, changeType: "added", changedColumns: [] },
     ]);
   });
 
@@ -35,11 +36,14 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before),
+      oldCellHashes: cells(before),
       triggerOn: "added_or_updated",
     });
 
-    expect(changes).toEqual([{ rowIndex: 3, changeType: "updated" }]);
+    // Whole-row watch: the single (index-0) cell changed.
+    expect(changes).toEqual([
+      { rowIndex: 3, changeType: "updated", changedColumns: [0] },
+    ]);
   });
 
   it("fires nothing when re-polling an unchanged sheet", () => {
@@ -47,7 +51,7 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows,
       lastRowCount: rows.length,
-      oldHashes: hashes(rows),
+      oldCellHashes: cells(rows),
       triggerOn: "added_or_updated",
     });
 
@@ -56,17 +60,17 @@ describe("planSheetsPollChanges", () => {
 
   it("first poll (null snapshot) is a baseline: fires nothing, backfills no pre-existing rows", () => {
     const rows = [["h1"], ["a"], ["b"]];
-    const { changes, newHashes } = planSheetsPollChanges({
+    const { changes, newCellHashes } = planSheetsPollChanges({
       rows,
       // A brand-new poll — lastRowCount defaults to 0 — but existing rows must
       // NOT be backfilled as appends; the first poll only seeds the baseline.
       lastRowCount: 0,
-      oldHashes: null,
+      oldCellHashes: null,
       triggerOn: "added_or_updated",
     });
 
     expect(changes).toEqual([]);
-    expect(newHashes).toEqual(hashes(rows));
+    expect(newCellHashes).toEqual(cells(rows));
   });
 
   it("fires appends only for rows added after the baseline poll", () => {
@@ -76,11 +80,13 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: baseline.length,
-      oldHashes: hashes(baseline),
+      oldCellHashes: cells(baseline),
       triggerOn: "added_or_updated",
     });
 
-    expect(changes).toEqual([{ rowIndex: 4, changeType: "added" }]);
+    expect(changes).toEqual([
+      { rowIndex: 4, changeType: "added", changedColumns: [] },
+    ]);
   });
 
   it("added mode ignores edits", () => {
@@ -89,11 +95,13 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before),
+      oldCellHashes: cells(before),
       triggerOn: "added",
     });
 
-    expect(changes).toEqual([{ rowIndex: 3, changeType: "added" }]);
+    expect(changes).toEqual([
+      { rowIndex: 3, changeType: "added", changedColumns: [] },
+    ]);
   });
 
   it("updated mode ignores appends", () => {
@@ -102,11 +110,13 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before),
+      oldCellHashes: cells(before),
       triggerOn: "updated",
     });
 
-    expect(changes).toEqual([{ rowIndex: 2, changeType: "updated" }]);
+    expect(changes).toEqual([
+      { rowIndex: 2, changeType: "updated", changedColumns: [0] },
+    ]);
   });
 
   it("detects both an append and an edit in one poll", () => {
@@ -115,13 +125,13 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before),
+      oldCellHashes: cells(before),
       triggerOn: "added_or_updated",
     });
 
     expect(changes).toEqual([
-      { rowIndex: 3, changeType: "updated" },
-      { rowIndex: 4, changeType: "added" },
+      { rowIndex: 3, changeType: "updated", changedColumns: [0] },
+      { rowIndex: 4, changeType: "added", changedColumns: [] },
     ]);
   });
 
@@ -131,26 +141,28 @@ describe("planSheetsPollChanges", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before),
+      oldCellHashes: cells(before),
       triggerOn: "added_or_updated",
     });
 
     // Header change dropped; the row-3 edit still fires.
-    expect(changes).toEqual([{ rowIndex: 3, changeType: "updated" }]);
+    expect(changes).toEqual([
+      { rowIndex: 3, changeType: "updated", changedColumns: [0] },
+    ]);
   });
 
   it("does not report shrunk rows as changes and returns the trimmed hashes", () => {
     const before = [["h1"], ["a"], ["b"], ["c"]];
     const after = [["h1"], ["a"]]; // two rows deleted from the end
-    const { changes, newHashes } = planSheetsPollChanges({
+    const { changes, newCellHashes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before),
+      oldCellHashes: cells(before),
       triggerOn: "added_or_updated",
     });
 
     expect(changes).toEqual([]);
-    expect(newHashes).toHaveLength(2);
+    expect(newCellHashes).toHaveLength(2);
   });
 
   describe("watchColumns (column-scoped edits)", () => {
@@ -168,12 +180,15 @@ describe("planSheetsPollChanges", () => {
       const { changes } = planSheetsPollChanges({
         rows: after,
         lastRowCount: before.length,
-        oldHashes: hashes(before, [2]),
+        oldCellHashes: cells(before, [2]),
         triggerOn: "added_or_updated",
         watchColumns: [2],
       });
 
-      expect(changes).toEqual([{ rowIndex: 2, changeType: "updated" }]);
+      // Position 0 of the [2] projection maps back to real column index 2.
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "updated", changedColumns: [2] },
+      ]);
     });
 
     it("ignores edits to unwatched columns", () => {
@@ -184,7 +199,7 @@ describe("planSheetsPollChanges", () => {
       const { changes } = planSheetsPollChanges({
         rows: after,
         lastRowCount: before.length,
-        oldHashes: hashes(before, [2]),
+        oldCellHashes: cells(before, [2]),
         triggerOn: "added_or_updated",
         watchColumns: [2],
       });
@@ -201,12 +216,14 @@ describe("planSheetsPollChanges", () => {
       const { changes } = planSheetsPollChanges({
         rows: after,
         lastRowCount: before.length,
-        oldHashes: hashes(before, [2]),
+        oldCellHashes: cells(before, [2]),
         triggerOn: "added_or_updated",
         watchColumns: [2],
       });
 
-      expect(changes).toEqual([{ rowIndex: 3, changeType: "added" }]);
+      expect(changes).toEqual([
+        { rowIndex: 3, changeType: "added", changedColumns: [] },
+      ]);
     });
 
     it("fires when any of several watched columns changes", () => {
@@ -217,12 +234,33 @@ describe("planSheetsPollChanges", () => {
       const { changes } = planSheetsPollChanges({
         rows: after,
         lastRowCount: before.length,
-        oldHashes: hashes(before, [1, 2]),
+        oldCellHashes: cells(before, [1, 2]),
         triggerOn: "added_or_updated",
         watchColumns: [1, 2],
       });
 
-      expect(changes).toEqual([{ rowIndex: 2, changeType: "updated" }]);
+      // City is position 0 of the [1,2] projection → real column index 1.
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "updated", changedColumns: [1] },
+      ]);
+    });
+
+    it("reports every changed watched column when several change at once", () => {
+      const after = [
+        ["Name", "City", "Status"],
+        ["Aarav", "Nagpur", "Done"], // both City (1) and Status (2) changed
+      ];
+      const { changes } = planSheetsPollChanges({
+        rows: after,
+        lastRowCount: before.length,
+        oldCellHashes: cells(before, [1, 2]),
+        triggerOn: "added_or_updated",
+        watchColumns: [1, 2],
+      });
+
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "updated", changedColumns: [1, 2] },
+      ]);
     });
   });
 });
@@ -373,21 +411,35 @@ describe("rowValuesByHeader", () => {
 });
 
 describe("readSnapshot", () => {
-  it("reads the current { sig, hashes } shape", () => {
+  it("reads the current { sig, cellHashes } shape", () => {
+    expect(readSnapshot({ sig: "*", cellHashes: [["a"], ["b", "c"]] })).toEqual(
+      {
+        cellHashes: [["a"], ["b", "c"]],
+        sig: "*",
+      },
+    );
+  });
+
+  it("lifts the legacy per-row { sig, hashes } shape to a re-seed placeholder (sig dropped)", () => {
+    // sig is dropped so the projection guard suppresses this poll's edits and
+    // re-seeds real cell hashes; the row count is preserved so appends still fire.
     expect(readSnapshot({ sig: "*", hashes: ["a", "b"] })).toEqual({
-      hashes: ["a", "b"],
-      sig: "*",
+      cellHashes: [["a"], ["b"]],
+      sig: null,
     });
   });
 
-  it("reads a legacy bare array with an unknown signature (re-seeds once)", () => {
-    expect(readSnapshot(["a", "b"])).toEqual({ hashes: ["a", "b"], sig: null });
+  it("lifts the oldest legacy bare array the same way (re-seeds once)", () => {
+    expect(readSnapshot(["a", "b"])).toEqual({
+      cellHashes: [["a"], ["b"]],
+      sig: null,
+    });
   });
 
   it("treats null / non-snapshot values as no snapshot (first-poll baseline)", () => {
-    expect(readSnapshot(null)).toEqual({ hashes: null, sig: null });
-    expect(readSnapshot("garbage")).toEqual({ hashes: null, sig: null });
-    expect(readSnapshot({ nope: 1 })).toEqual({ hashes: null, sig: null });
+    expect(readSnapshot(null)).toEqual({ cellHashes: null, sig: null });
+    expect(readSnapshot("garbage")).toEqual({ cellHashes: null, sig: null });
+    expect(readSnapshot({ nope: 1 })).toEqual({ cellHashes: null, sig: null });
   });
 });
 
@@ -424,7 +476,7 @@ describe("planSheetsPollChanges — stale projection (signature) guard", () => {
     const { changes } = planSheetsPollChanges({
       rows: newRows,
       lastRowCount: oldRows.length,
-      oldHashes: hashes(oldRows, [0]),
+      oldCellHashes: cells(oldRows, [0]),
       triggerOn: "added_or_updated",
       watchColumns: [0, 1],
       oldSignature: "name",
@@ -432,7 +484,9 @@ describe("planSheetsPollChanges — stale projection (signature) guard", () => {
     });
 
     // No spurious "updated" for rows 2/3; the appended row 4 still fires.
-    expect(changes).toEqual([{ rowIndex: 4, changeType: "added" }]);
+    expect(changes).toEqual([
+      { rowIndex: 4, changeType: "added", changedColumns: [] },
+    ]);
   });
 
   it("fires edits normally when the signature is unchanged", () => {
@@ -449,13 +503,35 @@ describe("planSheetsPollChanges — stale projection (signature) guard", () => {
     const { changes } = planSheetsPollChanges({
       rows: after,
       lastRowCount: before.length,
-      oldHashes: hashes(before, [1]),
+      oldCellHashes: cells(before, [1]),
       triggerOn: "added_or_updated",
       watchColumns: [1],
       oldSignature: "status",
       newSignature: "status",
     });
 
-    expect(changes).toEqual([{ rowIndex: 3, changeType: "updated" }]);
+    // Status is position 0 of the [1] projection → real column index 1.
+    expect(changes).toEqual([
+      { rowIndex: 3, changeType: "updated", changedColumns: [1] },
+    ]);
+  });
+});
+
+describe("changedFieldNames", () => {
+  const header = ["Name", "City", "Status"];
+
+  it("maps changed column indices to their header names", () => {
+    expect(changedFieldNames(header, [2, 0])).toEqual(["Status", "Name"]);
+  });
+
+  it("falls back to Column N for a blank or missing header", () => {
+    expect(changedFieldNames(["Name", "", "Status"], [1])).toEqual([
+      "Column 2",
+    ]);
+    expect(changedFieldNames(header, [5])).toEqual(["Column 6"]);
+  });
+
+  it("is empty for no changed columns (e.g. an added row)", () => {
+    expect(changedFieldNames(header, [])).toEqual([]);
   });
 });

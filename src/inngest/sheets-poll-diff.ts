@@ -6,6 +6,13 @@ export type SheetsChange = {
   /** 1-based sheet row number. */
   rowIndex: number;
   changeType: "added" | "updated";
+  /**
+   * 0-based indices of the columns whose value changed since the previous poll.
+   * Only meaningful for `"updated"`; always empty for `"added"` (a new row has no
+   * prior value to diff against). The poll maps these to header NAMES for the
+   * `googleSheets.changedFields` output.
+   */
+  changedColumns: number[];
 };
 
 /**
@@ -16,10 +23,65 @@ export type SheetsChange = {
  * When `columns` (0-based indices) is given, only those cells are fingerprinted,
  * so an edit to any other column leaves the hash unchanged and fires nothing —
  * this is how column-scoped edit detection works. Undefined means the whole row.
+ *
+ * Still used for the append idempotency key; edit detection now fingerprints each
+ * cell separately (`hashCells`) so a poll can report WHICH columns changed.
  */
 export function hashRow(row: string[], columns?: number[]): string {
   const cells = columns ? columns.map((i) => row[i] ?? "") : row;
   return createHash("sha1").update(JSON.stringify(cells)).digest("hex");
+}
+
+/**
+ * Per-CELL fingerprints of a row, one hash per watched cell in watched order —
+ * the finer-grained snapshot that lets a poll diff cell-by-cell and report which
+ * columns changed, not just that the row changed.
+ *
+ * With `columns` (0-based indices) the array is `columns.length` long, entry `k`
+ * hashing `row[columns[k]]`; undefined hashes every present cell in place (Google
+ * trims trailing empties, so this stays width-stable across reads). A row counts
+ * as edited iff any of these hashes differs from the previous poll's.
+ */
+export function hashCells(row: string[], columns?: number[]): string[] {
+  const cells = columns ? columns.map((i) => row[i] ?? "") : row;
+  return cells.map((c) => createHash("sha1").update(c).digest("hex"));
+}
+
+/**
+ * Diffs two cell-hash arrays (same watched projection) into the 0-based column
+ * indices that changed. `watchColumns` maps a scoped position `k` back to its real
+ * column index; undefined means position IS the column index. Length differences
+ * (a trailing cell newly filled or cleared under whole-row watching) count as a
+ * change at that position.
+ */
+function diffCellHashes(
+  oldCells: string[],
+  newCells: string[],
+  watchColumns?: number[],
+): number[] {
+  const len = Math.max(oldCells.length, newCells.length);
+  const changed: number[] = [];
+  for (let k = 0; k < len; k++) {
+    if (oldCells[k] !== newCells[k]) {
+      changed.push(watchColumns ? (watchColumns[k] ?? k) : k);
+    }
+  }
+  return changed;
+}
+
+/**
+ * Maps changed column indices to their header NAMES for the trigger's
+ * `changedFields` output. A blank or missing header falls back to `Column N`
+ * (1-based) so a watched but unlabeled column is still named rather than dropped.
+ */
+export function changedFieldNames(
+  headerRow: string[],
+  changedColumns: number[],
+): string[] {
+  return changedColumns.map((idx) => {
+    const name = (headerRow[idx] ?? "").trim();
+    return name || `Column ${idx + 1}`;
+  });
 }
 
 /**
@@ -143,30 +205,61 @@ export function rowValuesByHeader(
   return values;
 }
 
-/** The poll's stored edit snapshot: per-row hashes + the projection they cover. */
-export type SheetsPollSnapshot = { sig: string; hashes: string[] };
+/**
+ * The poll's stored edit snapshot: per-row, per-cell hashes + the projection they
+ * cover. Cell-level (not row-level) so a poll can report which columns changed.
+ */
+export type SheetsPollSnapshot = { sig: string; cellHashes: string[][] };
+
+function isCellHashes(v: unknown): v is string[][] {
+  return (
+    Array.isArray(v) &&
+    v.every((r) => Array.isArray(r) && r.every((c) => typeof c === "string"))
+  );
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((c) => typeof c === "string");
+}
 
 /**
- * Reads the stored snapshot back into `{ hashes, sig }`, the single place that
- * knows its persisted shape. The current shape is `{ sig, hashes }`; a bare array
- * is the legacy pre-signature shape (read with an unknown signature, so the next
- * poll re-seeds once); anything else reads as no snapshot — a first-poll baseline.
+ * Reads the stored snapshot back into `{ cellHashes, sig }`, the single place that
+ * knows its persisted shape. Current shape is `{ sig, cellHashes }`.
+ *
+ * The two legacy shapes stored per-ROW hashes — `{ sig, hashes }` and, older
+ * still, a bare `string[]`. Neither can be diffed at the cell level, so both are
+ * lifted to a non-null placeholder (one hash per row) with `sig: null`. That
+ * `null` signature forces the projection guard in `planSheetsPollChanges` to
+ * suppress THIS poll's edits and re-seed real cell hashes — while the preserved
+ * row COUNT still lets appends fire. Anything else reads as no snapshot: a
+ * first-poll baseline.
  */
 export function readSnapshot(stored: unknown): {
-  hashes: string[] | null;
+  cellHashes: string[][] | null;
   sig: string | null;
 } {
-  if (Array.isArray(stored)) return { hashes: stored as string[], sig: null };
-  if (stored && typeof stored === "object") {
-    const obj = stored as { hashes?: unknown; sig?: unknown };
-    if (Array.isArray(obj.hashes)) {
+  if (stored && typeof stored === "object" && !Array.isArray(stored)) {
+    const obj = stored as {
+      cellHashes?: unknown;
+      hashes?: unknown;
+      sig?: unknown;
+    };
+    if (isCellHashes(obj.cellHashes)) {
       return {
-        hashes: obj.hashes as string[],
+        cellHashes: obj.cellHashes,
         sig: typeof obj.sig === "string" ? obj.sig : null,
       };
     }
+    // Legacy per-row hashes: re-seed once (sig null → edits suppressed, appends fire).
+    if (isStringArray(obj.hashes)) {
+      return { cellHashes: obj.hashes.map((h) => [h]), sig: null };
+    }
   }
-  return { hashes: null, sig: null };
+  // Oldest legacy shape: a bare per-row hash array. Same one-time re-seed.
+  if (isStringArray(stored)) {
+    return { cellHashes: stored.map((h) => [h]), sig: null };
+  }
+  return { cellHashes: null, sig: null };
 }
 
 /**
@@ -204,8 +297,8 @@ export function planSheetsPollChanges(params: {
   rows: string[][];
   /** Row count at the previous poll; positions at or beyond this are appends. */
   lastRowCount: number;
-  /** Per-position hashes from the previous poll, or null before the first one. */
-  oldHashes: string[] | null;
+  /** Per-position, per-cell hashes from the previous poll; null before the first. */
+  oldCellHashes: string[][] | null;
   triggerOn: SheetsTriggerOn;
   /** 0-based column indices to scope edit detection to; undefined = whole row. */
   watchColumns?: number[];
@@ -213,23 +306,23 @@ export function planSheetsPollChanges(params: {
   oldSignature?: string | null;
   /** Projection signature for this poll; null skips the check (e.g. in tests). */
   newSignature?: string | null;
-}): { changes: SheetsChange[]; newHashes: string[] } {
+}): { changes: SheetsChange[]; newCellHashes: string[][] } {
   const {
     rows,
     lastRowCount,
-    oldHashes,
+    oldCellHashes,
     triggerOn,
     watchColumns,
     oldSignature = null,
     newSignature = null,
   } = params;
-  const newHashes = rows.map((row) => hashRow(row, watchColumns));
+  const newCellHashes = rows.map((row) => hashCells(row, watchColumns));
 
   // First poll for this trigger: capture the current sheet as the baseline and
   // fire nothing. A fresh trigger must not backfill pre-existing rows (and so
   // can't fire for the header either).
-  if (oldHashes === null) {
-    return { changes: [], newHashes };
+  if (oldCellHashes === null) {
+    return { changes: [], newCellHashes };
   }
 
   // The stored hashes were computed under a different watched-column projection
@@ -248,23 +341,25 @@ export function planSheetsPollChanges(params: {
 
     if (i >= lastRowCount) {
       // Row beyond the previous count — an append.
-      if (watchAdded) changes.push({ rowIndex, changeType: "added" });
+      if (watchAdded)
+        changes.push({ rowIndex, changeType: "added", changedColumns: [] });
       continue;
     }
 
     // Existing position: an edit only if the content at this position actually
     // changed AND the snapshot is comparable. Row 1 (i === 0) is the header, so
     // its edits are ignored.
-    if (
-      !staleSnapshot &&
-      watchUpdated &&
-      i > 0 &&
-      i < oldHashes.length &&
-      oldHashes[i] !== newHashes[i]
-    ) {
-      changes.push({ rowIndex, changeType: "updated" });
+    if (!staleSnapshot && watchUpdated && i > 0 && i < oldCellHashes.length) {
+      const changedColumns = diffCellHashes(
+        oldCellHashes[i],
+        newCellHashes[i],
+        watchColumns,
+      );
+      if (changedColumns.length > 0) {
+        changes.push({ rowIndex, changeType: "updated", changedColumns });
+      }
     }
   }
 
-  return { changes, newHashes };
+  return { changes, newCellHashes };
 }

@@ -432,6 +432,11 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "Change type",
         example: "added",
       },
+      {
+        path: "changedFields",
+        label: "Changed fields",
+        example: "Status, Amount",
+      },
       { path: "sheetName", label: "Sheet name", example: "Sheet1" },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],

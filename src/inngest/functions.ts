@@ -30,6 +30,7 @@ import {
 } from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
 import {
+  changedFieldNames,
   computeWatchedColumns,
   planSheetsPollChanges,
   readSnapshot,
@@ -836,24 +837,24 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
       const watchColumns = computeWatchedColumns(header, ignoreNames);
       const newSignature = watchColumnsSignature(header, watchColumns);
 
-      // `readSnapshot` owns the persisted shape (incl. the legacy bare-array form).
-      const { hashes: oldHashes, sig: oldSignature } = readSnapshot(
+      // `readSnapshot` owns the persisted shape (incl. the legacy per-row forms).
+      const { cellHashes: oldCellHashes, sig: oldSignature } = readSnapshot(
         poll.rowHashes,
       );
 
-      const { changes, newHashes } = planSheetsPollChanges({
+      const { changes, newCellHashes } = planSheetsPollChanges({
         rows,
         lastRowCount: poll.lastRowCount,
         // Null until the first poll seeds it. The first poll is a baseline that
         // fires nothing, so attaching the trigger never backfills existing rows.
-        oldHashes,
+        oldCellHashes,
         triggerOn: poll.triggerOn as SheetsTriggerOn,
         watchColumns,
         oldSignature,
         newSignature,
       });
 
-      for (const { rowIndex, changeType } of changes) {
+      for (const { rowIndex, changeType, changedColumns } of changes) {
         const row = rows[rowIndex - 1] ?? [];
         await sendWorkflowExecution({
           workflowId: poll.workflowId,
@@ -862,6 +863,11 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
               spreadsheetId: poll.spreadsheetId,
               sheetName: poll.sheetName,
               changeType,
+              // The column NAMES that changed, as plain text ("Status, Amount").
+              // Empty for an added row (nothing to diff against).
+              changedFields: changedFieldNames(header, changedColumns).join(
+                ", ",
+              ),
               // Cells keyed by column name, so a downstream node picks
               // `googleSheets.values.<Header>` instead of a positional index.
               values: rowValuesByHeader(header, row),
@@ -887,7 +893,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           // so the next poll can tell whether that projection still holds.
           rowHashes: {
             sig: newSignature,
-            hashes: newHashes,
+            cellHashes: newCellHashes,
           } satisfies SheetsPollSnapshot,
           lastChecked: new Date(),
         },
