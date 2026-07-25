@@ -665,6 +665,106 @@ describe("googleSheetsActionExecutor — find_rows", () => {
     expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
   });
 
+  it("'last' resolves firstRow to the BOTTOM-most match, keeping every other field", async () => {
+    mockRead([
+      ["Name", "Buyer", "Pending"],
+      ["Ada", "Acme", "10"],
+      ["Bo", "Globex", "3"],
+      ["Cy", "Acme", "5"],
+    ]);
+
+    const config = {
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+    };
+
+    const lastOutcome = await run({ ...config, onMultipleMatches: "last" });
+    const last = ctx(lastOutcome).GOOGLE_SHEETS_ACTION_1;
+    const first = ctx(
+      await run({ ...config, onMultipleMatches: "first" }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(last.firstRow).toEqual({ Name: "Cy", Buyer: "Acme", Pending: "5" });
+    expect(first.firstRow).toEqual({
+      Name: "Ada",
+      Buyer: "Acme",
+      Pending: "10",
+    });
+    // Only the acted-on row differs: the match list, the count and the
+    // unique-value lists describe ALL matches in both modes.
+    expect(last.matchCount).toBe(2);
+    expect(last.rows).toEqual(first.rows);
+    expect(last.columnValues).toEqual(first.columnValues);
+    // Still a single, non-fan-out run down the Found branch.
+    expect(isFanOut(lastOutcome)).toBe(false);
+    expect(outputs(lastOutcome)).toContain("found");
+  });
+
+  it("'last' with a single match behaves exactly like 'first'", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Cy", "Globex"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "last",
+    });
+
+    expect(outputs(result)).toContain("found");
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(1);
+    expect(out.firstRow).toEqual({ Name: "Ada", Buyer: "Acme" });
+  });
+
+  it("'last' with zero matches routes Not-found with an empty firstRow", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Globex"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "last",
+    });
+
+    expect(outputs(result)).toEqual(["notfound"]);
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.firstRow).toEqual({});
+  });
+
+  it("'last' stores the TAIL of the matches, so firstRow is inside the capped rows", async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => [`P${i}`, "Acme"]);
+    mockRead([["Name", "Buyer"], ...rows]);
+
+    const out = ctx(
+      await run({
+        action: "find_rows",
+        spreadsheetId: "s",
+        sheetName: "Ledger",
+        conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+        onMultipleMatches: "last",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(120);
+    // The stored window is the LAST 100 (P20…P119), not the first — otherwise
+    // the row the run acted on would be missing from the grid it reports.
+    expect(out.rows).toHaveLength(100);
+    expect((out.rows as { Name: string }[])[0].Name).toBe("P20");
+    expect(out.firstRow).toEqual({ Name: "P119", Buyer: "Acme" });
+  });
+
   it("ANDs conditions and resolves in_list from a templated value", async () => {
     mockRead([
       ["Name", "Buyer"],
@@ -1087,6 +1187,52 @@ describe("googleSheetsActionExecutor — update_row", () => {
     // matchCount still reports the truth, so a workflow can branch on it.
     expect(outputs(result)).toContain("updated");
     expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
+  });
+
+  it("'last' mode updates only the BOTTOM-most matching row", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Acme", "40"],
+      ["Globex", "0"],
+      ["Acme", "10"],
+    ]);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { Pending: "5" },
+      onMultipleMatches: "last",
+    });
+
+    // The second Acme is data row 2 → sheet row 4. The first Acme (row 2) is
+    // left alone: exactly one row is written, as in "first" mode.
+    expect(batchUpdateBody().data).toEqual([
+      { range: "'Ledger'!A4:ZZ4", values: [[null, 5]] },
+    ]);
+    expect(outputs(result)).toContain("updated");
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    // matchCount still reports every match; rowIndex/previousRow/rowByHeader
+    // describe the row this run actually wrote.
+    expect(out.matchCount).toBe(2);
+    expect(out.rowIndex).toBe(4);
+    expect(out.previousRow).toEqual({ "Service Buyer": "Acme", Pending: "10" });
+    expect(out.rowByHeader).toEqual({ "Service Buyer": "Acme", Pending: "5" });
+  });
+
+  it("'last' with no match writes nothing and routes No-match", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Globex", "0"],
+    ]);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { Pending: "5" },
+      onMultipleMatches: "last",
+    });
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(result)).toEqual(["no_match"]);
+    expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
   });
 
   it("'each' mode writes EVERY matched row in one request and fans out one child run per row", async () => {

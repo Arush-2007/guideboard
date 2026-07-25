@@ -36,6 +36,18 @@ describe("applyMultiMatchPolicy — first (default)", () => {
   });
 });
 
+describe("applyMultiMatchPolicy — last", () => {
+  it("passes the output through exactly like 'first' (the node already chose the row)", () => {
+    const result = apply({ mode: "last" });
+    expect(isFanOut(result)).toBe(false);
+    expect(result).toEqual({ ...context, [outputKey]: output });
+  });
+
+  it("never fails on a multi-match, however many matched", () => {
+    expect(() => apply({ mode: "last", totalCount: 150 })).not.toThrow();
+  });
+});
+
 describe("applyMultiMatchPolicy — error", () => {
   it("throws NonRetriableError when more than one item matched", () => {
     expect(() => apply({ mode: "error" })).toThrow(NonRetriableError);

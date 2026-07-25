@@ -40,6 +40,7 @@ import {
   MAX_FAN_OUT_ITEMS_LIMIT,
   type MultiMatchMode,
   readFanOutSeed,
+  selectSingleMatch,
 } from "@/lib/multi-match";
 import {
   getRowCell,
@@ -1858,14 +1859,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
           }
 
           // Nothing matched ⇒ no targets ⇒ no write (a clean no-op success, so a
-          // Condition node can branch on `matched`). Otherwise "first" writes one
-          // row, "each" writes them all.
+          // Condition node can branch on `matched`). Otherwise "each" writes
+          // every matched row and the single-match modes write exactly one —
+          // the topmost in "first", the bottom-most in "last".
+          const single = selectSingleMatch(matchedIndexes, mode);
           const targets =
-            matchedIndexes.length === 0
-              ? []
-              : mode === "each"
-                ? matchedIndexes
-                : [matchedIndexes[0]];
+            mode === "each"
+              ? matchedIndexes
+              : single === undefined
+                ? []
+                : [single];
 
           // The final value of every cell in each target row. Mapped columns are
           // overwritten with the rendered value; everything else is `null`, which
@@ -1979,7 +1982,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
       // In "each" mode, fan out one child run per updated row. Applied OUTSIDE
       // the step — the branded fan-out outcome carries a symbol that would not
-      // survive a step's JSON checkpoint. "first" keeps a single row.
+      // survive a step's JSON checkpoint. "first"/"last" planned a single
+      // target above, so `writes` already holds just that one row.
       const items = planned.writes.map((w) => w.rowByHeader);
       const outcome = applyMultiMatchPolicy({
         mode: config.onMultipleMatches,
@@ -2171,8 +2175,17 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // Cells are trimmed so `firstRow`/`rows` agree with `columnValues`.
           // Built only on the find_rows path: find_heading returned above and
           // uses neither, so computing them for it was pure wasted iteration.
+          //
+          // "last" stores the TAIL of the matches rather than the head, so the
+          // row the run acts on is always inside `rows` — otherwise a filter
+          // matching more than the cap would show a grid that excludes the one
+          // row `firstRow` points at.
           const rowLimit = mode === "each" ? matches.length : 100;
-          const rows = matches.slice(0, rowLimit).map((m) => {
+          const rows = (
+            mode === "last"
+              ? matches.slice(-rowLimit)
+              : matches.slice(0, rowLimit)
+          ).map((m) => {
             const out: Record<string, string> = {};
             for (const [col, key] of keyed) {
               out[key] = getRowCell(m.row, col).trim();
@@ -2206,10 +2219,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
               columns: keyed.map(([, key]) => key),
               rows,
               columnValues,
-              // The first matched row (sanitized keys), or {} when nothing
-              // matched. Lets a downstream node reference a SINGLE value
-              // (e.g. `firstRow.Job No`) instead of the columnValues list.
-              firstRow: rows[0] ?? {},
+              // The matched row this run acts on (sanitized keys), or {} when
+              // nothing matched: the topmost in "first", the bottom-most in
+              // "last". Lets a downstream node reference a SINGLE value
+              // (e.g. `firstRow.Job No`) instead of the columnValues list. The
+              // key is mode-independent by design — flipping first↔last must
+              // not break a saved `@<...firstRow.X>@` reference. Selecting off
+              // `rows` (not `matches`) is safe because the window above is
+              // aligned to the same mode.
+              firstRow: selectSingleMatch(rows, mode) ?? {},
             },
           };
         } catch (error) {

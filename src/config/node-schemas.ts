@@ -556,15 +556,16 @@ const googleSheetsActionSchema = z.preprocess(
       // color_rows only: paint just the topmost matched row ("first"), just the
       // bottom-most ("last"), or every matched row ("all", the default — today's
       // behavior). Its OWN key, not the shared `onMultipleMatches` below, whose
-      // first/each/error enum has no "all"/"last" and whose fan-out semantics
-      // color_rows deliberately does not use.
+      // enum has no "all" and whose fan-out semantics color_rows deliberately
+      // does not use.
       onMultipleColorMatches: z.enum(["first", "last", "all"]).optional(),
       // Legacy field, superseded by `position` (coerced above). Kept optional so
       // inbound saved data validates; the executor reads `position` now.
       insertUnder: z.enum(["group", "each_row"]).optional(),
       // Multi-match policy (shared fragment) for the list-producing actions:
-      // "first" (default), "each" (fan out one child run per matched row, capped
-      // by maxFanOutItems), or "error" (fail when more than one matches).
+      // "first" (default), "last" (the bottom-most match instead of the
+      // topmost), "each" (fan out one child run per matched row, capped by
+      // maxFanOutItems), or "error" (fail when more than one matches).
       // find_rows: which matched row downstream continues with.
       // update_row: which matched row(s) the write lands on.
       ...multiMatchConfigFields,

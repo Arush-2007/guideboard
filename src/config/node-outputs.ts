@@ -303,9 +303,10 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         developer: true,
       },
       // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
-      // the first match in "first"/"error" mode, and — in "each" (fan-out)
-      // mode — the child run's own row (each child carries a reshaped output
-      // where firstRow IS its row), so one reference works per-row everywhere.
+      // the first match in "first"/"error" mode, the bottom-most in "last",
+      // and — in "each" (fan-out) mode — the child run's own row (each child
+      // carries a reshaped output where firstRow IS its row), so one reference
+      // works per-row everywhere.
       {
         path: "firstRow",
         label: "The row this run matched (all columns)",

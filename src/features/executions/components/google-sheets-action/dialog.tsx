@@ -1108,8 +1108,9 @@ export const GoogleSheetsActionDialog = ({
 
     if (values.action === "find_rows") {
       // Every column exposes two pickable fields: the value from the matched
-      // row (the first match — or, in "each" mode, the current child run's
-      // row), and the unique-values list (for downstream in_list).
+      // row (the first or last match, per "When multiple rows match" — or, in
+      // "each" mode, the current child run's row), and the unique-values list
+      // (for downstream in_list).
       if (headers.length > 0) {
         payload.discoveredFields = headers.flatMap((h) => {
           const key = sanitizeHeaderKey(h);

@@ -110,7 +110,9 @@ with an empty filter would color the whole tab). Rows are colored across their
 used columns, up to the last header. It branches "colored" / "no_match".
 
 find_rows and update_row both accept "onMultipleMatches": "first" (default —
-find_rows continues with the first matching row; update_row updates it),
+find_rows continues with the topmost matching row; update_row updates it),
+"last" (the same, on the bottom-most matching row instead — use it for
+"the latest/most recent entry" when rows are added in order),
 "each" (run the steps after it once per matching row, each in its own run —
 update_row also writes every matched row; optional "maxFanOutItems" caps the
 runs, default 100), or "error" (fail the run when more than one row matches).

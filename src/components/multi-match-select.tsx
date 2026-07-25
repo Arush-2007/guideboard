@@ -25,7 +25,9 @@ import {
 
 const DESCRIPTIONS: Record<MultiMatchMode, (noun: string) => string> = {
   first: (noun) =>
-    `Continue with the first matching ${noun} — reference its values via the “(matched ${noun})” fields.`,
+    `Continue with the topmost matching ${noun} — reference its values via the “(matched ${noun})” fields.`,
+  last: (noun) =>
+    `Continue with the bottom-most matching ${noun} — the same “(matched ${noun})” fields, resolved to the last match instead of the first.`,
   each: (noun) =>
     `Start one run per matching ${noun}; the following steps run once for each, and the “(matched ${noun})” fields hold that run's ${noun}.`,
   error: (noun) => `Stop the workflow if more than one ${noun} matches.`,
@@ -102,6 +104,7 @@ export const MultiMatchSelect = ({
         </SelectTrigger>
         <SelectContent>
           <SelectItem value="first">Use first {itemNoun}</SelectItem>
+          <SelectItem value="last">Use last {itemNoun}</SelectItem>
           <SelectItem value="each">
             Run following steps once per {itemNoun}
           </SelectItem>
