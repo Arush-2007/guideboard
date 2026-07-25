@@ -252,7 +252,16 @@ const DirtyTracker = () => {
 const ConfigValidator = () => {
   const nodes = useStore((state) => state.nodes);
   const setInvalid = useSetAtom(invalidNodeConfigAtom);
-  const lastKeyRef = useRef("");
+  // Seeded `null`, NOT "" — for the same reason as <ConnectivityValidator>. An
+  // empty (all-valid) map serializes to "", so a `""` seed makes the first
+  // validation of a clean canvas compare equal and SKIP its write, leaving
+  // whatever the previously-opened workflow published in this app-lifetime atom
+  // (the jotai <Provider> is in the root layout). That stale map is exactly the
+  // "phantom needs-config badge that vanishes the moment you touch a node"
+  // symptom: the first real store change (e.g. selecting a node to open its
+  // dialog) forces a recompute that finally clears it. `null` makes the first
+  // pass always publish, so a valid canvas clears the atom immediately.
+  const lastKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     const map: Record<string, string[]> = {};
@@ -273,6 +282,11 @@ const ConfigValidator = () => {
       setInvalid(map);
     }
   }, [nodes, setInvalid]);
+
+  // Drop the map when the editor unmounts so a closed workflow can't leave
+  // stale needs-config entries behind in the shared atom for the next one —
+  // same contract <ConnectivityValidator> keeps for `unrunnableNodesAtom`.
+  useEffect(() => () => setInvalid({}), [setInvalid]);
 
   return null;
 };
