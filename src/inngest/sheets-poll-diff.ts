@@ -38,21 +38,40 @@ export function hashRow(row: string[], columns?: number[]): string {
  * columns changed, not just that the row changed.
  *
  * With `columns` (0-based indices) the array is `columns.length` long, entry `k`
- * hashing `row[columns[k]]`; undefined hashes every present cell in place (Google
- * trims trailing empties, so this stays width-stable across reads). A row counts
- * as edited iff any of these hashes differs from the previous poll's.
+ * hashing `row[columns[k]]`; undefined hashes every present cell in place, which
+ * is RAGGED — Google trims trailing empty cells, so the same row varies in width
+ * as its last columns fill and clear. `diffCellHashes` is what reconciles that,
+ * treating an absent position as empty. A row counts as edited iff any hash
+ * differs from the previous poll's under that comparison.
  */
 export function hashCells(row: string[], columns?: number[]): string[] {
   const cells = columns ? columns.map((i) => row[i] ?? "") : row;
   return cells.map((c) => createHash("sha1").update(c).digest("hex"));
 }
 
+/** `hashCells`' value for an empty cell — what an ABSENT trailing cell means. */
+const EMPTY_CELL_HASH = createHash("sha1").update("").digest("hex");
+
 /**
  * Diffs two cell-hash arrays (same watched projection) into the 0-based column
  * indices that changed. `watchColumns` maps a scoped position `k` back to its real
- * column index; undefined means position IS the column index. Length differences
- * (a trailing cell newly filled or cleared under whole-row watching) count as a
- * change at that position.
+ * column index; undefined means position IS the column index.
+ *
+ * A position missing from either side reads as EMPTY, not as a change. Under
+ * whole-row watching the two sides are ragged — Google trims trailing empty
+ * cells, so a row stored as `["Ada","Acme"]` comes back six cells wide the moment
+ * column F is filled. Comparing raw `undefined` against `hash("")` then marked
+ * every position in between as changed, and the trigger reported
+ * `changedFields = "C, D, E, F"` for a single edit to F — breaking any workflow
+ * that branches on WHICH field changed. Normalizing absent to empty compares the
+ * two rows by their visible content, which is what raggedness encodes.
+ *
+ * Done here rather than by padding the stored hashes to the header width: the
+ * whole-row projection signature is `"*"` regardless of width, so widening the
+ * snapshot format would NOT invalidate existing rows, and the first poll after
+ * deploy would diff every ragged stored row against a padded new one — the exact
+ * false-edit storm this fixes. Normalizing at compare time reads old and new
+ * snapshots identically and needs no re-baseline.
  */
 function diffCellHashes(
   oldCells: string[],
@@ -62,7 +81,9 @@ function diffCellHashes(
   const len = Math.max(oldCells.length, newCells.length);
   const changed: number[] = [];
   for (let k = 0; k < len; k++) {
-    if (oldCells[k] !== newCells[k]) {
+    const before = oldCells[k] ?? EMPTY_CELL_HASH;
+    const after = newCells[k] ?? EMPTY_CELL_HASH;
+    if (before !== after) {
       changed.push(watchColumns ? (watchColumns[k] ?? k) : k);
     }
   }

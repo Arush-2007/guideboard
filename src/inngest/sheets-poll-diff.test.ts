@@ -165,6 +165,61 @@ describe("planSheetsPollChanges", () => {
     expect(newCellHashes).toHaveLength(2);
   });
 
+  // Regression: Google trims trailing empty cells, so a stored row is narrower
+  // than the same row once a later column is filled. Diffing the ragged arrays
+  // raw compared `undefined` against `hash("")` and reported every position in
+  // between as changed — one edit to F came back as `changedFields = "C, D, E,
+  // F"`, so branching on WHICH field changed was wrong.
+  describe("ragged rows (trailing empty cells)", () => {
+    const header = ["A", "B", "C", "D", "E", "F"];
+
+    it("reports only the filled column, not the gap before it", () => {
+      const before = [header, ["Ada", "Acme"]];
+      const after = [header, ["Ada", "Acme", "", "", "", "X"]];
+      const { changes } = planSheetsPollChanges({
+        rows: after,
+        lastRowCount: before.length,
+        oldCellHashes: cells(before),
+        triggerOn: "added_or_updated",
+      });
+
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "updated", changedColumns: [5] },
+      ]);
+      expect(changedFieldNames(header, changes[0].changedColumns)).toEqual([
+        "F",
+      ]);
+    });
+
+    it("reports only the cleared column when a trailing cell empties", () => {
+      const before = [header, ["Ada", "Acme", "", "", "", "X"]];
+      const after = [header, ["Ada", "Acme"]];
+      const { changes } = planSheetsPollChanges({
+        rows: after,
+        lastRowCount: before.length,
+        oldCellHashes: cells(before),
+        triggerOn: "added_or_updated",
+      });
+
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "updated", changedColumns: [5] },
+      ]);
+    });
+
+    it("fires nothing when only the trailing padding differs", () => {
+      const before = [header, ["Ada", "Acme"]];
+      const after = [header, ["Ada", "Acme", "", "", ""]];
+      const { changes } = planSheetsPollChanges({
+        rows: after,
+        lastRowCount: before.length,
+        oldCellHashes: cells(before),
+        triggerOn: "added_or_updated",
+      });
+
+      expect(changes).toEqual([]);
+    });
+  });
+
   describe("watchColumns (column-scoped edits)", () => {
     // Columns: 0=Name, 1=City, 2=Status. Watch only Status (index 2).
     const before = [
