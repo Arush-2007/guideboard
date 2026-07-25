@@ -32,13 +32,14 @@ import { processSchedulePoll } from "./schedule-poll";
 import {
   changedFieldNames,
   computeWatchedColumns,
+  healIgnoreColumns,
   planSheetsPollChanges,
   readSnapshot,
   rowValuesByHeader,
   type SheetsPollSnapshot,
   type SheetsTriggerOn,
   sheetsPollIdempotencyKey,
-  watchColumnsSignature,
+  sheetsProjection,
 } from "./sheets-poll-diff";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
@@ -746,6 +747,42 @@ export const handleGmailPoll = inngest.createFunction(
   },
 );
 
+/**
+ * Rewrites the Sheets trigger node's `ignoreColumns` after the poller followed a
+ * renamed column, keeping the config the user sees (and the copy `syncTriggerPolls`
+ * re-denormalizes) pointed at the column they actually picked.
+ *
+ * Best-effort: the poll row is already healed, so a failure here costs a stale
+ * dialog label and a re-heal on the next poll, not a missed trigger — never a
+ * reason to fail the run and re-fire the executions this poll already sent.
+ */
+async function persistHealedIgnoreColumns(
+  workflowId: string,
+  ignoreColumns: string[],
+) {
+  try {
+    const node = await prisma.node.findFirst({
+      where: { workflowId, type: NodeType.GOOGLE_SHEETS_TRIGGER },
+      select: { id: true, data: true },
+    });
+    if (!node) return;
+
+    const data =
+      node.data && typeof node.data === "object" && !Array.isArray(node.data)
+        ? (node.data as Prisma.JsonObject)
+        : {};
+
+    await prisma.node.update({
+      where: { id: node.id },
+      data: { data: { ...data, ignoreColumns } },
+    });
+  } catch (err) {
+    logger.error("Failed to heal Sheets trigger ignoreColumns", err, {
+      workflowId,
+    });
+  }
+}
+
 // Dispatcher: fans out one `polls/google-sheets.check` event per poll row.
 // Per-poll work lives in `handleGoogleSheetsPoll`.
 export const pollGoogleSheets = inngest.createFunction(
@@ -828,19 +865,30 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
       const currentRowCount = rows.length;
       const header = rows[0] ?? [];
 
+      // `readSnapshot` owns the persisted shape (incl. the legacy per-row forms).
+      const {
+        cellHashes: oldCellHashes,
+        projection: oldProjection,
+        header: lastHeader,
+      } = readSnapshot(poll.rowHashes);
+
       // Ignored columns are stored as header names; resolve against the current
       // header row (so scoping tracks a column even if it was reordered) and
       // watch everything else. Empty = watch the whole row.
-      const ignoreNames = Array.isArray(poll.ignoreColumns)
+      const storedIgnoreNames = Array.isArray(poll.ignoreColumns)
         ? (poll.ignoreColumns as string[])
         : [];
-      const watchColumns = computeWatchedColumns(header, ignoreNames);
-      const newSignature = watchColumnsSignature(header, watchColumns);
+      // Renaming an ignored column would otherwise stop its stored name from
+      // matching, silently un-ignoring it. Follow the rename BEFORE scoping, so
+      // this poll already honours the setting rather than losing it for a poll
+      // (and widening the watched set, which would suppress its edits too).
+      const healedIgnoreNames = lastHeader
+        ? healIgnoreColumns(storedIgnoreNames, lastHeader, header)
+        : null;
+      const ignoreNames = healedIgnoreNames ?? storedIgnoreNames;
 
-      // `readSnapshot` owns the persisted shape (incl. the legacy per-row forms).
-      const { cellHashes: oldCellHashes, sig: oldSignature } = readSnapshot(
-        poll.rowHashes,
-      );
+      const watchColumns = computeWatchedColumns(header, ignoreNames);
+      const newProjection = sheetsProjection(header, watchColumns);
 
       const { changes, newCellHashes } = planSheetsPollChanges({
         rows,
@@ -850,8 +898,8 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         oldCellHashes,
         triggerOn: poll.triggerOn as SheetsTriggerOn,
         watchColumns,
-        oldSignature,
-        newSignature,
+        oldProjection,
+        newProjection,
       });
 
       for (const { rowIndex, changeType, changedColumns } of changes) {
@@ -889,15 +937,27 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         where: { id: poll.id },
         data: {
           lastRowCount: currentRowCount,
-          // Snapshot = the hashes plus the projection they were computed under,
-          // so the next poll can tell whether that projection still holds.
+          // Snapshot = the hashes, the projection they were computed under (so
+          // the next poll can tell whether that projection still holds), and the
+          // header they were read under (so it can spot a rename).
           rowHashes: {
-            sig: newSignature,
+            sig: newProjection.names,
+            cols: newProjection.cols,
+            header,
             cellHashes: newCellHashes,
           } satisfies SheetsPollSnapshot,
+          ...(healedIgnoreNames ? { ignoreColumns: healedIgnoreNames } : {}),
           lastChecked: new Date(),
         },
       });
+
+      // The poll row is a denormalized copy — `syncTriggerPolls` rewrites it from
+      // the trigger node's `data` on every workflow save, so healing only the copy
+      // would be undone by the next save (and leave the dialog showing the old
+      // name). Update the source of truth too.
+      if (healedIgnoreNames) {
+        await persistHealedIgnoreColumns(poll.workflowId, healedIgnoreNames);
+      }
     });
   },
 );

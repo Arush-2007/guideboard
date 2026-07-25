@@ -237,8 +237,10 @@ export const GoogleSheetsTriggerDialog = ({
                               ? ignored.filter((n) => n !== name)
                               : [...ignored, name],
                           );
-                        // Union so an ignored column that's since been renamed
-                        // away still shows (as "not found") not silently gone.
+                        // Union so an ignored column that's since been DELETED
+                        // still shows (as "not found") not silently gone. A
+                        // rename doesn't land here — the poller follows it and
+                        // rewrites the stored name (healIgnoreColumns).
                         const options = Array.from(
                           new Set([...headers, ...ignored]),
                         );

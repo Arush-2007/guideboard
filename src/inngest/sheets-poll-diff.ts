@@ -134,6 +134,9 @@ export function sheetsPollIdempotencyKey(params: {
   return `google_sheets:${params.spreadsheetId}:${params.rowIndex}:${discriminator}`;
 }
 
+/** How a header name is compared everywhere: case- and whitespace-insensitive. */
+const norm = (s: string) => s.trim().toLowerCase();
+
 /**
  * Maps header NAMES to their current 0-based column indices using the sheet's
  * header row (row 1). Case- and whitespace-insensitive; names with no matching
@@ -145,7 +148,6 @@ export function resolveColumnIndices(
   headerRow: string[],
   names: string[],
 ): number[] {
-  const norm = (s: string) => s.trim().toLowerCase();
   const indexByName = new Map<string, number>();
   headerRow.forEach((header, i) => {
     const key = norm(header);
@@ -181,19 +183,92 @@ export function computeWatchedColumns(
 }
 
 /**
- * Canonical fingerprint of the watched-column PROJECTION the stored row hashes
- * were computed under. Stored alongside the hashes so a poll can tell whether
- * that projection still holds: if it changed — because the sheet's header was
- * widened/narrowed/renamed, or the user changed which columns are watched — the
- * old hashes are no longer comparable and must be re-seeded (see
- * `planSheetsPollChanges`), rather than every row reading as a spurious edit.
+ * Detects columns RENAMED IN PLACE between two header rows, as a map of
+ * `oldIndex -> new name`.
  *
- * Keyed on the watched columns' NAMES (not indices), so reordering columns — the
- * data moves with them, leaving the watched values unchanged — keeps the same
- * signature and does NOT force a needless re-baseline. `"*"` is the whole-row
+ * A rename is only claimed when the old name is gone from the new header AND the
+ * new header holds an unclaimed, non-blank name at the SAME index. That
+ * same-index requirement is the discriminator: the values API gives us labels
+ * only, so "renamed B to X" and "deleted B, added X" are otherwise identical
+ * before/after states. Renaming leaves the column where it is, while a delete
+ * shifts its neighbours, so demanding a positional match claims the common case
+ * and declines the ambiguous one — and declining just means no heal, which is
+ * where this started.
+ *
+ * Names surviving anywhere in the new header are matched first (and their new
+ * slots claimed), so a pure REORDER produces no renames at all.
+ */
+export function detectRenamedColumns(
+  oldHeader: string[],
+  newHeader: string[],
+): Map<number, string> {
+  const survivingNames = new Set(newHeader.map(norm).filter(Boolean));
+  // A slot is claimed when some old column still carries that name — a moved
+  // column, not a rename target.
+  const claimed = new Set(
+    resolveColumnIndices(
+      newHeader,
+      oldHeader.filter((name) => survivingNames.has(norm(name))),
+    ),
+  );
+
+  const renames = new Map<number, string>();
+  oldHeader.forEach((oldName, i) => {
+    if (!norm(oldName) || survivingNames.has(norm(oldName))) return;
+    const newName = newHeader[i];
+    if (!newName || !norm(newName) || claimed.has(i)) return;
+    renames.set(i, newName);
+  });
+  return renames;
+}
+
+/**
+ * Follows a renamed header through the user's IGNORE list, returning the updated
+ * names — or `null` when nothing moved, so the caller can skip the write.
+ *
+ * The ignore list is stored as header names and re-resolved against the live
+ * header each poll (that's what lets scoping survive a reorder). The flip side is
+ * that renaming an ignored column made its stored name stop matching, so the
+ * column silently became WATCHED — scoping the user configured was quietly lost,
+ * and the widened watched set also tripped the projection guard, suppressing that
+ * poll's edits. Rewriting the stored name to follow the rename keeps the setting
+ * pointed at the column the user picked.
+ *
+ * Only names that no longer resolve are touched, so a rename that merely
+ * reorders, or one affecting an unrelated column, is a no-op. A name that
+ * resolves in neither header is left alone for the dialog to show as "not found".
+ */
+export function healIgnoreColumns(
+  ignoreNames: string[],
+  oldHeader: string[],
+  newHeader: string[],
+): string[] | null {
+  if (ignoreNames.length === 0 || oldHeader.length === 0) return null;
+
+  const renames = detectRenamedColumns(oldHeader, newHeader);
+  if (renames.size === 0) return null;
+
+  let changed = false;
+  const healed = ignoreNames.map((name) => {
+    if (resolveColumnIndices(newHeader, [name]).length > 0) return name;
+    const oldIndex = resolveColumnIndices(oldHeader, [name])[0];
+    const renamedTo =
+      oldIndex === undefined ? undefined : renames.get(oldIndex);
+    if (renamedTo === undefined) return name;
+    changed = true;
+    return renamedTo;
+  });
+
+  return changed ? healed : null;
+}
+
+/**
+ * Canonical fingerprint of the watched columns' NAMES. Stable across a column
+ * REORDER — the data moves with the header, so the watched values are unchanged
+ * — which is the identity that survives reordering. `"*"` is the whole-row
  * projection (nothing scoped), whose hash is naturally width-stable.
  */
-export function watchColumnsSignature(
+function watchColumnsNameSignature(
   headerRow: string[],
   watchColumns: number[] | undefined,
 ): string {
@@ -205,6 +280,74 @@ export function watchColumnsSignature(
     (headerRow[i] ?? "").trim().toLowerCase(),
   );
   return JSON.stringify(names.sort());
+}
+
+/**
+ * The watched-column PROJECTION the stored per-position cell hashes were computed
+ * under — i.e. which column each stored position describes. Persisted alongside
+ * the hashes so a poll can tell whether that projection still holds: if it no
+ * longer does, the old hashes aren't comparable and must be re-seeded (see
+ * `planSheetsPollChanges`) rather than every row reading as a spurious edit.
+ *
+ * Recorded under TWO independent identities because neither survives every edit a
+ * user makes to a header row on its own; `projectionsComparable` accepts either.
+ */
+export type SheetsProjection = {
+  /** Watched column NAMES. Survives a reorder; changes on a rename. */
+  names: string;
+  /** Watched column INDICES. Survives a rename; changes on a reorder. */
+  cols: string;
+};
+
+/**
+ * A projection recovered from a stored snapshot, where the index identity may
+ * predate the field — that's the one asymmetry with a freshly computed one.
+ */
+export type StoredProjection = Omit<SheetsProjection, "cols"> & {
+  cols: string | null;
+};
+
+export function sheetsProjection(
+  headerRow: string[],
+  watchColumns: number[] | undefined,
+): SheetsProjection {
+  return {
+    names: watchColumnsNameSignature(headerRow, watchColumns),
+    // Whole-row watching is width-agnostic, so it has no index list to pin.
+    cols: watchColumns === undefined ? "*" : JSON.stringify(watchColumns),
+  };
+}
+
+/**
+ * Whether the stored per-position cell hashes can still be diffed against this
+ * poll's — whether both sides' positions describe the same columns.
+ *
+ * EITHER identity matching is enough, because each covers what the other misses:
+ * - **Names** match → a REORDER. Indices moved, but the data moved with the
+ *   header, so position `k` still holds the same column's value.
+ * - **Indices** match → a RENAME. The label changed; the column at each watched
+ *   position, and its data, did not.
+ *
+ * Requiring names alone (as this once did) meant renaming one header re-baselined
+ * the whole sheet, silently swallowing every genuine row edit made in the same
+ * poll window. The indices are untouched by a rename, so they keep the snapshot
+ * comparable and those edits fire.
+ *
+ * A rename that also changes the watched SET still re-baselines, correctly: an
+ * IGNORED column that gets renamed stops matching the ignore list and becomes
+ * watched, which shifts the indices too, so neither identity matches and the
+ * positions really do describe new columns.
+ *
+ * A null stored projection means "unknown" — a legacy snapshot, or one written
+ * without a signature — and is never comparable, forcing the re-seed.
+ */
+export function projectionsComparable(
+  stored: StoredProjection | null,
+  current: SheetsProjection,
+): boolean {
+  if (stored === null) return false;
+  if (stored.names === current.names) return true;
+  return stored.cols !== null && stored.cols === current.cols;
 }
 
 /**
@@ -230,7 +373,17 @@ export function rowValuesByHeader(
  * The poll's stored edit snapshot: per-row, per-cell hashes + the projection they
  * cover. Cell-level (not row-level) so a poll can report which columns changed.
  */
-export type SheetsPollSnapshot = { sig: string; cellHashes: string[][] };
+export type SheetsPollSnapshot = {
+  /** The projection's NAME signature. Keyed `sig` because that's the historical
+   *  key — snapshots written before `cols` existed still read back correctly. */
+  sig: string;
+  /** The projection's INDEX signature. Absent in pre-`cols` snapshots. */
+  cols: string;
+  /** Row 1 as last seen, so the next poll can spot a renamed column by diffing
+   *  it against the live header. Absent in snapshots written before this. */
+  header: string[];
+  cellHashes: string[][];
+};
 
 function isCellHashes(v: unknown): v is string[][] {
   return (
@@ -244,43 +397,67 @@ function isStringArray(v: unknown): v is string[] {
 }
 
 /**
- * Reads the stored snapshot back into `{ cellHashes, sig }`, the single place that
- * knows its persisted shape. Current shape is `{ sig, cellHashes }`.
+ * Reads the stored snapshot back into `{ cellHashes, projection, header }`, the
+ * single place that knows its persisted shape. Current shape is
+ * `{ sig, cols, header, cellHashes }`.
+ *
+ * A snapshot written before `cols` existed still yields a usable projection —
+ * names only, `cols: null` — so deploying the index identity costs no re-baseline;
+ * those polls keep comparing by name until the next write records both. A missing
+ * `header` likewise just means no rename healing until the next write records one.
  *
  * The two legacy shapes stored per-ROW hashes — `{ sig, hashes }` and, older
  * still, a bare `string[]`. Neither can be diffed at the cell level, so both are
- * lifted to a non-null placeholder (one hash per row) with `sig: null`. That
- * `null` signature forces the projection guard in `planSheetsPollChanges` to
- * suppress THIS poll's edits and re-seed real cell hashes — while the preserved
- * row COUNT still lets appends fire. Anything else reads as no snapshot: a
- * first-poll baseline.
+ * lifted to a non-null placeholder (one hash per row) with a `null` projection.
+ * That forces the projection guard in `planSheetsPollChanges` to suppress THIS
+ * poll's edits and re-seed real cell hashes — while the preserved row COUNT still
+ * lets appends fire. Anything else reads as no snapshot: a first-poll baseline.
  */
 export function readSnapshot(stored: unknown): {
   cellHashes: string[][] | null;
-  sig: string | null;
+  projection: StoredProjection | null;
+  header: string[] | null;
 } {
   if (stored && typeof stored === "object" && !Array.isArray(stored)) {
     const obj = stored as {
       cellHashes?: unknown;
       hashes?: unknown;
       sig?: unknown;
+      cols?: unknown;
+      header?: unknown;
     };
     if (isCellHashes(obj.cellHashes)) {
       return {
         cellHashes: obj.cellHashes,
-        sig: typeof obj.sig === "string" ? obj.sig : null,
+        projection:
+          typeof obj.sig === "string"
+            ? {
+                names: obj.sig,
+                cols: typeof obj.cols === "string" ? obj.cols : null,
+              }
+            : null,
+        header: isStringArray(obj.header) ? obj.header : null,
       };
     }
-    // Legacy per-row hashes: re-seed once (sig null → edits suppressed, appends fire).
+    // Legacy per-row hashes: re-seed once (no projection → edits suppressed,
+    // appends fire).
     if (isStringArray(obj.hashes)) {
-      return { cellHashes: obj.hashes.map((h) => [h]), sig: null };
+      return {
+        cellHashes: obj.hashes.map((h) => [h]),
+        projection: null,
+        header: null,
+      };
     }
   }
   // Oldest legacy shape: a bare per-row hash array. Same one-time re-seed.
   if (isStringArray(stored)) {
-    return { cellHashes: stored.map((h) => [h]), sig: null };
+    return {
+      cellHashes: stored.map((h) => [h]),
+      projection: null,
+      header: null,
+    };
   }
-  return { cellHashes: null, sig: null };
+  return { cellHashes: null, projection: null, header: null };
 }
 
 /**
@@ -293,8 +470,13 @@ export function readSnapshot(stored: unknown): {
  * inserted or deleted in the middle shifts everything below and reads as a run
  * of edits.
  *
- * Row 1 is always the header: edits to it never fire "updated", since renaming
- * a column is a schema tweak, not a data event.
+ * Row 1 is always the header, never a data row, so it fires NEITHER kind of
+ * change: not "updated", since renaming a column is a schema tweak rather than a
+ * data event, and not "added" either. The append case only shows up on a sheet
+ * that was empty at the baseline poll — typing its header row then grew the row
+ * count from 0 to 1 and fired row 1 as a new record, whose `values` were the
+ * header mapped onto itself (`{ Name: "Name" }`). The first real data row lands
+ * at row 2 and fires normally.
  *
  * The first poll (no prior snapshot — `oldHashes` is null) is a baseline: it
  * records the current sheet and fires nothing. Attaching the trigger must not
@@ -305,14 +487,15 @@ export function readSnapshot(stored: unknown): {
  * a change outside them fires nothing. Undefined watches the whole row. Appends
  * are unaffected — a new row fires regardless of which columns it fills.
  *
- * `oldSignature`/`newSignature` (from `watchColumnsSignature`) guard against
- * comparing hashes across a changed projection: when they differ, the stored
- * hashes describe a DIFFERENT set of watched columns, so an edit diff would be
- * garbage (every row would look changed). In that case edits are suppressed and
- * the hashes re-seed — but appends still fire, since a new row is an append no
- * matter which columns are watched. This is what makes adding a column to a
- * scoped sheet, or changing the watched set, re-baseline cleanly instead of
- * firing a false edit storm.
+ * `oldProjection`/`newProjection` (from `sheetsProjection`) guard against
+ * comparing hashes across a changed projection: when they aren't comparable, the
+ * stored hashes describe a DIFFERENT set of watched columns, so an edit diff
+ * would be garbage (every row would look changed). In that case edits are
+ * suppressed and the hashes re-seed — but appends still fire, since a new row is
+ * an append no matter which columns are watched. This is what makes adding a
+ * column to a scoped sheet, or changing the watched set, re-baseline cleanly
+ * instead of firing a false edit storm. Renaming or reordering a header does NOT
+ * trip it — see `projectionsComparable`.
  */
 export function planSheetsPollChanges(params: {
   rows: string[][];
@@ -323,10 +506,10 @@ export function planSheetsPollChanges(params: {
   triggerOn: SheetsTriggerOn;
   /** 0-based column indices to scope edit detection to; undefined = whole row. */
   watchColumns?: number[];
-  /** Projection signature the stored hashes were computed under; null if unknown. */
-  oldSignature?: string | null;
-  /** Projection signature for this poll; null skips the check (e.g. in tests). */
-  newSignature?: string | null;
+  /** Projection the stored hashes were computed under; null if unknown. */
+  oldProjection?: StoredProjection | null;
+  /** Projection for this poll; null skips the check (e.g. in tests). */
+  newProjection?: SheetsProjection | null;
 }): { changes: SheetsChange[]; newCellHashes: string[][] } {
   const {
     rows,
@@ -334,8 +517,8 @@ export function planSheetsPollChanges(params: {
     oldCellHashes,
     triggerOn,
     watchColumns,
-    oldSignature = null,
-    newSignature = null,
+    oldProjection = null,
+    newProjection = null,
   } = params;
   const newCellHashes = rows.map((row) => hashCells(row, watchColumns));
 
@@ -346,10 +529,13 @@ export function planSheetsPollChanges(params: {
     return { changes: [], newCellHashes };
   }
 
-  // The stored hashes were computed under a different watched-column projection
-  // (header change or a changed watched set), so a per-position edit diff would
-  // be meaningless. Re-seed by suppressing edits this poll; appends still fire.
-  const staleSnapshot = newSignature !== null && oldSignature !== newSignature;
+  // The stored hashes were computed under a watched-column projection this poll's
+  // positions no longer match (a column added/removed, or a changed watched set),
+  // so a per-position edit diff would be meaningless. Re-seed by suppressing edits
+  // this poll; appends still fire.
+  const staleSnapshot =
+    newProjection !== null &&
+    !projectionsComparable(oldProjection, newProjection);
 
   const watchAdded = triggerOn === "added" || triggerOn === "added_or_updated";
   const watchUpdated =
@@ -357,7 +543,11 @@ export function planSheetsPollChanges(params: {
 
   const changes: SheetsChange[] = [];
 
-  for (let i = 0; i < rows.length; i++) {
+  // From i = 1: position 0 is the header row, which is never a data row and so
+  // can't be added or edited. Skipping it structurally (rather than per branch)
+  // is what keeps a sheet that was empty at the baseline from firing its header
+  // as an appended record once someone types it.
+  for (let i = 1; i < rows.length; i++) {
     const rowIndex = i + 1;
 
     if (i >= lastRowCount) {
@@ -368,9 +558,8 @@ export function planSheetsPollChanges(params: {
     }
 
     // Existing position: an edit only if the content at this position actually
-    // changed AND the snapshot is comparable. Row 1 (i === 0) is the header, so
-    // its edits are ignored.
-    if (!staleSnapshot && watchUpdated && i > 0 && i < oldCellHashes.length) {
+    // changed AND the snapshot is comparable.
+    if (!staleSnapshot && watchUpdated && i < oldCellHashes.length) {
       const changedColumns = diffCellHashes(
         oldCellHashes[i],
         newCellHashes[i],

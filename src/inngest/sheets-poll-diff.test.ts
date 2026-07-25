@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   changedFieldNames,
   computeWatchedColumns,
+  detectRenamedColumns,
   hashCells,
+  healIgnoreColumns,
   planSheetsPollChanges,
+  projectionsComparable,
   readSnapshot,
   resolveColumnIndices,
   rowValuesByHeader,
   sheetsPollIdempotencyKey,
-  watchColumnsSignature,
+  sheetsProjection,
 } from "./sheets-poll-diff";
 
 const cells = (rows: string[][], columns?: number[]) =>
@@ -149,6 +152,54 @@ describe("planSheetsPollChanges", () => {
     expect(changes).toEqual([
       { rowIndex: 3, changeType: "updated", changedColumns: [0] },
     ]);
+  });
+
+  // The header is a schema row, not a record. On a sheet that was empty when the
+  // trigger baselined, typing it grew the row count 0 → 1 and fired row 1 as an
+  // appended record whose `values` were the header mapped onto itself.
+  describe("a sheet that was empty at the baseline poll", () => {
+    it("does not fire when the header row is typed", () => {
+      const { changes } = planSheetsPollChanges({
+        rows: [["Name", "Status"]],
+        lastRowCount: 0,
+        oldCellHashes: [], // baselined empty — a snapshot, not a first poll
+        triggerOn: "added_or_updated",
+      });
+
+      expect(changes).toEqual([]);
+    });
+
+    it("fires the first real data row, at row 2", () => {
+      const { changes } = planSheetsPollChanges({
+        rows: [
+          ["Name", "Status"],
+          ["Ada", "new"],
+        ],
+        lastRowCount: 1, // the header was recorded by the previous poll
+        oldCellHashes: cells([["Name", "Status"]]),
+        triggerOn: "added_or_updated",
+      });
+
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "added", changedColumns: [] },
+      ]);
+    });
+
+    it("fires only the data row when header and first row appear together", () => {
+      const { changes } = planSheetsPollChanges({
+        rows: [
+          ["Name", "Status"],
+          ["Ada", "new"],
+        ],
+        lastRowCount: 0,
+        oldCellHashes: [],
+        triggerOn: "added_or_updated",
+      });
+
+      expect(changes).toEqual([
+        { rowIndex: 2, changeType: "added", changedColumns: [] },
+      ]);
+    });
   });
 
   it("does not report shrunk rows as changes and returns the trimmed hashes", () => {
@@ -466,62 +517,274 @@ describe("rowValuesByHeader", () => {
 });
 
 describe("readSnapshot", () => {
-  it("reads the current { sig, cellHashes } shape", () => {
-    expect(readSnapshot({ sig: "*", cellHashes: [["a"], ["b", "c"]] })).toEqual(
-      {
+  it("reads the current { sig, cols, header, cellHashes } shape", () => {
+    expect(
+      readSnapshot({
+        sig: '["status"]',
+        cols: "[1]",
+        header: ["Name", "Status"],
         cellHashes: [["a"], ["b", "c"]],
-        sig: "*",
-      },
-    );
+      }),
+    ).toEqual({
+      cellHashes: [["a"], ["b", "c"]],
+      projection: { names: '["status"]', cols: "[1]" },
+      header: ["Name", "Status"],
+    });
   });
 
-  it("lifts the legacy per-row { sig, hashes } shape to a re-seed placeholder (sig dropped)", () => {
-    // sig is dropped so the projection guard suppresses this poll's edits and
+  it("reads a pre-`cols`/`header` snapshot with the name identity only", () => {
+    // Written before the index identity and stored header existed: still
+    // comparable by name, so deploying them costs no re-baseline.
+    expect(readSnapshot({ sig: "*", cellHashes: [["a"], ["b"]] })).toEqual({
+      cellHashes: [["a"], ["b"]],
+      projection: { names: "*", cols: null },
+      header: null,
+    });
+  });
+
+  it("lifts the legacy per-row { sig, hashes } shape to a re-seed placeholder (projection dropped)", () => {
+    // The projection is dropped so the guard suppresses this poll's edits and
     // re-seeds real cell hashes; the row count is preserved so appends still fire.
     expect(readSnapshot({ sig: "*", hashes: ["a", "b"] })).toEqual({
       cellHashes: [["a"], ["b"]],
-      sig: null,
+      projection: null,
+      header: null,
     });
   });
 
   it("lifts the oldest legacy bare array the same way (re-seeds once)", () => {
     expect(readSnapshot(["a", "b"])).toEqual({
       cellHashes: [["a"], ["b"]],
-      sig: null,
+      projection: null,
+      header: null,
     });
   });
 
   it("treats null / non-snapshot values as no snapshot (first-poll baseline)", () => {
-    expect(readSnapshot(null)).toEqual({ cellHashes: null, sig: null });
-    expect(readSnapshot("garbage")).toEqual({ cellHashes: null, sig: null });
-    expect(readSnapshot({ nope: 1 })).toEqual({ cellHashes: null, sig: null });
+    const none = { cellHashes: null, projection: null, header: null };
+    expect(readSnapshot(null)).toEqual(none);
+    expect(readSnapshot("garbage")).toEqual(none);
+    expect(readSnapshot({ nope: 1 })).toEqual(none);
   });
 });
 
-describe("watchColumnsSignature", () => {
-  it("is '*' for the whole-row (unscoped) projection", () => {
-    expect(watchColumnsSignature(["Name", "City"], undefined)).toBe("*");
+describe("detectRenamedColumns", () => {
+  it("detects a column renamed in place", () => {
+    expect(
+      detectRenamedColumns(
+        ["Name", "City", "Status"],
+        ["Name", "Town", "Status"],
+      ),
+    ).toEqual(new Map([[1, "Town"]]));
   });
 
-  it("is identical after a column reorder (keyed on names, not indices)", () => {
+  it("detects several renames at once", () => {
+    expect(detectRenamedColumns(["A", "B", "C"], ["A", "X", "Y"])).toEqual(
+      new Map([
+        [1, "X"],
+        [2, "Y"],
+      ]),
+    );
+  });
+
+  it("reports nothing for a pure reorder (every name survives)", () => {
+    expect(detectRenamedColumns(["A", "B", "C"], ["C", "A", "B"])).toEqual(
+      new Map(),
+    );
+  });
+
+  it("reports nothing when a column is deleted and its neighbour shifts in", () => {
+    // B is gone and C now sits at index 1. Claiming that as "B renamed to C"
+    // would ignore a column the user still watches.
+    expect(detectRenamedColumns(["A", "B", "C"], ["A", "C"])).toEqual(
+      new Map(),
+    );
+  });
+
+  it("reports nothing for a delete plus an unrelated add (position moved)", () => {
+    expect(detectRenamedColumns(["A", "B", "C"], ["A", "C", "D"])).toEqual(
+      new Map(),
+    );
+  });
+
+  it("detects a rename even when a column is appended in the same window", () => {
+    expect(detectRenamedColumns(["A", "B", "C"], ["A", "X", "C", "D"])).toEqual(
+      new Map([[1, "X"]]),
+    );
+  });
+
+  it("ignores blank headers on either side", () => {
+    expect(detectRenamedColumns(["A", "", "C"], ["A", "X", "C"])).toEqual(
+      new Map(),
+    );
+    expect(detectRenamedColumns(["A", "B", "C"], ["A", "  ", "C"])).toEqual(
+      new Map(),
+    );
+  });
+});
+
+// Renaming an IGNORED column used to stop its stored name from matching the live
+// header, so the column silently became watched — the scoping the user configured
+// was quietly lost (and the widened watched set suppressed that poll's edits too).
+describe("healIgnoreColumns", () => {
+  it("follows an ignored column through a rename", () => {
+    expect(
+      healIgnoreColumns(
+        ["City"],
+        ["Name", "City", "Status"],
+        ["Name", "Town", "Status"],
+      ),
+    ).toEqual(["Town"]);
+  });
+
+  it("leaves untouched names alone while healing the renamed one", () => {
+    expect(
+      healIgnoreColumns(
+        ["City", "Status"],
+        ["Name", "City", "Status"],
+        ["Name", "Town", "Status"],
+      ),
+    ).toEqual(["Town", "Status"]);
+  });
+
+  it("returns null when a rename doesn't touch an ignored column", () => {
+    expect(
+      healIgnoreColumns(
+        ["Status"],
+        ["Name", "City", "Status"],
+        ["Full Name", "City", "Status"],
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null for a reorder (names still resolve)", () => {
+    expect(
+      healIgnoreColumns(
+        ["City"],
+        ["Name", "City", "Status"],
+        ["City", "Status", "Name"],
+      ),
+    ).toBeNull();
+  });
+
+  it("leaves a DELETED ignored column alone for the dialog to flag", () => {
+    expect(
+      healIgnoreColumns(
+        ["City"],
+        ["Name", "City", "Status"],
+        ["Name", "Status"],
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null with nothing ignored or no stored header", () => {
+    expect(healIgnoreColumns([], ["Name"], ["Full Name"])).toBeNull();
+    expect(healIgnoreColumns(["City"], [], ["Name", "Town"])).toBeNull();
+  });
+
+  it("matches the stored name case- and whitespace-insensitively", () => {
+    expect(
+      healIgnoreColumns([" city "], ["Name", "City"], ["Name", "Town"]),
+    ).toEqual(["Town"]);
+  });
+
+  // The whole point of healing before scoping: the watched set is unchanged, so
+  // the projection still matches and the poll's real edits aren't suppressed.
+  it("keeps the watched projection stable across the rename", () => {
+    const oldHeader = ["Name", "City", "Status"];
+    const newHeader = ["Name", "Town", "Status"];
+    const healed = healIgnoreColumns(["City"], oldHeader, newHeader);
+
+    expect(
+      projectionsComparable(
+        sheetsProjection(oldHeader, computeWatchedColumns(oldHeader, ["City"])),
+        sheetsProjection(
+          newHeader,
+          computeWatchedColumns(newHeader, healed ?? []),
+        ),
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("sheetsProjection / projectionsComparable", () => {
+  const comparable = (
+    before: { header: string[]; watch?: number[] },
+    after: { header: string[]; watch?: number[] },
+  ) =>
+    projectionsComparable(
+      sheetsProjection(before.header, before.watch),
+      sheetsProjection(after.header, after.watch),
+    );
+
+  it("is '*' on both identities for the whole-row (unscoped) projection", () => {
+    expect(sheetsProjection(["Name", "City"], undefined)).toEqual({
+      names: "*",
+      cols: "*",
+    });
+  });
+
+  it("stays comparable across a column reorder (the name identity holds)", () => {
     // Watch Name + Status. Before: indices [0,2]; after reorder: indices [0,1].
-    const before = watchColumnsSignature(["Name", "City", "Status"], [0, 2]);
-    const after = watchColumnsSignature(["Name", "Status", "City"], [0, 1]);
-    expect(after).toBe(before);
+    expect(
+      comparable(
+        { header: ["Name", "City", "Status"], watch: [0, 2] },
+        { header: ["Name", "Status", "City"], watch: [0, 1] },
+      ),
+    ).toBe(true);
   });
 
-  it("changes when a watched column is added", () => {
-    const before = watchColumnsSignature(["Name", "City"], [0]);
-    const after = watchColumnsSignature(["Name", "City", "Status"], [0, 2]);
-    expect(after).not.toBe(before);
+  it("stays comparable across a watched-column RENAME (the index identity holds)", () => {
+    expect(
+      comparable(
+        { header: ["Name", "City", "Status"], watch: [0, 2] },
+        { header: ["Full Name", "City", "Status"], watch: [0, 2] },
+      ),
+    ).toBe(true);
+  });
+
+  it("is not comparable when a watched column is added", () => {
+    expect(
+      comparable(
+        { header: ["Name", "City"], watch: [0] },
+        { header: ["Name", "City", "Status"], watch: [0, 2] },
+      ),
+    ).toBe(false);
+  });
+
+  it("is not comparable when renaming an IGNORED column widens the watched set", () => {
+    // "City" was ignored; renamed, it stops matching the ignore list and becomes
+    // watched — both identities move, because the positions really do change.
+    expect(
+      comparable(
+        { header: ["Name", "City", "Status"], watch: [0, 2] },
+        { header: ["Name", "Town", "Status"], watch: [0, 1, 2] },
+      ),
+    ).toBe(false);
+  });
+
+  it("is never comparable against an unknown (legacy) projection", () => {
+    expect(projectionsComparable(null, sheetsProjection(["Name"], [0]))).toBe(
+      false,
+    );
+  });
+
+  it("falls back to the name identity when the stored index one predates `cols`", () => {
+    const current = sheetsProjection(["Name", "Status"], [0, 1]);
+    expect(
+      projectionsComparable({ names: current.names, cols: null }, current),
+    ).toBe(true);
+    expect(
+      projectionsComparable({ names: '["other"]', cols: null }, current),
+    ).toBe(false);
   });
 });
 
-describe("planSheetsPollChanges — stale projection (signature) guard", () => {
+describe("planSheetsPollChanges — stale projection guard", () => {
   it("suppresses edits but still fires appends when the projection changed", () => {
     const oldRows = [["Name"], ["a"], ["b"]];
     // A column was added and its cells filled, so every row's scoped hash would
-    // otherwise differ — a false edit storm. The signature differs, so no edits.
+    // otherwise differ — a false edit storm. The projection differs, so no edits.
     const newRows = [
       ["Name", "Status"],
       ["a", "x"],
@@ -534,8 +797,8 @@ describe("planSheetsPollChanges — stale projection (signature) guard", () => {
       oldCellHashes: cells(oldRows, [0]),
       triggerOn: "added_or_updated",
       watchColumns: [0, 1],
-      oldSignature: "name",
-      newSignature: "name status",
+      oldProjection: sheetsProjection(["Name"], [0]),
+      newProjection: sheetsProjection(["Name", "Status"], [0, 1]),
     });
 
     // No spurious "updated" for rows 2/3; the appended row 4 still fires.
@@ -544,7 +807,7 @@ describe("planSheetsPollChanges — stale projection (signature) guard", () => {
     ]);
   });
 
-  it("fires edits normally when the signature is unchanged", () => {
+  it("fires edits normally when the projection is unchanged", () => {
     const before = [
       ["Name", "Status"],
       ["a", "x"],
@@ -561,14 +824,67 @@ describe("planSheetsPollChanges — stale projection (signature) guard", () => {
       oldCellHashes: cells(before, [1]),
       triggerOn: "added_or_updated",
       watchColumns: [1],
-      oldSignature: "status",
-      newSignature: "status",
+      oldProjection: sheetsProjection(before[0], [1]),
+      newProjection: sheetsProjection(after[0], [1]),
     });
 
     // Status is position 0 of the [1] projection → real column index 1.
     expect(changes).toEqual([
       { rowIndex: 3, changeType: "updated", changedColumns: [1] },
     ]);
+  });
+
+  // A header rename used to move the name signature and re-baseline the whole
+  // sheet, so every genuine row edit in the same 5-minute poll window was
+  // silently swallowed. The watched INDICES are untouched by a rename, so the
+  // snapshot stays comparable and those edits fire.
+  it("still fires row edits made in the same poll as a header rename", () => {
+    const before = [
+      ["Name", "City", "Status"],
+      ["a", "here", "x"],
+      ["b", "there", "y"],
+    ];
+    const after = [
+      ["Full Name", "City", "Status"], // header renamed
+      ["a", "here", "x"],
+      ["b", "there", "CHANGED"], // ...and a real edit in the same window
+    ];
+    const { changes } = planSheetsPollChanges({
+      rows: after,
+      lastRowCount: before.length,
+      // "City" ignored → scoped projection, which is what used to trip the guard.
+      oldCellHashes: cells(before, [0, 2]),
+      triggerOn: "added_or_updated",
+      watchColumns: [0, 2],
+      oldProjection: sheetsProjection(before[0], [0, 2]),
+      newProjection: sheetsProjection(after[0], [0, 2]),
+    });
+
+    expect(changes).toEqual([
+      { rowIndex: 3, changeType: "updated", changedColumns: [2] },
+    ]);
+  });
+
+  it("does not report the renamed header itself as a change", () => {
+    const before = [
+      ["Name", "Status"],
+      ["a", "x"],
+    ];
+    const after = [
+      ["Full Name", "Status"],
+      ["a", "x"],
+    ];
+    const { changes } = planSheetsPollChanges({
+      rows: after,
+      lastRowCount: before.length,
+      oldCellHashes: cells(before, [0, 1]),
+      triggerOn: "added_or_updated",
+      watchColumns: [0, 1],
+      oldProjection: sheetsProjection(before[0], [0, 1]),
+      newProjection: sheetsProjection(after[0], [0, 1]),
+    });
+
+    expect(changes).toEqual([]);
   });
 });
 
