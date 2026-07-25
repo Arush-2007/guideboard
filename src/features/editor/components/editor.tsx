@@ -51,6 +51,7 @@ import { autoLayoutNodes, layoutChanged } from "../lib/auto-layout";
 import { SNAP_GRID } from "../lib/canvas-metrics";
 import { invalidConnectionReason } from "../lib/connection-validation";
 import { unrunnableNodes } from "../lib/connectivity";
+import { liveEdges, liveNodes } from "../lib/live-graph";
 import { NEVER_SAVED_BASELINE, serializeSnapshot } from "../lib/snapshot";
 import {
   editorAtom,
@@ -339,7 +340,8 @@ const ConnectivityValidator = () => {
 // nothing; lives inside <ReactFlowProvider> next to the other controllers.
 // Receives editor.tsx's `setNodes` so duplicate/select-all write the
 // authoritative controlled state (see the hook for why store-only writes are
-// unsafe here).
+// unsafe here). It READS the graph from the store via `editorAtom`, same as
+// `onNodesChange` — the useState snapshot is stale after any dialog save.
 const EditorShortcuts = ({
   workflowId,
   setNodes,
@@ -435,16 +437,9 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
     (changes: NodeChange[]) =>
       setNodes((nodesSnapshot) => {
         // Apply structural changes on top of the React Flow STORE, not this
-        // local useState snapshot. Config-dialog edits land store-only (see
-        // <DirtyTracker>/<ConfigValidator>), so the snapshot is routinely stale;
-        // basing the apply on it writes that stale graph back over the store on
-        // the next select/drag, which is what made a correct "cannot run / not
-        // connected" badge vanish the moment you opened any node's dialog (the
-        // select rebuilt the controlled prop from stale state and the validators
-        // re-derived off it). The store is the single source of truth the Save
-        // button, dirty-tracking and both validators already read, so reconcile
-        // against it here too. Falls back to the snapshot until RF has init'd.
-        const source = editorInstance?.getNodes() ?? nodesSnapshot;
+        // local useState snapshot — see `liveNodes` for why the snapshot is
+        // routinely stale and what basing an apply on it breaks.
+        const source = liveNodes(editorInstance, nodesSnapshot);
         const next = applyNodeChanges(changes, source);
 
         // Deletions funnel through here (both the trash button via
@@ -470,7 +465,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
       setEdges((edgesSnapshot) =>
         // Same reasoning as onNodesChange: reconcile against the store so a
         // select/drag can't rebuild the controlled prop from a stale edge set.
-        applyEdgeChanges(changes, editorInstance?.getEdges() ?? edgesSnapshot),
+        applyEdgeChanges(changes, liveEdges(editorInstance, edgesSnapshot)),
       ),
     [editorInstance],
   );
@@ -629,13 +624,11 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         ? canvas.width / canvas.height
         : undefined;
 
-    // Read the STORE, not the local `nodes`/`edges` state. Config-dialog edits
-    // go through `useReactFlow().setNodes` and land ONLY in the store (see
-    // <DirtyTracker>), so laying out the local copy and writing it back would
-    // silently revert every configuration change made since the last
-    // interactive edit. The Save button reads `getNodes()` for the same reason.
-    const current = editorInstance?.getNodes() ?? nodes;
-    const currentEdges = editorInstance?.getEdges() ?? edges;
+    // Read the STORE, not the local `nodes`/`edges` state: laying out the stale
+    // local copy and writing it back would silently revert every configuration
+    // change made since the last interactive edit (see `liveNodes`).
+    const current = liveNodes(editorInstance, nodes);
+    const currentEdges = liveEdges(editorInstance, edges);
 
     // Computed OUTSIDE the state updater, which must stay pure: React
     // double-invokes updaters under StrictMode, so a toast raised in there
