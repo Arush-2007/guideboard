@@ -34,9 +34,15 @@ export function RestraintsSection({ summary, children }: Props) {
             open && "rotate-90",
           )}
         />
-        <span className="font-medium">Restraints</span>
+        <span className="shrink-0 font-medium">Restraints</span>
         {!open && summary ? (
-          <span className="truncate text-muted-foreground/70">→ {summary}</span>
+          // `min-w-0` is what lets `truncate` actually clip: without it a flex
+          // item keeps its full content width (white-space:nowrap), so a long
+          // summary — e.g. many ignored/watched columns — pushes the row past the
+          // dialog and the whole dialog scrolls horizontally.
+          <span className="min-w-0 truncate text-muted-foreground/70">
+            → {summary}
+          </span>
         ) : null}
       </CollapsibleTrigger>
 

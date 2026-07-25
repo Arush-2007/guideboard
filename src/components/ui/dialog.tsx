@@ -77,8 +77,11 @@ function DialogContent({
       >
         {/* min-h-0 lets this shrink below its content inside the flex column, so
             the max-h above binds and this scrolls. Selects/popovers portal out,
-            so they're not clipped by it. */}
-        <div className="themed-scrollbar grid min-h-0 gap-4 overflow-y-auto rounded-lg p-6">
+            so they're not clipped by it. `grid-cols-[minmax(0,1fr)]` caps the
+            single column at the dialog's width — without it a grid item's
+            `min-width:auto` lets a wide/nowrap child stretch the track and force
+            the whole dialog to scroll horizontally. */}
+        <div className="themed-scrollbar grid grid-cols-[minmax(0,1fr)] min-h-0 gap-4 overflow-y-auto rounded-lg p-6">
           {children}
         </div>
         {showCloseButton && (
