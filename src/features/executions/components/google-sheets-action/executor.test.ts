@@ -2755,6 +2755,76 @@ describe("googleSheetsActionExecutor — headings vs the reading actions", () =>
     expect(out.matchCount).toBe(1);
   });
 
+  it("find_heading honours ignoreCase: false in the filter's restraints", async () => {
+    // The default is case-INSENSITIVE, so this only passes if the restraint the
+    // dialog saves actually reaches the comparison (rather than the executor
+    // hard-coding the fold, as it did before Restraints existed here).
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: {
+          operator: "equals",
+          value: "acme",
+          ignoreCase: false,
+        },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+  });
+
+  it("find_heading neglects the characters its restraints list", async () => {
+    // A section title typed with an em dash is the case this exists for: the
+    // user searches "Invoices March 2026" and neglects "— " to find it.
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["Invoices — March 2026"], // data row 0 → sheet row 2 ← the heading
+        ["0001", "Widget", "Open"],
+      ],
+      [
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const filter = {
+      operator: "equals" as const,
+      value: "InvoicesMarch2026",
+    };
+
+    // Without the restraint the em dash and spaces make it a miss…
+    expect(
+      ctx(
+        await run({
+          action: "find_heading",
+          spreadsheetId: "s",
+          sheetName: "Jobs",
+          headingFilter: filter,
+        }),
+      ).GOOGLE_SHEETS_ACTION_1.matchCount,
+    ).toBe(0);
+
+    // …and with it, a hit.
+    expect(
+      ctx(
+        await run({
+          action: "find_heading",
+          spreadsheetId: "s",
+          sheetName: "Jobs",
+          headingFilter: { ...filter, ignoreChars: "— " },
+        }),
+      ).GOOGLE_SHEETS_ACTION_1.matchCount,
+    ).toBe(1);
+  });
+
   it("find_heading with no value lists every heading on the tab", async () => {
     mockWithMerge(
       [

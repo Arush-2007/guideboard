@@ -57,6 +57,7 @@ import {
   type HeadingFormat,
   type HeadingMatchMode,
   type RowScope,
+  resolveHeadingFilterOptions,
   rowPassesScope,
   selectHeadingMatches,
 } from "@/lib/sheet-heading";
@@ -194,9 +195,10 @@ function firstColumnKey(headers: string[]): string {
  * header row rather than saved into the node — a renamed first column then can't
  * break a saved search.
  *
- * Case-insensitive by design: this is a search box for section titles, where
- * "acme" not finding "Acme" would simply read as broken. (The general conditions
- * editor keeps its explicit Restraints; this one has no such control to set.)
+ * Restraints come from the filter itself, resolved through the one shared
+ * `resolveHeadingFilterOptions` — so the toggles the dialog shows are exactly
+ * what this compares by. Case is folded unless the node says otherwise, which is
+ * both what a title search wants and what saved nodes already did.
  *
  * An empty value yields NO conditions, which `matchRows` treats as vacuously
  * true — every heading is returned. That is the intended "list the sections"
@@ -213,7 +215,7 @@ function headingFilterConditions(
       column: firstColumnKey(headers),
       operator: filter?.operator ?? "equals",
       value,
-      ignoreCase: true,
+      ...resolveHeadingFilterOptions(filter),
     },
   ];
 }

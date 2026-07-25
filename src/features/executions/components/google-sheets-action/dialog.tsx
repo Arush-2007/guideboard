@@ -10,6 +10,7 @@ import { useForm } from "react-hook-form";
 import z from "zod";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { FieldMapping } from "@/components/field-mapping";
+import { MatchingOptions } from "@/components/matching-options";
 import {
   FanOutCapInput,
   MultiMatchSelect,
@@ -66,6 +67,7 @@ import {
   HEADING_MATCH_MODES,
   HEADING_MATCH_OPERATOR_LABELS,
   HEADING_MATCH_OPERATORS,
+  type HeadingFilter,
   type HeadingFormat,
   type HeadingMatchMode,
   type HeadingMatchOperator,
@@ -75,6 +77,7 @@ import {
   ROW_SCOPE_LABELS,
   ROW_SCOPES,
   type RowScope,
+  resolveHeadingFilterOptions,
   resolveHeadingFormat,
 } from "@/lib/sheet-heading";
 import { useTRPC } from "@/trpc/client";
@@ -428,6 +431,11 @@ function ColumnMappingPanel({
  * find, update and colour. A search BOX rather than the conditions editor: a
  * heading's text always sits in the tab's first column, so the column is implied
  * and only "how to compare" and "compare to what" are left to choose.
+ *
+ * The restraints below are the same shared control every comparing node uses, so
+ * a heading search can be relaxed exactly like a row condition — neglecting the
+ * "—" in "Invoices — March 2026", say. `ignoreCase` is resolved through the one
+ * shared default (ON), so the toggle states what the executor will actually do.
  */
 function HeadingFilterInput({
   value,
@@ -437,22 +445,24 @@ function HeadingFilterInput({
   label,
   emptyHint,
 }: {
-  value: { operator?: HeadingMatchOperator; value?: string } | undefined;
-  onChange: (next: { operator?: HeadingMatchOperator; value?: string }) => void;
+  value: HeadingFilter | undefined;
+  onChange: (next: HeadingFilter) => void;
   currentNodeId: string;
   workflowId?: string;
   label: string;
   /** What happens when the box is left empty — it differs per action. */
   emptyHint: string;
 }) {
+  const operator = value?.operator ?? "equals";
+  const options = resolveHeadingFilterOptions(value);
   return (
     <div className="space-y-2">
       <Label>{label}</Label>
       <div className="flex items-start gap-2">
         <Select
-          value={value?.operator ?? "equals"}
-          onValueChange={(operator) =>
-            onChange({ ...value, operator: operator as HeadingMatchOperator })
+          value={operator}
+          onValueChange={(next) =>
+            onChange({ ...value, operator: next as HeadingMatchOperator })
           }
         >
           <SelectTrigger className="w-44 shrink-0">
@@ -475,9 +485,19 @@ function HeadingFilterInput({
           anchorClassName="ml-96"
         />
       </div>
-      <p className="text-xs text-muted-foreground">
-        Matching ignores capitalisation. {emptyHint}
-      </p>
+
+      {/* Only one heading action renders at a time, so a single id prefix is
+          enough to keep these controls' labels unambiguous. */}
+      <MatchingOptions
+        operator={operator}
+        ignoreCase={options.ignoreCase}
+        ignoreChars={options.ignoreChars}
+        numeric={options.numeric}
+        onChange={(patch) => onChange({ ...value, ...patch })}
+        idPrefix="heading-filter"
+      />
+
+      <p className="text-xs text-muted-foreground">{emptyHint}</p>
     </div>
   );
 }
@@ -932,7 +952,15 @@ export const GoogleSheetsActionDialog = ({
       // controlled from the first render (an undefined field would otherwise make
       // its input flip from uncontrolled to controlled on first edit).
       headingFormat: resolveHeadingFormat(defaultValues.headingFormat),
-      headingFilter: defaultValues.headingFilter ?? { operator: "equals" },
+      // Restraints resolved rather than passed through, for the same reason
+      // `headingFormat` is: an unset `ignoreCase` would leave its Switch
+      // uncontrolled AND would show "off" for a search the executor runs
+      // case-insensitively.
+      headingFilter: {
+        operator: defaultValues.headingFilter?.operator ?? "equals",
+        value: defaultValues.headingFilter?.value,
+        ...resolveHeadingFilterOptions(defaultValues.headingFilter),
+      },
       rowScope: defaultValues.rowScope ?? "data",
       restyleHeading: defaultValues.restyleHeading ?? false,
       headingColor: defaultValues.headingColor ?? HEADING_BACKGROUND_COLORS[1],

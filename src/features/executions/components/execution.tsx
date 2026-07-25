@@ -1061,7 +1061,7 @@ const NodeRow = ({
                     ? onTab === 0
                       ? `${tab} has no heading rows at all, so there was nothing to search. ${noHeadingsHint(nearMisses)}`
                       : onTab !== null
-                        ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched, and matching ignores capitalisation.`
+                        ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched — check the search text and the step's Restraints.`
                         : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`
                     : acted < count
                       ? `${count} headings in ${tab} matched; this step used only ${acted === 1 ? "one" : acted}, and the rest were ignored.`

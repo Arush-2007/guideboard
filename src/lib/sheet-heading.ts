@@ -1,4 +1,6 @@
 import { z } from "zod";
+import type { CompareOptions } from "@/features/executions/lib/compare";
+import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
 
 /**
  * The single source for the Google Sheets "append heading" row style — its zod
@@ -184,13 +186,39 @@ export const HEADING_MATCH_OPERATOR_LABELS: Record<
  * Note there is no `column` — a heading's text always lives in the tab's first
  * column, so the executor supplies it at run time from the live header row.
  * That way a renamed first column can't break a saved node.
+ *
+ * The three matching restraints are spread from the ONE shared fragment, exactly
+ * as the row conditions do: a heading search is a comparison like any other, and
+ * restating the fields here would let this schema drift (a plain `z.object()`
+ * strips undeclared keys, so a missing field is silently dropped on submit).
  */
 export const headingFilterSchema = z.object({
   operator: z.enum(HEADING_MATCH_OPERATORS).optional(),
   value: z.string().optional(),
+  ...compareOptionsSchemaFields,
 });
 
 export type HeadingFilter = z.infer<typeof headingFilterSchema>;
+
+/**
+ * The restraints a heading search actually runs with — the one place the
+ * defaults live, shared by the dialog (so its toggles show the truth) and the
+ * executor (so it compares by it).
+ *
+ * `ignoreCase` defaults ON, not off: this is a search box for section titles,
+ * where "acme" failing to find "Acme" simply reads as broken — and it is what
+ * every heading search did before the restraints existed, so saved nodes (which
+ * carry no `ignoreCase`) keep matching exactly what they matched before.
+ */
+export function resolveHeadingFilterOptions(
+  filter?: HeadingFilter | null,
+): CompareOptions {
+  return {
+    ignoreCase: filter?.ignoreCase ?? true,
+    ignoreChars: filter?.ignoreChars,
+    numeric: filter?.numeric,
+  };
+}
 
 /**
  * `#RRGGBB` — the one colour `color_heading` paints every matching heading.

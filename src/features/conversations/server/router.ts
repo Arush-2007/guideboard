@@ -67,9 +67,13 @@ find_heading searches ONLY the heading rows added by append_heading, and never
 returns an ordinary data row. Use it whenever the user wants to find, check for,
 or locate a section title. It takes an optional "headingFilter":
 { "operator": "equals"|"contains"|"not_equals"|"not_contains", "value": "..." };
-omit the value to return every heading on the tab. Matching ignores
-capitalisation. It branches "found" / "notfound" and reports "firstHeading",
-"headings", "headingRowIndexes" and "rowIndex".
+omit the value to return every heading on the tab. The filter also takes the
+same optional matching restraints a row condition does — "ignoreCase" (defaults
+TRUE here, so omit it unless the user wants a case-SENSITIVE search),
+"ignoreChars" (characters stripped from both sides, e.g. "- " to match
+"Invoices March" against "Invoices — March") and "numeric". It branches "found" /
+"notfound" and reports "firstHeading", "headings", "headingRowIndexes" and
+"rowIndex".
 
 find_heading and color_heading accept "onMultipleHeadings" for when several
 headings match: "first" (topmost), "last" (bottom-most), "all" (every one; the
