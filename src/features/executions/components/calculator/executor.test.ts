@@ -153,6 +153,36 @@ describe("resolveExpressionVariables", () => {
       },
     );
 
+    // An unfilled sheet cell or optional form field is "nothing yet", not a
+    // reason to abort the run: a pending "Paid Amount" used to fail the whole
+    // workflow. Only BLANK is forgiven — "N/A" and friends still throw above.
+    it.each([[""], ["   "], [null], [undefined]])("reads %j as 0", (raw) => {
+      expect(resolveExpressionVariables("@<x.v>@", { x: { v: raw } })).toBe(
+        "0",
+      );
+    });
+
+    // Blankness is judged BEFORE currency/separator stripping. A cell holding
+    // only a symbol is half-typed, not empty, so it must NOT ride the blank
+    // path into a silent 0 — that is the wrong-total failure, not the
+    // unfilled-field one.
+    it.each([["₹"], ["$"], [","], [" , "]])(
+      "rejects %j rather than reading it as blank",
+      (raw) => {
+        expect(() =>
+          resolveExpressionVariables("@<x.v>@", { x: { v: raw } }),
+        ).toThrow(/is not a number/);
+      },
+    );
+
+    it("keeps a blank harmless in the middle of an expression", () => {
+      expect(
+        resolveExpressionVariables("@<x.est>@ - @<x.paid>@", {
+          x: { est: "9980", paid: "" },
+        }),
+      ).toBe("9980 - 0");
+    });
+
     it("still accepts a currency symbol separated by a space", () => {
       // The space is only ever OUTSIDE the digits here, so this stays valid.
       expect(
@@ -173,10 +203,8 @@ describe("resolveExpressionVariables", () => {
       ).toThrow(/sheet\.price is not a number \(got "N\/A"\)/);
     });
 
-    it("distinguishes a missing value from a non-numeric one", () => {
-      expect(() => resolveExpressionVariables("@<sheet.price>@", {})).toThrow(
-        /sheet\.price has no value/,
-      );
+    it("does NOT fail on a missing value — that resolves to 0", () => {
+      expect(resolveExpressionVariables("@<sheet.price>@", {})).toBe("0");
     });
 
     it("fails non-retriably — a retry can't make it a number", () => {

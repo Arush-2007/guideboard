@@ -46,10 +46,27 @@ const THOUSANDS_SEPARATORS = /,/g;
  * behaviour across every comparing node. The two policies differ by intent, so
  * they stay separate.
  *
- * Returns `null` for anything that isn't cleanly a finite number — including an
- * empty string, which is what a missing path renders to.
+ * A BLANK value reads as 0. Empty is what a sheet cell or form field left
+ * unfilled renders to — a pending "Paid Amount", an absent "Discount" — and in
+ * every one of those the arithmetic the user means is "nothing yet", not "stop
+ * the workflow". Failing there meant one unfilled optional field aborted the
+ * whole run. Note this necessarily also absorbs a MIS-TYPED reference, which
+ * renders to the same empty string: `@<x.prise>@` now contributes 0 instead of
+ * naming itself. The recorded `expression` output is the compensating control —
+ * it shows each reference as the number it resolved to, so a stray 0 is visible
+ * in the run log.
+ *
+ * Returns `null` for anything else that isn't cleanly a finite number — "N/A",
+ * "12.5%", "12 34" — which stays a hard failure.
  */
 function coerceToNumber(raw: string): number | null {
+  // Blankness is decided on the RAW value, BEFORE stripping. Testing it after
+  // made a lone "₹", "$" or "," read as empty and therefore 0 — but a cell
+  // holding just a currency symbol is half-typed or garbage, not "nothing yet",
+  // and silently zeroing it is precisely the wrong-number failure this node
+  // exists to prevent. Those fall through and fail as "N/A" does.
+  if (raw.trim() === "") return 0;
+
   const cleaned = raw
     .replace(CURRENCY_SYMBOLS, "")
     .replace(THOUSANDS_SEPARATORS, "")
@@ -81,9 +98,12 @@ function coerceToNumber(raw: string): number | null {
  * every substitution is a validated number, so the parse can't be altered by
  * data — the same reasoning behind parameterised SQL.
  *
- * @throws {NonRetriableError} naming the path and the offending value. A value
- *   that isn't a number won't become one on retry, and a silent 0 would put a
- *   wrong total into a sheet or an invoice.
+ * A BLANK reference resolves to 0 rather than failing (see `coerceToNumber`
+ * for why, and for what that costs). Everything else non-numeric still throws:
+ * a value that is PRESENT but unparseable is a wrong number waiting to be
+ * written into a sheet or an invoice, and no retry will make it a number.
+ *
+ * @throws {NonRetriableError} naming the path and the offending value.
  */
 export function resolveExpressionVariables(
   expression: string,
@@ -95,9 +115,7 @@ export function resolveExpressionVariables(
 
     if (value === null) {
       throw new NonRetriableError(
-        raw === ""
-          ? `Calculator: ${path} has no value, so there's nothing to calculate with. Check that the step before this one ran and produced that field.`
-          : `Calculator: ${path} is not a number (got "${raw}").`,
+        `Calculator: ${path} is not a number (got "${raw}").`,
       );
     }
 
