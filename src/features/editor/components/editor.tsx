@@ -434,7 +434,18 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
   const onNodesChange = useCallback(
     (changes: NodeChange[]) =>
       setNodes((nodesSnapshot) => {
-        const next = applyNodeChanges(changes, nodesSnapshot);
+        // Apply structural changes on top of the React Flow STORE, not this
+        // local useState snapshot. Config-dialog edits land store-only (see
+        // <DirtyTracker>/<ConfigValidator>), so the snapshot is routinely stale;
+        // basing the apply on it writes that stale graph back over the store on
+        // the next select/drag, which is what made a correct "cannot run / not
+        // connected" badge vanish the moment you opened any node's dialog (the
+        // select rebuilt the controlled prop from stale state and the validators
+        // re-derived off it). The store is the single source of truth the Save
+        // button, dirty-tracking and both validators already read, so reconcile
+        // against it here too. Falls back to the snapshot until RF has init'd.
+        const source = editorInstance?.getNodes() ?? nodesSnapshot;
+        const next = applyNodeChanges(changes, source);
 
         // Deletions funnel through here (both the trash button via
         // `deleteElements` and the Delete key), so it's the one authoritative
@@ -444,20 +455,24 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
         // drag/select path (no removals) never allocates.
         if (!changes.some((c) => c.type === "remove")) return next;
 
-        // Read the removed nodes from the pre-change snapshot, since `next` no
+        // Read the removed nodes from the pre-change source, since `next` no
         // longer contains them.
         const removedIds = new Set(
           changes.flatMap((c) => (c.type === "remove" ? [c.id] : [])),
         );
-        const removed = nodesSnapshot.filter((n) => removedIds.has(n.id));
+        const removed = source.filter((n) => removedIds.has(n.id));
         return clearRefsForRemovedNodes(removed, next);
       }),
-    [],
+    [editorInstance],
   );
   const onEdgesChange = useCallback(
     (changes: EdgeChange[]) =>
-      setEdges((edgesSnapshot) => applyEdgeChanges(changes, edgesSnapshot)),
-    [],
+      setEdges((edgesSnapshot) =>
+        // Same reasoning as onNodesChange: reconcile against the store so a
+        // select/drag can't rebuild the controlled prop from a stale edge set.
+        applyEdgeChanges(changes, editorInstance?.getEdges() ?? edgesSnapshot),
+      ),
+    [editorInstance],
   );
   const onConnect = useCallback(
     (params: Connection) =>
