@@ -9,9 +9,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     env:
-      # prisma generate reads the datasource url from the schema; a dummy value
-      # is enough since `generate` does not connect to the database.
+      # prisma generate reads the datasource urls from the schema; dummy values
+      # are enough since `generate` does not connect to the database.
       DATABASE_URL: "postgresql://user:pass@localhost:5432/db"
+      DIRECT_URL: "postgresql://user:pass@localhost:5432/db"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,9 +37,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # Same dummy value as the test job: `prisma generate` reads the
-      # datasource url from the schema but never connects.
+      # Same dummy values as the test job: `prisma generate` reads the
+      # datasource urls from the schema but never connects.
       DATABASE_URL: "postgresql://user:pass@localhost:5432/db"
+      DIRECT_URL: "postgresql://user:pass@localhost:5432/db"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -70,6 +72,7 @@ jobs:
       # spinning up testcontainers (which it does locally). It also seeds
       # DATABASE_URL for `prisma generate`.
       DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/guideboard_test"
+      DIRECT_URL: "postgresql://postgres:postgres@localhost:5432/guideboard_test"
       DATABASE_URL_TEST: "postgresql://postgres:postgres@localhost:5432/guideboard_test"
     steps:
       - uses: actions/checkout@v4

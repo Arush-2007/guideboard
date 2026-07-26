@@ -9,9 +9,15 @@ generator client {
   output   = "../src/generated/prisma"
 }
 
+// `url` is the POOLED connection (pgBouncer) that serverless functions use —
+// without it every function instance opens its own pool and exhausts Postgres.
+// `directUrl` is the unpooled connection, used only by `prisma migrate`, which
+// runs DDL that pgBouncer's transaction mode cannot proxy. Locally both point
+// at the same database.
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model User {
