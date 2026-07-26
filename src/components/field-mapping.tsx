@@ -6,8 +6,11 @@ import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { VariableInput } from "@/components/variable-input";
-import type { PickerExtraGroup } from "@/components/variable-picker";
-import { getUpstreamFields } from "@/lib/upstream-fields";
+import {
+  getUpstreamFields,
+  matchFieldByName,
+  type PickerExtraGroup,
+} from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
 
 export type FieldMappingTarget = { key: string; label: string };
@@ -41,10 +44,6 @@ export type FieldMappingProps = {
   anchorClassName?: string;
 };
 
-function normalize(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 /**
  * The reusable "match the columns" UI: each target gets a `<VariableInput>` so
  * the user can type a literal value or insert an upstream field (`@<path>@`)
@@ -73,13 +72,7 @@ export function FieldMapping({
     const next = { ...value };
     for (const target of targets) {
       if (next[target.key]?.trim()) continue; // never overwrite a user value
-      const tnorm = normalize(target.label || target.key);
-      const match = fields.find((f) => {
-        const fnorm = normalize(f.fieldLabel);
-        return (
-          fnorm === tnorm || fnorm.includes(tnorm) || tnorm.includes(fnorm)
-        );
-      });
+      const match = matchFieldByName(target.label || target.key, fields);
       if (match) next[target.key] = match.insertText;
     }
     onChange(next);

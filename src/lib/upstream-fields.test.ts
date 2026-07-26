@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { NodeType } from "@/generated/prisma";
-import { getUpstreamFields, getUpstreamNodeIds } from "./upstream-fields";
+import {
+  buildPickerSources,
+  getUpstreamFields,
+  getUpstreamNodeIds,
+  matchFieldByName,
+} from "./upstream-fields";
 
 const nodes = [
   { id: "t1", type: NodeType.TELEGRAM_TRIGGER },
@@ -21,6 +26,237 @@ describe("getUpstreamNodeIds", () => {
   });
 });
 
+describe("getUpstreamFields run order", () => {
+  // The picker's first panel lists these node-by-node, so the order is now read
+  // directly by the user — it must follow the flow, not the cuid.
+  const nodeIdsOf = (rows: { nodeId: string }[]) => [
+    ...new Set(rows.map((r) => r.nodeId)),
+  ];
+
+  it("orders upstream nodes trigger-first, ignoring id sort order", () => {
+    // Ids are deliberately in the REVERSE of run order, so an id sort would
+    // produce ["a", "m", "z"] and only run order gives trigger → middle → last.
+    const chain = [
+      { id: "z", type: NodeType.TELEGRAM_TRIGGER },
+      { id: "m", type: NodeType.HTTP_REQUEST },
+      { id: "a", type: NodeType.AI_TEXT },
+      { id: "end", type: NodeType.DISCORD },
+    ];
+    const chainEdges = [
+      { source: "z", target: "m" },
+      { source: "m", target: "a" },
+      { source: "a", target: "end" },
+    ];
+
+    expect(nodeIdsOf(getUpstreamFields("end", chain, chainEdges))).toEqual([
+      "z",
+      "m",
+      "a",
+    ]);
+  });
+
+  it("keeps a branch's own nodes ahead of the node they feed (diamond)", () => {
+    //      t
+    //    /   \
+    //   b1    b2
+    //    \   /
+    //     join  -> end
+    const diamond = [
+      { id: "t", type: NodeType.TELEGRAM_TRIGGER },
+      { id: "b1", type: NodeType.HTTP_REQUEST },
+      { id: "b2", type: NodeType.AI_TEXT },
+      { id: "join", type: NodeType.SLACK },
+      { id: "end", type: NodeType.DISCORD },
+    ];
+    const diamondEdges = [
+      { source: "t", target: "b1" },
+      { source: "t", target: "b2" },
+      { source: "b1", target: "join" },
+      { source: "b2", target: "join" },
+      { source: "join", target: "end" },
+    ];
+
+    const order = nodeIdsOf(getUpstreamFields("end", diamond, diamondEdges));
+    expect(order[0]).toBe("t");
+    expect(order.at(-1)).toBe("join");
+    expect(order).toHaveLength(4);
+    expect(order.indexOf("b1")).toBeLessThan(order.indexOf("join"));
+    expect(order.indexOf("b2")).toBeLessThan(order.indexOf("join"));
+  });
+
+  it("falls back to a stable id order on a cyclic graph instead of throwing", () => {
+    // The canvas rejects cycles, but the picker must never be the thing that
+    // breaks if one ever reaches it (a hand-rolled save, a future feature).
+    const cyclic = [
+      { id: "z", type: NodeType.HTTP_REQUEST },
+      { id: "a", type: NodeType.AI_TEXT },
+      { id: "end", type: NodeType.DISCORD },
+    ];
+    const cyclicEdges = [
+      { source: "z", target: "a" },
+      { source: "a", target: "z" },
+      { source: "a", target: "end" },
+    ];
+
+    expect(nodeIdsOf(getUpstreamFields("end", cyclic, cyclicEdges))).toEqual([
+      "a",
+      "z",
+    ]);
+  });
+});
+
+describe("matchFieldByName", () => {
+  // Auto-map takes the first match out of a run-ordered list, so the trigger is
+  // always the first candidate. Without an exact-match pass, its verbose labels
+  // win on position alone — deterministically, for every graph shaped this way.
+  const fields = [
+    { fieldLabel: "Sender first name", insertText: "@<telegram.from.first>@" },
+    { fieldLabel: "Name", insertText: "@<AI_TEXT_1.name>@" },
+  ];
+
+  it("prefers an exact match over an earlier substring match", () => {
+    expect(matchFieldByName("Name", fields)?.insertText).toBe(
+      "@<AI_TEXT_1.name>@",
+    );
+  });
+
+  it("matches on letters and digits only, ignoring case and punctuation", () => {
+    expect(matchFieldByName("  name!  ", fields)?.insertText).toBe(
+      "@<AI_TEXT_1.name>@",
+    );
+    expect(
+      matchFieldByName("Phone_Number", [
+        { fieldLabel: "phone number", insertText: "@<t.phone>@" },
+      ])?.insertText,
+    ).toBe("@<t.phone>@");
+  });
+
+  it("falls back to a substring match, earliest first, when none is exact", () => {
+    expect(matchFieldByName("First", fields)?.insertText).toBe(
+      "@<telegram.from.first>@",
+    );
+  });
+
+  it("matches a target that contains a field's label, not just the reverse", () => {
+    expect(
+      matchFieldByName("Candidate email address", [
+        { fieldLabel: "Email", insertText: "@<t.email>@" },
+      ])?.insertText,
+    ).toBe("@<t.email>@");
+  });
+
+  it("returns undefined when nothing matches", () => {
+    expect(matchFieldByName("Invoice total", fields)).toBeUndefined();
+  });
+});
+
+describe("buildPickerSources", () => {
+  const labelForType = (type: string) =>
+    ({
+      [NodeType.TELEGRAM_TRIGGER]: "Telegram Trigger",
+      [NodeType.AI_TEXT]: "AI Text",
+      [NodeType.GOOGLE_SHEETS_ACTION]: "Google Sheets",
+    })[type];
+
+  const currentNode = {
+    type: NodeType.GOOGLE_SHEETS_ACTION,
+    data: { ref: "GOOGLE_SHEETS_ACTION_1" },
+  };
+
+  const rows = [
+    {
+      nodeId: "t1",
+      nodeType: NodeType.TELEGRAM_TRIGGER,
+      nodeRef: null,
+      fieldLabel: "Sender first name",
+      insertText: "@<telegram.from.firstName>@",
+    },
+    {
+      nodeId: "a1",
+      nodeType: NodeType.AI_TEXT,
+      nodeRef: "AI_TEXT_1",
+      fieldLabel: "AI output",
+      insertText: "@<AI_TEXT_1.output>@",
+    },
+    {
+      nodeId: "a1",
+      nodeType: NodeType.AI_TEXT,
+      nodeRef: "AI_TEXT_1",
+      fieldLabel: "Model",
+      insertText: "@<AI_TEXT_1.model>@",
+    },
+  ];
+
+  it("groups fields per node, preserving the run order rows arrive in", () => {
+    const sources = buildPickerSources({ rows, currentNode, labelForType });
+
+    expect(sources.map((s) => s.key)).toEqual(["node:t1", "node:a1"]);
+    expect(sources[1]).toMatchObject({
+      kind: "fields",
+      label: "AI_TEXT_1",
+      // A renamed node's type is the subtitle; the ref alone doesn't say it.
+      sublabel: "AI Text",
+    });
+    expect(
+      sources[1].kind === "fields"
+        ? sources[1].fields.map((f) => f.fieldLabel)
+        : [],
+    ).toEqual(["AI output", "Model"]);
+  });
+
+  it("does not repeat a trigger's type label as its own subtitle", () => {
+    const [trigger] = buildPickerSources({ rows, currentNode, labelForType });
+    expect(trigger.label).toBe("Telegram Trigger");
+    expect(trigger.sublabel).toBeUndefined();
+  });
+
+  it("names the current node's own sources after it, ahead of the nodes", () => {
+    const sources = buildPickerSources({
+      rows,
+      currentNode,
+      hasCustomFeatures: true,
+      extraGroups: [
+        {
+          label: "Row above",
+          fields: [{ fieldLabel: "Name", insertText: "@<anchorRow.Name>@" }],
+        },
+      ],
+      labelForType,
+    });
+
+    expect(sources.map((s) => s.label)).toEqual([
+      "GOOGLE_SHEETS_ACTION_1 - Custom",
+      "GOOGLE_SHEETS_ACTION_1 - Row above",
+      "Telegram Trigger",
+      "AI_TEXT_1",
+    ]);
+    // Both wear the current node's icon, so they read as belonging to this step.
+    expect(sources[0].nodeType).toBe(NodeType.GOOGLE_SHEETS_ACTION);
+    expect(sources[1].nodeType).toBe(NodeType.GOOGLE_SHEETS_ACTION);
+    expect(sources[0].kind).toBe("custom");
+  });
+
+  it("names an unrenamed trigger's own sources by its type label", () => {
+    const sources = buildPickerSources({
+      rows: [],
+      currentNode: { type: NodeType.TELEGRAM_TRIGGER, data: {} },
+      hasCustomFeatures: true,
+      labelForType,
+    });
+    expect(sources.map((s) => s.label)).toEqual(["Telegram Trigger - Custom"]);
+  });
+
+  it("omits the custom row when the node offers no custom features", () => {
+    const sources = buildPickerSources({
+      rows,
+      currentNode,
+      hasCustomFeatures: false,
+      labelForType,
+    });
+    expect(sources.some((s) => s.kind === "custom")).toBe(false);
+  });
+});
+
 describe("getUpstreamFields ref handling", () => {
   // The canvas carries a node's ref at `data.ref` (React Flow only passes `data`
   // to a node, and the editor's history preserves nothing else) — so the picker
@@ -36,8 +272,9 @@ describe("getUpstreamFields ref handling", () => {
     const fromHttp = rows.filter((r) => r.nodeId === "h1");
 
     expect(fromHttp.length).toBeGreaterThan(0);
-    // Group header and inserted token are the SAME string the canvas shows.
-    expect(fromHttp.every((r) => r.nodeLabel === "HTTP_REQUEST_1")).toBe(true);
+    // The name the picker heads its panel with, and the inserted token, are the
+    // SAME string the canvas shows.
+    expect(fromHttp.every((r) => r.nodeRef === "HTTP_REQUEST_1")).toBe(true);
     expect(
       fromHttp.every((r) => r.insertText.startsWith("@<HTTP_REQUEST_1.")),
     ).toBe(true);
@@ -47,14 +284,20 @@ describe("getUpstreamFields ref handling", () => {
     );
   });
 
-  it("still humanizes the type for a ref-less trigger", () => {
+  it("carries no ref for a ref-less trigger, leaving it to be named by type", () => {
     const rows = getUpstreamFields("c1", refNodes, edges);
     const fromTrigger = rows.filter((r) => r.nodeId === "t1");
 
     expect(fromTrigger.length).toBeGreaterThan(0);
-    expect(fromTrigger.every((r) => r.nodeLabel === "telegram trigger")).toBe(
-      true,
-    );
+    expect(fromTrigger.every((r) => r.nodeRef === null)).toBe(true);
+    // With no registry label to reach for, the name falls back to the humanized
+    // type — the behaviour the row's bare `nodeRef` hands to `displayNameFor`.
+    const [trigger] = buildPickerSources({
+      rows: fromTrigger,
+      currentNode: refNodes[2],
+      labelForType: () => undefined,
+    });
+    expect(trigger.label).toBe("telegram trigger");
   });
 });
 

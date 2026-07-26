@@ -2,12 +2,10 @@
 
 import * as React from "react";
 import { Input } from "@/components/ui/input";
-import {
-  type PickerExtraGroup,
-  VariablePicker,
-} from "@/components/variable-picker";
+import { VariablePicker } from "@/components/variable-picker";
 import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
 import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
+import type { PickerExtraGroup } from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
 
 export type VariableInputProps = React.ComponentProps<typeof Input> & {

@@ -49,7 +49,6 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { VariableInput } from "@/components/variable-input";
-import type { PickerExtraGroup } from "@/components/variable-picker";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
 import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
@@ -79,6 +78,7 @@ import {
   resolveHeadingFilterOptions,
   resolveHeadingFormat,
 } from "@/lib/sheet-heading";
+import type { PickerExtraGroup } from "@/lib/upstream-fields";
 import { useTRPC } from "@/trpc/client";
 
 // Conditions editor value shape. Operator reuses the single ROW_MATCH_OPERATORS
@@ -475,13 +475,15 @@ function HeadingFilterInput({
             ))}
           </SelectContent>
         </Select>
+        {/* No anchorClassName: every heading filter is rendered straight into
+            the node's standard-width config dialog, not a WideOverlayPanel, so
+            the picker takes the default ml-72 offset. */}
         <VariableInput
           placeholder="Invoices — March 2026"
           value={value?.value ?? ""}
           onChange={(e) => onChange({ ...value, value: e.target.value })}
           currentNodeId={currentNodeId}
           workflowId={workflowId}
-          anchorClassName="ml-96"
         />
       </div>
 
@@ -1008,9 +1010,11 @@ export const GoogleSheetsActionDialog = ({
     headers.length > 0
       ? [
           {
-            label: "The row it is placed under",
+            // The picker heads the panel with this group's name, so each field
+            // is just the column — no "(row above)" suffix repeating it.
+            label: "Row above",
             fields: headers.map((h) => ({
-              fieldLabel: `${h} (row above)`,
+              fieldLabel: h,
               insertText: `@<${anchorRowPath(h)}>@`,
             })),
           },
@@ -1484,7 +1488,6 @@ export const GoogleSheetsActionDialog = ({
                               extraGroups={
                                 position !== "bottom" ? anchorGroups : undefined
                               }
-                              anchorClassName="ml-96"
                             />
                           </FormControl>
                           <FormDescription>
@@ -1658,7 +1661,6 @@ export const GoogleSheetsActionDialog = ({
                           onChange={field.onChange}
                           currentNodeId={currentNodeId}
                           workflowId={workflowId}
-                          anchorClassName="ml-96"
                         />
                       </FormControl>
                       <FormDescription>
