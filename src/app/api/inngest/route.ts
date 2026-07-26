@@ -6,10 +6,8 @@ import {
   handleGoogleSheetsPoll,
   handleSchedulePoll,
   handleYoutubePoll,
-  pollGmail,
-  pollGoogleSheets,
   pollSchedules,
-  pollYoutubeComments,
+  pollTriggers,
   pruneOldExecutions,
 } from "@/inngest/functions";
 
@@ -23,9 +21,7 @@ export const { GET, POST, PUT } = serve({
   client: inngest,
   functions: [
     executeWorkflow,
-    pollGmail,
-    pollGoogleSheets,
-    pollYoutubeComments,
+    pollTriggers,
     pollSchedules,
     handleGmailPoll,
     handleGoogleSheetsPoll,

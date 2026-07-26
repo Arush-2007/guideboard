@@ -502,29 +502,53 @@ export const executeWorkflow = inngest.createFunction(
   },
 );
 
-// Dispatcher: enumerates poll rows (ids only) and fans out one
-// `polls/youtube.check` event per row. The per-poll work (external API calls,
-// workflow dispatch, lastChecked update) lives in `handleYoutubePoll`, which
-// runs with its own retries + concurrency cap so one poll can't block another.
-export const pollYoutubeComments = inngest.createFunction(
-  { id: "poll-youtube-comments", retries: 1 },
+// Dispatcher for every webhook-less trigger: enumerates poll rows (ids only)
+// and fans out one `polls/<provider>.check` event each. Rows are provisioned
+// and cleaned up by `syncTriggerPollsForWorkflow`
+// (src/lib/workflow-persistence.ts) on every workflow create/edit, so each row
+// here corresponds to a live trigger. The per-poll work (external API calls,
+// workflow dispatch, lastChecked update) lives in the matching `handle*Poll`,
+// each with its own retries + concurrency cap so one poll can't block another.
+//
+// Deliberately ONE function running ONE step for all three providers, rather
+// than the three near-identical dispatchers this replaces. A cron tick is
+// billed whether or not it finds work, and Inngest bills per step: three empty
+// `*/5` dispatchers cost three times one combined empty tick — roughly 26k
+// billed steps a month against 9k — for byte-identical behaviour. The three
+// queries share a single `step.run` for that same reason; splitting them into a
+// step apiece would hand the saving straight back.
+export const pollTriggers = inngest.createFunction(
+  { id: "poll-triggers", retries: 1 },
   { cron: "*/5 * * * *" },
   async ({ step }) => {
-    const polls = await step.run("fetch-poll-ids", async () => {
-      return prisma.youtubeCommentPoll.findMany({ select: { id: true } });
+    const events = await step.run("fetch-poll-ids", async () => {
+      const [gmail, sheets, youtube] = await Promise.all([
+        prisma.gmailPoll.findMany({ select: { id: true } }),
+        prisma.googleSheetsPoll.findMany({ select: { id: true } }),
+        prisma.youtubeCommentPoll.findMany({ select: { id: true } }),
+      ]);
+
+      return [
+        ...gmail.map((poll) => ({
+          name: "polls/gmail.check",
+          data: { pollId: poll.id },
+        })),
+        ...sheets.map((poll) => ({
+          name: "polls/google-sheets.check",
+          data: { pollId: poll.id },
+        })),
+        ...youtube.map((poll) => ({
+          name: "polls/youtube.check",
+          data: { pollId: poll.id },
+        })),
+      ];
     });
 
-    if (polls.length === 0) return { dispatched: 0 };
+    if (events.length === 0) return { dispatched: 0 };
 
-    await step.sendEvent(
-      "dispatch-youtube-polls",
-      polls.map((poll) => ({
-        name: "polls/youtube.check",
-        data: { pollId: poll.id },
-      })),
-    );
+    await step.sendEvent("dispatch-trigger-polls", events);
 
-    return { dispatched: polls.length };
+    return { dispatched: events.length };
   },
 );
 
@@ -622,32 +646,6 @@ function getHeaderValue(
   );
   return found?.value ?? "";
 }
-
-// Dispatcher: poll rows are provisioned/cleaned up by `syncTriggerPollsForWorkflow`
-// (src/lib/workflow-persistence.ts) on every workflow create/edit, so each row
-// here corresponds to a live Gmail trigger. Per-poll work lives in
-// `handleGmailPoll`.
-export const pollGmail = inngest.createFunction(
-  { id: "poll-gmail", retries: 1 },
-  { cron: "*/5 * * * *" },
-  async ({ step }) => {
-    const polls = await step.run("fetch-gmail-poll-ids", async () => {
-      return prisma.gmailPoll.findMany({ select: { id: true } });
-    });
-
-    if (polls.length === 0) return { dispatched: 0 };
-
-    await step.sendEvent(
-      "dispatch-gmail-polls",
-      polls.map((poll) => ({
-        name: "polls/gmail.check",
-        data: { pollId: poll.id },
-      })),
-    );
-
-    return { dispatched: polls.length };
-  },
-);
 
 // Handler: processes a single Gmail poll (token refresh + unread scan + N
 // metadata fetches). Isolated retries + concurrency cap; duplicate runs are
@@ -792,30 +790,6 @@ async function persistHealedIgnoreColumns(
     });
   }
 }
-
-// Dispatcher: fans out one `polls/google-sheets.check` event per poll row.
-// Per-poll work lives in `handleGoogleSheetsPoll`.
-export const pollGoogleSheets = inngest.createFunction(
-  { id: "poll-google-sheets", retries: 1 },
-  { cron: "*/5 * * * *" },
-  async ({ step }) => {
-    const polls = await step.run("fetch-google-sheets-poll-ids", async () => {
-      return prisma.googleSheetsPoll.findMany({ select: { id: true } });
-    });
-
-    if (polls.length === 0) return { dispatched: 0 };
-
-    await step.sendEvent(
-      "dispatch-google-sheets-polls",
-      polls.map((poll) => ({
-        name: "polls/google-sheets.check",
-        data: { pollId: poll.id },
-      })),
-    );
-
-    return { dispatched: polls.length };
-  },
-);
 
 // Handler: processes a single Google Sheets poll. Emits one execution per
 // change the poll's `triggerOn` watches: appended rows (row count grew) and/or
@@ -1040,13 +1014,32 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
   },
 );
 
+// How often to look for due schedules. Deployment-configurable because this
+// tick is billed whether or not anything is due: an installation with no
+// SCHEDULE_TRIGGER workflows pays ~43k empty executions a month at the default.
+//
+// The default stays every-minute so minute-grained crons fire on time out of
+// the box. A deployment whose schedules are coarse — or absent — sets
+// SCHEDULE_POLL_CRON="*/5 * * * *" and pays a fifth of that. Note this interval
+// caps granularity: a schedule can only fire as precisely as the poll that
+// finds it.
+//
+// `?.trim() ||`, not `??`: setting an env var to an empty value is the ordinary
+// way to unset one, and `??` only falls back on undefined — so "" (or "  ")
+// would reach createFunction as an invalid cron. That doesn't just break
+// schedules: every function is registered through the single serve() handler in
+// app/api/inngest/route.ts, so one bad cron takes executeWorkflow and every
+// other poller down with it.
+const SCHEDULE_POLL_CRON =
+  process.env.SCHEDULE_POLL_CRON?.trim() || "* * * * *";
+
 // Dispatcher: scans for SchedulePoll rows whose `nextRunAt` is due (indexed on
 // `nextRunAt`, so this is O(due) not O(all)) and fans out one
-// `polls/schedule.check` event per row. Runs every minute for minute-grained
-// schedules. Per-poll work (dispatch + advance) lives in `handleSchedulePoll`.
+// `polls/schedule.check` event per row. Per-poll work (dispatch + advance)
+// lives in `handleSchedulePoll`.
 export const pollSchedules = inngest.createFunction(
   { id: "poll-schedules", retries: 1 },
-  { cron: "* * * * *" },
+  { cron: SCHEDULE_POLL_CRON },
   async ({ step }) => {
     const polls = await step.run("fetch-due-schedule-poll-ids", async () => {
       return prisma.schedulePoll.findMany({
