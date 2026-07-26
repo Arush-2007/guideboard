@@ -36,8 +36,20 @@ function SelectTrigger({
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       data-size={size}
+      // `min-w-0` on the value slot is load-bearing, not tidying. The trigger is
+      // a flex container with `whitespace-nowrap`, so the value is a flex item
+      // whose default `min-width:auto` pins it to its min-content width — the
+      // whole string. A long selected option (a Google Sheet's full name) then
+      // spills out of the trigger, and since every dialog scrolls its body with
+      // `overflow-y:auto` — which forces `overflow-x` to `auto` too — the spill
+      // becomes a horizontally scrolling dialog rather than clipped text.
+      //
+      // `line-clamp-1` does NOT cover this: the `flex` on the same slot
+      // overrides the `display:-webkit-box` the clamp needs, so only its
+      // `overflow:hidden` survives, and hidden overflow on an element that is
+      // itself too wide clips nothing.
       className={cn(
-        "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive flex w-fit items-center justify-between gap-2 rounded-xl border bg-background px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow,transform] duration-200 outline-none hover:shadow-sm focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-10 data-[size=sm]:h-9 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive flex w-fit items-center justify-between gap-2 rounded-xl border bg-background px-3 py-2 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow,transform] duration-200 outline-none hover:shadow-sm focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-10 data-[size=sm]:h-9 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className,
       )}
       {...props}

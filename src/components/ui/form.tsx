@@ -79,7 +79,19 @@ function FormItem({ className, ...props }: React.ComponentProps<"div">) {
     <FormItemContext.Provider value={{ id }}>
       <div
         data-slot="form-item"
-        className={cn("grid gap-2", className)}
+        // `grid-cols-[minmax(0,1fr)]` caps the single implicit column at the
+        // form's width. Without it that track is `auto` — i.e. max-content — and
+        // grid items keep `min-width:auto`, so ONE nowrap descendant stretches
+        // the track and drags the whole field out with it: the `w-full` control
+        // resolves against the inflated width, and any `truncate` inside now has
+        // room and never clips. A field holding a long single-line summary (the
+        // Sheets trigger's "Restraints → ignoring <11 columns>") pushed its
+        // select, its description and itself past the dialog edge, while the
+        // plainer fields above it looked fine — the tell that the container, not
+        // the text, was the problem.
+        //
+        // Same fix, same reason as the scroll wrapper in `dialog.tsx`.
+        className={cn("grid grid-cols-[minmax(0,1fr)] gap-2", className)}
         {...props}
       />
     </FormItemContext.Provider>
