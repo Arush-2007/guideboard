@@ -266,16 +266,15 @@ export const WorkflowsToolbar = () => {
         <div className="flex items-center gap-2">
           <Button
             size="sm"
-            className="rounded-full px-5"
+            className="rounded-md px-5"
             onClick={() => setCreateOpen(true)}
           >
             <PlusIcon className="size-4" />
             New workflow
           </Button>
           <Button
-            variant="outline"
             size="sm"
-            className="rounded-full px-5"
+            className="rounded-md px-5"
             onClick={() => setAiOpen(true)}
           >
             <SparklesIcon className="size-4" />
