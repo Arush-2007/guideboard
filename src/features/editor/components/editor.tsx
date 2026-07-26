@@ -17,6 +17,7 @@ import {
   type NodeChange,
   Panel,
   ReactFlow,
+  type ReactFlowInstance,
   ReactFlowProvider,
   useNodesInitialized,
   useReactFlow,
@@ -225,6 +226,11 @@ const DirtyTracker = () => {
     setIsDirty(isDirty);
   }, [isDirty, setIsDirty]);
 
+  // Same retraction contract the other shared atoms keep: a closed editor must
+  // not leave a stale `true` behind for the next one's header to render before
+  // the effect above has run once.
+  useEffect(() => () => setIsDirty(false), [setIsDirty]);
+
   useEffect(() => {
     if (!isDirty) {
       return;
@@ -400,6 +406,36 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
   const editorInstance = useAtomValue(editorAtom);
   const setStaged = useSetAtom(stagedNodesAtom);
 
+  // `editorAtom` outlives this component — it is a module-scope atom whose
+  // <Provider> is in the root layout — so an instance left behind by a previous
+  // editor is still sitting there when the next one mounts. Publish ours on
+  // init, and RETRACT it on unmount, the same contract <ConfigValidator> and
+  // <ConnectivityValidator> keep for their maps. Without the retraction the new
+  // editor reads the dead instance and `liveNodes`/`liveEdges` — whose whole
+  // premise is "the store is the truth, the controlled state is the stale
+  // fallback" — hand every seam the PREVIOUS canvas. See the atom's comment for
+  // the symptom.
+  //
+  // Identity-checked so this can only ever remove OUR instance. If a remount's
+  // `onInit` ever landed before this cleanup, an unconditional `setEditor(null)`
+  // would drop the live instance the new editor had just published, silently
+  // demoting it to the fallback path for the rest of its life.
+  const ownInstance = useRef<ReactFlowInstance | null>(null);
+  const handleInit = useCallback(
+    (instance: ReactFlowInstance) => {
+      ownInstance.current = instance;
+      setEditor(instance);
+    },
+    [setEditor],
+  );
+  useEffect(
+    () => () =>
+      setEditor((current) =>
+        current === ownInstance.current ? null : current,
+      ),
+    [setEditor],
+  );
+
   const [nodes, setNodes] = useState<Node[]>(workflow.nodes);
   const [edges, setEdges] = useState<Edge[]>(workflow.edges);
 
@@ -432,6 +468,15 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
       );
     }
   }, [workflow, lastSaved, setLastSaved]);
+
+  // Drop the baseline when the editor unmounts, so the next workflow cannot be
+  // measured against the PREVIOUS one's. The seeding effect above re-seeds on
+  // mount regardless, but it is a passive effect: without this the first paint
+  // of the new editor compares its canvas to a foreign baseline and the header
+  // — a sibling, rendered from the same atom — shows "Save" for a workflow
+  // nobody has touched. `null` is the honest value for "no baseline yet", and
+  // <DirtyTracker> already reads it as not-dirty.
+  useEffect(() => () => setLastSaved(null), [setLastSaved]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) =>
@@ -725,7 +770,7 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             nodeTypes={nodeComponents}
             edgeTypes={edgeTypes}
             defaultEdgeOptions={defaultEdgeOptions}
-            onInit={setEditor}
+            onInit={handleInit}
             deleteKeyCode={["Delete", "Backspace"]}
             fitView
             fitViewOptions={AUTO_FIT_VIEW_OPTIONS}
