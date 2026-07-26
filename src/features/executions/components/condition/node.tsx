@@ -1,16 +1,16 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { getNodeOption } from "@/config/node-options";
 import { NodeType } from "@/generated/prisma";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { ConditionFormValues } from "./dialog";
 import { CONDITION_OUTPUT_HANDLES } from "./handles";
 
-const ConditionDialog = dynamic(() =>
+const ConditionDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.ConditionDialog),
 );
 

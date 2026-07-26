@@ -6,9 +6,9 @@ import {
   useReactFlow,
   useUpdateNodeInternals,
 } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useEffect, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import type { MultiMatchMode } from "@/lib/multi-match";
 import type { RowMatchCondition } from "@/lib/row-match";
 import { useNodeStatus } from "../../hooks/use-node-status";
@@ -16,7 +16,7 @@ import { BaseExecutionNode } from "../base-execution-node";
 import type { GoogleSheetsActionSubmitValues } from "./dialog";
 import { sheetsActionOutputHandles } from "./handles";
 
-const GoogleSheetsActionDialog = dynamic(() =>
+const GoogleSheetsActionDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsActionDialog),
 );
 

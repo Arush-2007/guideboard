@@ -1,12 +1,12 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseTriggerNode } from "../base-trigger-node";
 import type { GoogleSheetsTriggerSubmitValues } from "./dialog";
 
-const GoogleSheetsTriggerDialog = dynamic(() =>
+const GoogleSheetsTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsTriggerDialog),
 );
 

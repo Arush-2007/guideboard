@@ -1,14 +1,14 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { ExcelActionFormValues } from "./dialog";
 
-const ExcelActionDialog = dynamic(() =>
+const ExcelActionDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.ExcelActionDialog),
 );
 

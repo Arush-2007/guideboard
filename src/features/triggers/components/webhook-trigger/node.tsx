@@ -1,14 +1,14 @@
 "use client";
 
 import type { NodeProps } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
 import { BaseTriggerNode } from "../base-trigger-node";
 
-const WebhookTriggerDialog = dynamic(() =>
+const WebhookTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.WebhookTriggerDialog),
 );
 

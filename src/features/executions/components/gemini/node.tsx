@@ -1,13 +1,13 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { GeminiFormValues } from "./dialog";
 
-const GeminiDialog = dynamic(() =>
+const GeminiDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.GeminiDialog),
 );
 

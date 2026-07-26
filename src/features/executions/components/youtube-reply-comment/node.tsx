@@ -1,13 +1,13 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { YoutubeReplyFormValues } from "./dialog";
 
-const YoutubeReplyDialog = dynamic(() =>
+const YoutubeReplyDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.YoutubeReplyDialog),
 );
 
