@@ -7,6 +7,7 @@ import { useForm } from "react-hook-form";
 import z from "zod";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { RestraintsSection } from "@/components/restraints-section";
+import { RowScopeSelect } from "@/components/row-scope-select";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -34,7 +35,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { sheetsTriggerOptionsSchemaFields } from "@/lib/sheets-trigger-options";
+import type { RowScope } from "@/lib/sheet-heading";
+import {
+  SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
+  sheetsTriggerOptionsSchemaFields,
+} from "@/lib/sheets-trigger-options";
 import { useTRPC } from "@/trpc/client";
 
 const formSchema = z.object({
@@ -46,8 +51,8 @@ const formSchema = z.object({
 
 export type GoogleSheetsTriggerFormValues = z.infer<typeof formSchema>;
 
-/** A pickable per-column field, saved so the variable picker can offer it. */
-type DiscoveredField = { path: string; label: string };
+/** A pickable field, saved so the variable picker can offer it. */
+type DiscoveredField = { path: string; label: string; example?: string };
 
 export type GoogleSheetsTriggerSubmitValues = GoogleSheetsTriggerFormValues & {
   discoveredFields: DiscoveredField[];
@@ -61,6 +66,43 @@ const TRIGGER_ON_OPTIONS: Array<{
   { value: "updated", label: "Row updated" },
   { value: "added_or_updated", label: "Row added or updated" },
 ];
+
+/**
+ * What each scope means for a trigger, which only WATCHES rows — the shared
+ * picker's own captions are written for the actions, which write to them.
+ */
+function describeTriggerScope(scope: RowScope): string {
+  if (scope === "headings") {
+    return "Only merged section titles are watched. The workflow runs when a heading's text changes — never when your data does.";
+  }
+  if (scope === "all") {
+    return "Every row is watched, section titles included, and a heading edit runs the workflow as an ordinary row change.";
+  }
+  return "Section titles are skipped, so editing one never runs the workflow as though your data had changed.";
+}
+
+/**
+ * One source for the form's values, used by BOTH the initial defaults and the
+ * reopen `reset`. Two hand-maintained copies is how a field ends up saved but
+ * silently dropped the next time the dialog opens.
+ *
+ * An absent `rowScope` resolves through `SHEETS_TRIGGER_DEFAULT_ROW_SCOPE`, the
+ * same constant the poll sync uses, so the dialog always shows the scope the
+ * trigger is ACTUALLY running under. When the two disagreed, opening an existing
+ * trigger to edit something unrelated and pressing Save quietly rewrote which
+ * rows fire it.
+ */
+function formDefaults(
+  defaults: Partial<GoogleSheetsTriggerFormValues>,
+): GoogleSheetsTriggerFormValues {
+  return {
+    spreadsheetId: defaults.spreadsheetId ?? "",
+    sheetName: defaults.sheetName ?? "Sheet1",
+    triggerOn: defaults.triggerOn ?? "added_or_updated",
+    rowScope: defaults.rowScope ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
+    ignoreColumns: defaults.ignoreColumns ?? [],
+  };
+}
 
 interface Props {
   open: boolean;
@@ -86,29 +128,21 @@ export const GoogleSheetsTriggerDialog = ({
 
   const form = useForm<GoogleSheetsTriggerFormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: {
-      spreadsheetId: defaultValues.spreadsheetId ?? "",
-      sheetName: defaultValues.sheetName ?? "Sheet1",
-      triggerOn: defaultValues.triggerOn ?? "added_or_updated",
-      ignoreColumns: defaultValues.ignoreColumns ?? [],
-    },
+    defaultValues: formDefaults(defaultValues),
   });
 
   useEffect(() => {
-    if (open) {
-      form.reset({
-        spreadsheetId: defaultValues.spreadsheetId ?? "",
-        sheetName: defaultValues.sheetName ?? "Sheet1",
-        triggerOn: defaultValues.triggerOn ?? "added_or_updated",
-        ignoreColumns: defaultValues.ignoreColumns ?? [],
-      });
-    }
+    if (open) form.reset(formDefaults(defaultValues));
   }, [open, defaultValues, form]);
 
   // The trigger's spreadsheet/tab drive the header list for the column picker;
   // reuse the same endpoint the Sheets action's column pickers use.
   const spreadsheetId = form.watch("spreadsheetId");
   const sheetName = form.watch("sheetName");
+  // Heading mode watches one merged cell per section, so neither the row
+  // added/updated choice nor the per-column restraints apply to it.
+  const rowScope = form.watch("rowScope") ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE;
+  const watchingHeadings = rowScope === "headings";
   const {
     data: columnsData,
     isLoading: columnsLoading,
@@ -122,16 +156,41 @@ export const GoogleSheetsTriggerDialog = ({
   const headers = columnsData?.headers ?? [];
 
   const handleSubmit = (values: GoogleSheetsTriggerFormValues) => {
-    // Offer each column as a pickable `googleSheets.values.<Header>` field.
-    // Rebuild from the freshly-loaded headers; if they haven't loaded, keep what
-    // was saved so a quick re-save doesn't wipe the fields.
+    // What this trigger can offer downstream depends on the scope, and the two
+    // sets are disjoint — so save the ones this scope will actually produce
+    // rather than listing both and leaving half of them permanently blank.
+    //
+    // A heading is ONE merged cell: it has no columns, so there is no column to
+    // pick the changed value from. Its text is offered directly instead.
     const discoveredFields =
-      headers.length > 0
-        ? headers.map((h) => ({
-            path: `googleSheets.values.${h}`,
-            label: h,
-          }))
-        : (defaultValues.discoveredFields ?? []);
+      values.rowScope === "headings"
+        ? [
+            {
+              path: "googleSheets.heading",
+              label: "Section title",
+              example: "Q2 Sales",
+            },
+            {
+              path: "googleSheets.previousHeading",
+              label: "Section title before the change",
+              example: "Q1 Sales",
+            },
+          ]
+        : // Offer each column as a pickable `googleSheets.values.<Header>` field.
+          // Rebuild from the freshly-loaded headers; if they haven't loaded, keep
+          // what was saved so a quick re-save doesn't wipe the fields.
+          headers.length > 0
+          ? headers.map((h) => ({
+              path: `googleSheets.values.${h}`,
+              label: h,
+            }))
+          : // Keep only COLUMN fields: if this node was last saved in heading
+            // scope, its saved fields are the two title ones, which mean nothing
+            // here and would otherwise ride back in whenever the header row
+            // hasn't loaded yet.
+            (defaultValues.discoveredFields ?? []).filter((f) =>
+              f.path.startsWith("googleSheets.values."),
+            );
     onSubmit({ ...values, discoveredFields });
     onOpenChange(false);
   };
@@ -142,7 +201,8 @@ export const GoogleSheetsTriggerDialog = ({
         <DialogHeader>
           <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
-            Trigger this workflow when a row is added to or edited in a sheet.
+            Trigger this workflow when a sheet's rows change — or when one of
+            its merged section titles is retitled.
           </DialogDescription>
         </DialogHeader>
         <Form {...form}>
@@ -204,145 +264,171 @@ export const GoogleSheetsTriggerDialog = ({
 
             <FormField
               control={form.control}
-              name="triggerOn"
+              name="rowScope"
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>Trigger on</FormLabel>
-                  <Select onValueChange={field.onChange} value={field.value}>
-                    <FormControl>
-                      <SelectTrigger className="w-full">
-                        <SelectValue />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {TRIGGER_ON_OPTIONS.map((option) => (
-                        <SelectItem key={option.value} value={option.value}>
-                          {option.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-
-                  {field.value !== "added" && (
-                    <FormField
-                      control={form.control}
-                      name="ignoreColumns"
-                      render={({ field: columnsField }) => {
-                        // Stored value is the IGNORED columns; a checkbox is
-                        // checked when its column is watched, i.e. NOT ignored.
-                        const ignored = columnsField.value ?? [];
-                        const setWatched = (name: string, watched: boolean) =>
-                          columnsField.onChange(
-                            watched
-                              ? ignored.filter((n) => n !== name)
-                              : [...ignored, name],
-                          );
-                        // Union so an ignored column that's since been DELETED
-                        // still shows (as "not found") not silently gone. A
-                        // rename doesn't land here — the poller follows it and
-                        // rewrites the stored name (healIgnoreColumns).
-                        const options = Array.from(
-                          new Set([...headers, ...ignored]),
-                        );
-                        const noneWatched =
-                          options.length > 0 &&
-                          options.every((n) => ignored.includes(n));
-
-                        return (
-                          <FormItem>
-                            <RestraintsSection
-                              summary={
-                                ignored.length
-                                  ? `ignoring ${ignored.join(", ")}`
-                                  : null
-                              }
-                            >
-                              <div className="space-y-1">
-                                <Label className="text-xs font-normal">
-                                  Watch columns for edits
-                                </Label>
-                                <p className="text-[11px] text-muted-foreground">
-                                  Every column is watched. Uncheck a column to
-                                  ignore edits to it.
-                                </p>
-                              </div>
-
-                              {!spreadsheetId || !sheetName ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                  Pick a spreadsheet and tab to load its
-                                  columns.
-                                </p>
-                              ) : columnsLoading ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                  Loading columns…
-                                </p>
-                              ) : columnsError ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                  Couldn't read columns. Check the tab name.
-                                </p>
-                              ) : options.length === 0 ? (
-                                <p className="text-[11px] text-muted-foreground">
-                                  No header row found on this tab.
-                                </p>
-                              ) : (
-                                <>
-                                  <div className="space-y-1.5">
-                                    {options.map((name) => {
-                                      const id = `watch-col-${name}`;
-                                      const missing = !headers.includes(name);
-                                      return (
-                                        <div
-                                          key={name}
-                                          className="flex items-center gap-2"
-                                        >
-                                          <Checkbox
-                                            id={id}
-                                            checked={!ignored.includes(name)}
-                                            onCheckedChange={(c) =>
-                                              setWatched(name, c === true)
-                                            }
-                                          />
-                                          <Label
-                                            htmlFor={id}
-                                            className="text-xs font-normal"
-                                          >
-                                            {name}
-                                            {missing && (
-                                              <span className="ml-1 text-muted-foreground">
-                                                (not found)
-                                              </span>
-                                            )}
-                                          </Label>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                  {noneWatched && (
-                                    <p className="text-[11px] text-amber-600 dark:text-amber-500">
-                                      No columns watched — row edits won't
-                                      trigger the workflow.
-                                    </p>
-                                  )}
-                                </>
-                              )}
-                            </RestraintsSection>
-                            <FormMessage />
-                          </FormItem>
-                        );
-                      }}
-                    />
-                  )}
-
-                  <FormDescription>
-                    Edits are detected by row position, so this suits sheets
-                    that grow at the bottom (form responses, logs).
-                    {field.value !== "added" &&
-                      " Edits to the first (header) row are ignored."}
-                  </FormDescription>
+                  <RowScopeSelect
+                    value={field.value}
+                    onChange={field.onChange}
+                    itemNoun="watched"
+                    label="Which rows trigger this workflow"
+                    describe={describeTriggerScope}
+                  />
                   <FormMessage />
                 </FormItem>
               )}
             />
+
+            {watchingHeadings ? (
+              <p className="text-[11px] text-muted-foreground">
+                A section title is a row whose cells are merged into one band.
+                The workflow runs when its text changes, with the old and new
+                titles available to the steps after it. Adding or deleting a
+                section doesn't run it.
+              </p>
+            ) : (
+              <FormField
+                control={form.control}
+                name="triggerOn"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Trigger on</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {TRIGGER_ON_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+
+                    {field.value !== "added" && (
+                      <FormField
+                        control={form.control}
+                        name="ignoreColumns"
+                        render={({ field: columnsField }) => {
+                          // Stored value is the IGNORED columns; a checkbox is
+                          // checked when its column is watched, i.e. NOT ignored.
+                          const ignored = columnsField.value ?? [];
+                          const setWatched = (name: string, watched: boolean) =>
+                            columnsField.onChange(
+                              watched
+                                ? ignored.filter((n) => n !== name)
+                                : [...ignored, name],
+                            );
+                          // Union so an ignored column that's since been DELETED
+                          // still shows (as "not found") not silently gone. A
+                          // rename doesn't land here — the poller follows it and
+                          // rewrites the stored name (healIgnoreColumns).
+                          const options = Array.from(
+                            new Set([...headers, ...ignored]),
+                          );
+                          const noneWatched =
+                            options.length > 0 &&
+                            options.every((n) => ignored.includes(n));
+
+                          return (
+                            <FormItem>
+                              <RestraintsSection
+                                summary={
+                                  ignored.length
+                                    ? `ignoring ${ignored.join(", ")}`
+                                    : null
+                                }
+                              >
+                                <div className="space-y-1">
+                                  <Label className="text-xs font-normal">
+                                    Watch columns for edits
+                                  </Label>
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Every column is watched. Uncheck a column to
+                                    ignore edits to it.
+                                  </p>
+                                </div>
+
+                                {!spreadsheetId || !sheetName ? (
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Pick a spreadsheet and tab to load its
+                                    columns.
+                                  </p>
+                                ) : columnsLoading ? (
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Loading columns…
+                                  </p>
+                                ) : columnsError ? (
+                                  <p className="text-[11px] text-muted-foreground">
+                                    Couldn't read columns. Check the tab name.
+                                  </p>
+                                ) : options.length === 0 ? (
+                                  <p className="text-[11px] text-muted-foreground">
+                                    No header row found on this tab.
+                                  </p>
+                                ) : (
+                                  <>
+                                    <div className="space-y-1.5">
+                                      {options.map((name) => {
+                                        const id = `watch-col-${name}`;
+                                        const missing = !headers.includes(name);
+                                        return (
+                                          <div
+                                            key={name}
+                                            className="flex items-center gap-2"
+                                          >
+                                            <Checkbox
+                                              id={id}
+                                              checked={!ignored.includes(name)}
+                                              onCheckedChange={(c) =>
+                                                setWatched(name, c === true)
+                                              }
+                                            />
+                                            <Label
+                                              htmlFor={id}
+                                              className="text-xs font-normal"
+                                            >
+                                              {name}
+                                              {missing && (
+                                                <span className="ml-1 text-muted-foreground">
+                                                  (not found)
+                                                </span>
+                                              )}
+                                            </Label>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                    {noneWatched && (
+                                      <p className="text-[11px] text-amber-600 dark:text-amber-500">
+                                        No columns watched — row edits won't
+                                        trigger the workflow.
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+                              </RestraintsSection>
+                              <FormMessage />
+                            </FormItem>
+                          );
+                        }}
+                      />
+                    )}
+
+                    <FormDescription>
+                      Edits are detected by row position, so this suits sheets
+                      that grow at the bottom (form responses, logs).
+                      {field.value !== "added" &&
+                        " Edits to the first (header) row are ignored."}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            )}
 
             <DialogFooter>
               <Button type="submit">Save</Button>

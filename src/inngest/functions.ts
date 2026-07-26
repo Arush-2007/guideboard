@@ -16,10 +16,17 @@ import {
 import { clampJson, isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
-import { SHEETS_READ, sheetRange } from "@/lib/google-sheets";
+import {
+  getSheetGrid,
+  headingDataRows,
+  SHEETS_READ,
+  sheetRange,
+} from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
+import type { RowScope } from "@/lib/sheet-heading";
+import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
 import { planFanOutDispatches } from "./fan-out";
@@ -31,13 +38,16 @@ import {
 import { processSchedulePoll } from "./schedule-poll";
 import {
   changedFieldNames,
+  collectHeadingTexts,
   computeWatchedColumns,
   healIgnoreColumns,
+  planHeadingChanges,
   planSheetsPollChanges,
   readSnapshot,
   rowValuesByHeader,
   type SheetsPollSnapshot,
   type SheetsTriggerOn,
+  sheetsHeadingIdempotencyKey,
   sheetsPollIdempotencyKey,
   sheetsProjection,
 } from "./sheets-poll-diff";
@@ -830,6 +840,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           lastRowCount: true,
           rowHashes: true,
           triggerOn: true,
+          rowScope: true,
           ignoreColumns: true,
           lastChecked: true,
         },
@@ -870,6 +881,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         cellHashes: oldCellHashes,
         projection: oldProjection,
         header: lastHeader,
+        headings: lastHeadings,
       } = readSnapshot(poll.rowHashes);
 
       // Ignored columns are stored as header names; resolve against the current
@@ -889,6 +901,35 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
 
       const watchColumns = computeWatchedColumns(header, ignoreNames);
       const newProjection = sheetsProjection(header, watchColumns);
+      const rowScope =
+        (poll.rowScope as RowScope) ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE;
+
+      // Which rows are HEADINGS — merged section titles. The values endpoint
+      // can't say (a merge is grid metadata), so this is a second request.
+      //
+      // Skipped entirely under "all", which draws no distinction and so needs no
+      // merges. Combined with the legacy default above, a trigger saved before
+      // headings existed keeps making exactly ONE request per poll; only a user
+      // who opts into a heading-aware scope pays for the second.
+      //
+      // Left to throw on failure: without merges we can't tell a heading from a
+      // data row, and firing the wrong events is worse than a 5-minute retry.
+      const headingRows = new Set<number>();
+      if (rowScope !== "all") {
+        const grid = await getSheetGrid({
+          accessToken,
+          spreadsheetId: poll.spreadsheetId,
+          sheetName: poll.sheetName,
+          includeMerges: true,
+        });
+        // `headingDataRows` keys by DATA-row index (header excluded), while this
+        // poller indexes `rows` from the header at 0. Off by exactly one, and
+        // silently wrong if conflated — convert once, here.
+        for (const dataRow of headingDataRows(grid.merges).keys()) {
+          headingRows.add(dataRow + 1);
+        }
+      }
+      const newHeadings = collectHeadingTexts(rows, headingRows);
 
       const { changes, newCellHashes } = planSheetsPollChanges({
         rows,
@@ -900,7 +941,44 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         watchColumns,
         oldProjection,
         newProjection,
+        rowScope,
+        headingRows,
       });
+
+      // The poll's prior lastChecked: stable across retries of this poll,
+      // distinct on the next one, so a value changed back later fires again.
+      const pollToken = String(poll.lastChecked.getTime());
+
+      // The heading half. Deliberately NOT gated on the projection guard that
+      // suppresses row edits: a heading's text lives in column A and has nothing
+      // to do with the watched-column projection, so an unrelated column change
+      // must not swallow a retitled section.
+      if (rowScope === "headings") {
+        for (const change of planHeadingChanges(lastHeadings, newHeadings)) {
+          await sendWorkflowExecution({
+            workflowId: poll.workflowId,
+            initialData: {
+              googleSheets: {
+                spreadsheetId: poll.spreadsheetId,
+                sheetName: poll.sheetName,
+                changeType: "heading_updated",
+                heading: change.heading,
+                previousHeading: change.previousHeading,
+                // No columns changed — a heading is one merged cell, not a row
+                // of fields. Both keys stay present so a downstream template
+                // referencing them resolves to "" instead of breaking.
+                changedFields: "",
+                values: {},
+              },
+            },
+            idempotencyKey: sheetsHeadingIdempotencyKey({
+              spreadsheetId: poll.spreadsheetId,
+              rowIndex: change.rowIndex,
+              pollToken,
+            }),
+          });
+        }
+      }
 
       for (const { rowIndex, changeType, changedColumns } of changes) {
         const row = rows[rowIndex - 1] ?? [];
@@ -926,9 +1004,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
             rowIndex,
             changeType,
             row,
-            // The poll's prior lastChecked: stable across retries of this poll,
-            // distinct on the next poll, so a re-edit to an earlier value fires.
-            pollToken: String(poll.lastChecked.getTime()),
+            pollToken,
           }),
         });
       }
@@ -938,12 +1014,14 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
         data: {
           lastRowCount: currentRowCount,
           // Snapshot = the hashes, the projection they were computed under (so
-          // the next poll can tell whether that projection still holds), and the
-          // header they were read under (so it can spot a rename).
+          // the next poll can tell whether that projection still holds), the
+          // header they were read under (so it can spot a rename), and each
+          // heading's text (so it can spot a retitled section).
           rowHashes: {
             sig: newProjection.names,
             cols: newProjection.cols,
             header,
+            headings: newHeadings,
             cellHashes: newCellHashes,
           } satisfies SheetsPollSnapshot,
           ...(healedIgnoreNames ? { ignoreColumns: healedIgnoreNames } : {}),

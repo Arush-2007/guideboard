@@ -13,6 +13,7 @@ const GoogleSheetsTriggerDialog = dynamic(() =>
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
+import type { RowScope } from "@/lib/sheet-heading";
 
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_TRIGGER);
 
@@ -20,6 +21,7 @@ type GoogleSheetsTriggerNodeData = {
   spreadsheetId?: string;
   sheetName?: string;
   triggerOn?: "added" | "updated" | "added_or_updated";
+  rowScope?: RowScope;
   ignoreColumns?: string[];
   discoveredFields?: { path: string; label: string }[];
 };
@@ -52,8 +54,12 @@ export const GoogleSheetsTriggerNode = memo(
       );
     };
 
+    // Name the scope on the canvas: watching a tab's section titles and watching
+    // its data are different enough that two such nodes shouldn't read alike.
     const description = props.data?.sheetName
-      ? `Watching ${props.data.sheetName}`
+      ? props.data.rowScope === "headings"
+        ? `Watching ${props.data.sheetName} headings`
+        : `Watching ${props.data.sheetName}`
       : "Not configured";
 
     return (

@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
   changedFieldNames,
+  collectHeadingTexts,
   computeWatchedColumns,
   detectRenamedColumns,
   hashCells,
   healIgnoreColumns,
+  planHeadingChanges,
   planSheetsPollChanges,
   projectionsComparable,
   readSnapshot,
   resolveColumnIndices,
   rowValuesByHeader,
+  sheetsHeadingIdempotencyKey,
   sheetsPollIdempotencyKey,
   sheetsProjection,
 } from "./sheets-poll-diff";
@@ -517,29 +520,53 @@ describe("rowValuesByHeader", () => {
 });
 
 describe("readSnapshot", () => {
-  it("reads the current { sig, cols, header, cellHashes } shape", () => {
+  it("reads the current { sig, cols, header, headings, cellHashes } shape", () => {
     expect(
       readSnapshot({
         sig: '["status"]',
         cols: "[1]",
         header: ["Name", "Status"],
+        headings: { "1": "Q1 Sales" },
         cellHashes: [["a"], ["b", "c"]],
       }),
     ).toEqual({
       cellHashes: [["a"], ["b", "c"]],
       projection: { names: '["status"]', cols: "[1]" },
       header: ["Name", "Status"],
+      headings: { "1": "Q1 Sales" },
     });
   });
 
-  it("reads a pre-`cols`/`header` snapshot with the name identity only", () => {
-    // Written before the index identity and stored header existed: still
-    // comparable by name, so deploying them costs no re-baseline.
+  it("reads a pre-`cols`/`header`/`headings` snapshot with the name identity only", () => {
+    // Written before the index identity, stored header and headings existed:
+    // still comparable by name, so deploying them costs no re-baseline. A null
+    // `headings` means the next poll seeds it and fires no heading events.
     expect(readSnapshot({ sig: "*", cellHashes: [["a"], ["b"]] })).toEqual({
       cellHashes: [["a"], ["b"]],
       projection: { names: "*", cols: null },
       header: null,
+      headings: null,
     });
+  });
+
+  it("keeps an empty headings map distinct from an absent one", () => {
+    // `{}` is "we looked, the tab has none"; null is "we have never looked".
+    // Only the latter is a baseline — see planHeadingChanges.
+    expect(
+      readSnapshot({ sig: "*", headings: {}, cellHashes: [["a"]] }).headings,
+    ).toEqual({});
+    expect(readSnapshot({ sig: "*", cellHashes: [["a"]] }).headings).toBeNull();
+  });
+
+  it("rejects a malformed headings map rather than trusting it", () => {
+    expect(
+      readSnapshot({ sig: "*", headings: { "1": 7 }, cellHashes: [["a"]] })
+        .headings,
+    ).toBeNull();
+    expect(
+      readSnapshot({ sig: "*", headings: ["Q1"], cellHashes: [["a"]] })
+        .headings,
+    ).toBeNull();
   });
 
   it("lifts the legacy per-row { sig, hashes } shape to a re-seed placeholder (projection dropped)", () => {
@@ -549,6 +576,7 @@ describe("readSnapshot", () => {
       cellHashes: [["a"], ["b"]],
       projection: null,
       header: null,
+      headings: null,
     });
   });
 
@@ -557,14 +585,271 @@ describe("readSnapshot", () => {
       cellHashes: [["a"], ["b"]],
       projection: null,
       header: null,
+      headings: null,
     });
   });
 
   it("treats null / non-snapshot values as no snapshot (first-poll baseline)", () => {
-    const none = { cellHashes: null, projection: null, header: null };
+    const none = {
+      cellHashes: null,
+      projection: null,
+      header: null,
+      headings: null,
+    };
     expect(readSnapshot(null)).toEqual(none);
     expect(readSnapshot("garbage")).toEqual(none);
     expect(readSnapshot({ nope: 1 })).toEqual(none);
+  });
+});
+
+// A HEADING is a merged section title sitting inside the data — structurally an
+// ordinary row whose text is in column A, which is why it used to fire as a plain
+// row edit. NOT the header row (row 1); that is a different thing entirely.
+describe("collectHeadingTexts", () => {
+  const rows = [
+    ["Name", "City"],
+    ["Q1 Sales"], // merged band — Sheets trims the swallowed cells
+    ["Ada", "Pune"],
+    ["Q2 Sales"],
+  ];
+
+  it("reads each heading's text from column A, keyed by poller row index", () => {
+    expect(collectHeadingTexts(rows, new Set([1, 3]))).toEqual({
+      "1": "Q1 Sales",
+      "3": "Q2 Sales",
+    });
+  });
+
+  it("is empty when the tab has no headings", () => {
+    expect(collectHeadingTexts(rows, new Set())).toEqual({});
+  });
+
+  it("skips an index past the end of the sheet", () => {
+    // A heading deleted between the merges read and the values read.
+    expect(collectHeadingTexts(rows, new Set([1, 99]))).toEqual({
+      "1": "Q1 Sales",
+    });
+  });
+
+  it("records an emptied heading as empty text, not as absent", () => {
+    // Absent means "not a heading"; a heading whose text was cleared is still a
+    // heading, and clearing it IS a value change.
+    expect(collectHeadingTexts([["h"], []], new Set([1]))).toEqual({ "1": "" });
+  });
+});
+
+describe("planHeadingChanges", () => {
+  it("fires when a heading's text changes, carrying both values", () => {
+    expect(
+      planHeadingChanges({ "1": "Q1 Sales" }, { "1": "Q1 Sales (final)" }),
+    ).toEqual([
+      { rowIndex: 1, previousHeading: "Q1 Sales", heading: "Q1 Sales (final)" },
+    ]);
+  });
+
+  it("fires nothing before a snapshot exists (baseline poll)", () => {
+    // Attaching the trigger must not report the headings already there.
+    expect(planHeadingChanges(null, { "1": "Q1", "3": "Q2" })).toEqual([]);
+  });
+
+  it("is silent for both a baseline and an all-new tab", () => {
+    // null = no snapshot yet; {} = we looked and the tab had none, so every
+    // heading here is an ADD. Both are silent, for different reasons. The two
+    // are only told APART by `readSnapshot`, which is where it matters — pinned
+    // there, not here.
+    expect(planHeadingChanges(null, { "1": "Q1" })).toEqual([]);
+    expect(planHeadingChanges({}, { "1": "Q1" })).toEqual([]);
+  });
+
+  it("fires nothing when a heading is added, deleted, or unmerged", () => {
+    expect(planHeadingChanges({ "1": "Q1" }, { "1": "Q1", "5": "Q2" })).toEqual(
+      [],
+    );
+    expect(planHeadingChanges({ "1": "Q1", "5": "Q2" }, { "1": "Q1" })).toEqual(
+      [],
+    );
+  });
+
+  it("fires nothing when nothing changed", () => {
+    expect(planHeadingChanges({ "1": "Q1" }, { "1": "Q1" })).toEqual([]);
+  });
+
+  it("reports several retitled headings in row order", () => {
+    expect(
+      planHeadingChanges(
+        { "5": "Q2", "1": "Q1" },
+        { "5": "Second", "1": "First" },
+      ),
+    ).toEqual([
+      { rowIndex: 1, previousHeading: "Q1", heading: "First" },
+      { rowIndex: 5, previousHeading: "Q2", heading: "Second" },
+    ]);
+  });
+
+  it("compares exactly — whitespace and case are changes the user made", () => {
+    expect(planHeadingChanges({ "1": "Q1" }, { "1": "Q1 " })).toHaveLength(1);
+    expect(planHeadingChanges({ "1": "Q1" }, { "1": "q1" })).toHaveLength(1);
+  });
+
+  it("fires when a heading's text is cleared", () => {
+    expect(planHeadingChanges({ "1": "Q1" }, { "1": "" })).toEqual([
+      { rowIndex: 1, previousHeading: "Q1", heading: "" },
+    ]);
+  });
+});
+
+describe("planSheetsPollChanges — rowScope", () => {
+  // Row 2 and row 4 (poller indices 1 and 3) are merged section titles.
+  const before = [
+    ["Name", "City"],
+    ["Q1 Sales"],
+    ["Ada", "Pune"],
+    ["Q2 Sales"],
+  ];
+  const after = [
+    ["Name", "City"],
+    ["Q1 Sales (final)"], // heading retitled
+    ["Ada", "Delhi"], // data row edited
+    ["Q2 Sales"],
+  ];
+  const headingRows = new Set([1, 3]);
+  const base = {
+    rows: after,
+    lastRowCount: before.length,
+    oldCellHashes: cells(before),
+    triggerOn: "added_or_updated" as const,
+    headingRows,
+  };
+
+  it("'data' fires only the data row, never the retitled heading", () => {
+    const { changes } = planSheetsPollChanges({ ...base, rowScope: "data" });
+    expect(changes).toEqual([
+      { rowIndex: 3, changeType: "updated", changedColumns: [1] },
+    ]);
+  });
+
+  it("'headings' fires no row changes at all", () => {
+    const { changes } = planSheetsPollChanges({
+      ...base,
+      rowScope: "headings",
+    });
+    expect(changes).toEqual([]);
+  });
+
+  it("'all' fires both — the behaviour before headings were understood", () => {
+    const { changes } = planSheetsPollChanges({ ...base, rowScope: "all" });
+    expect(changes).toEqual([
+      { rowIndex: 2, changeType: "updated", changedColumns: [0] },
+      { rowIndex: 3, changeType: "updated", changedColumns: [1] },
+    ]);
+  });
+
+  it("defaults to 'data' when unspecified", () => {
+    expect(planSheetsPollChanges(base).changes).toEqual(
+      planSheetsPollChanges({ ...base, rowScope: "data" }).changes,
+    );
+  });
+
+  // Hashes are POSITIONAL. Skipping a scoped-out row would shift every later
+  // position and re-baseline the whole sheet on the next poll.
+  it("hashes every row in every scope, including skipped headings", () => {
+    const expected = cells(after);
+    for (const rowScope of ["data", "headings", "all"] as const) {
+      expect(
+        planSheetsPollChanges({ ...base, rowScope }).newCellHashes,
+      ).toEqual(expected);
+    }
+  });
+
+  it("skips a newly APPENDED heading in 'data' scope", () => {
+    // A new heading row is still a heading, not a new record.
+    const grown = [...before, ["Q3 Sales"], ["Bo", "Goa"]];
+    const { changes } = planSheetsPollChanges({
+      rows: grown,
+      lastRowCount: before.length,
+      oldCellHashes: cells(before),
+      triggerOn: "added_or_updated",
+      rowScope: "data",
+      headingRows: new Set([1, 3, 4]),
+    });
+
+    expect(changes).toEqual([
+      { rowIndex: 6, changeType: "added", changedColumns: [] },
+    ]);
+  });
+
+  it("treats a tab with no headings identically under 'data' and 'all'", () => {
+    const plain = {
+      rows: [["h"], ["a"], ["b-edited"]],
+      lastRowCount: 3,
+      oldCellHashes: cells([["h"], ["a"], ["b"]]),
+      triggerOn: "added_or_updated" as const,
+      headingRows: new Set<number>(),
+    };
+    expect(
+      planSheetsPollChanges({ ...plain, rowScope: "data" }).changes,
+    ).toEqual(planSheetsPollChanges({ ...plain, rowScope: "all" }).changes);
+  });
+});
+
+// Heading detection reads column A and has nothing to do with the watched-column
+// projection, so the guard that suppresses row edits on a shifted projection must
+// not reach it — otherwise adding a column would silently swallow a retitle.
+describe("heading changes vs the stale-projection guard", () => {
+  it("still reports a retitled heading when the projection shifted", () => {
+    const previous = { "1": "Q1 Sales" };
+    const next = { "1": "Q1 Sales (final)" };
+
+    // The row half re-baselines under the same shift...
+    const { changes } = planSheetsPollChanges({
+      rows: [["Name", "Status"], ["Q1 Sales (final)"]],
+      lastRowCount: 2,
+      oldCellHashes: cells([["Name"], ["Q1 Sales"]], [0]),
+      triggerOn: "added_or_updated",
+      rowScope: "all",
+      oldProjection: sheetsProjection(["Name"], [0]),
+      newProjection: sheetsProjection(["Name", "Status"], [0, 1]),
+    });
+    expect(changes).toEqual([]);
+
+    // ...while the heading half is unaffected, because it never consults it.
+    expect(planHeadingChanges(previous, next)).toEqual([
+      { rowIndex: 1, previousHeading: "Q1 Sales", heading: "Q1 Sales (final)" },
+    ]);
+  });
+});
+
+describe("sheetsHeadingIdempotencyKey", () => {
+  const base = { spreadsheetId: "sid", rowIndex: 3 };
+
+  it("is stable across retries of one poll", () => {
+    expect(sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" })).toBe(
+      sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" }),
+    );
+  });
+
+  it("differs across polls, so a title changed back later fires again", () => {
+    expect(sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" })).not.toBe(
+      sheetsHeadingIdempotencyKey({ ...base, pollToken: "2" }),
+    );
+  });
+
+  it("differs per row, so two retitles in one poll both fire", () => {
+    expect(sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" })).not.toBe(
+      sheetsHeadingIdempotencyKey({ ...base, rowIndex: 5, pollToken: "1" }),
+    );
+  });
+
+  it("cannot collide with a row change at the same index", () => {
+    expect(sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" })).not.toBe(
+      sheetsPollIdempotencyKey({
+        spreadsheetId: "sid",
+        rowIndex: 3,
+        changeType: "updated",
+        row: [],
+        pollToken: "1",
+      }),
+    );
   });
 });
 

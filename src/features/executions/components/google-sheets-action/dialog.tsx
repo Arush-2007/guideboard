@@ -19,6 +19,7 @@ import {
   newRowCondition,
   RowMatchConditions,
 } from "@/components/row-match-conditions";
+import { RowScopeSelect } from "@/components/row-scope-select";
 import { Button } from "@/components/ui/button";
 import { ColorPicker } from "@/components/ui/color-picker";
 import {
@@ -74,9 +75,7 @@ import {
   headingColorSchema,
   headingFilterSchema,
   headingFormatSchema,
-  ROW_SCOPE_LABELS,
   ROW_SCOPES,
-  type RowScope,
   resolveHeadingFilterOptions,
   resolveHeadingFormat,
 } from "@/lib/sheet-heading";
@@ -558,51 +557,6 @@ function HeadingMatchModeSelect({
           onMaxItemsChange={onMaxItemsChange}
         />
       ) : null}
-    </div>
-  );
-}
-
-/**
- * "Which rows may this filter touch?" — shared by every action that selects rows
- * with the conditions editor. A heading is structurally an ordinary row, so
- * without this a filter matching its text would overwrite or repaint a section
- * title; this is also the only way to deliberately target one.
- */
-function RowScopeSelect({
-  value,
-  onChange,
-  itemNoun,
-}: {
-  value: RowScope | undefined;
-  onChange: (next: RowScope) => void;
-  /** What the action does to the rows it selects, e.g. "changed", "colored". */
-  itemNoun: string;
-}) {
-  const scope = value ?? "data";
-  return (
-    <div className="space-y-2">
-      <Label>Which rows can be {itemNoun}</Label>
-      <Select value={scope} onValueChange={(v) => onChange(v as RowScope)}>
-        <SelectTrigger className="w-full">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {ROW_SCOPES.map((s) => (
-            <SelectItem key={s} value={s}>
-              {ROW_SCOPE_LABELS[s]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <p className="text-xs text-muted-foreground">
-        {scope === "headings"
-          ? `Only heading rows are ${itemNoun} — the merged section titles, never your data.`
-          : scope === "all"
-            ? `Both data and heading rows can be ${itemNoun}. A filter matching a heading's text will change the section title itself.`
-            : `Heading rows are skipped, so a filter can never ${
-                itemNoun === "changed" ? "overwrite" : "repaint"
-              } a section title by accident.`}
-      </p>
     </div>
   );
 }

@@ -152,7 +152,9 @@ describe("buildSheetRow", () => {
         Km: "@<sheetA.rowByHeader.Km>@",
       },
       context: {
-        sheetA: { rowByHeader: { "Job No": "0009", Name: "Ada", Km: "190000" } },
+        sheetA: {
+          rowByHeader: { "Job No": "0009", Name: "Ada", Km: "190000" },
+        },
       },
       forceTextIds: true,
     });

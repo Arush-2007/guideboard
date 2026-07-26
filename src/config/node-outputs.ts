@@ -424,9 +424,13 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
   [NodeType.GOOGLE_SHEETS_TRIGGER]: {
     rootKind: "fixed",
     rootKey: "googleSheets",
-    // Per-column values (`googleSheets.values.<Header>`) are offered dynamically
-    // as `discoveredFields` the dialog saves from the sheet's header row (see
-    // upstream-fields.ts), since the columns depend on the chosen sheet.
+    // Only the fields present under EVERY row scope live here. What a run
+    // actually carries depends on the scope, and the two sets are disjoint:
+    // a data-row change has per-column values and no section title; a heading
+    // change has a section title and no columns. Both are offered dynamically as
+    // `discoveredFields` the dialog saves (see upstream-fields.ts), so the picker
+    // lists what this node will really produce instead of padding both scopes
+    // with entries that always resolve to "".
     fields: [
       {
         path: "changeType",

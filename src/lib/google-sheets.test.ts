@@ -391,6 +391,37 @@ describe("headingDataRows", () => {
     ).toEqual(new Map([[3, 3]]));
   });
 
+  // Pinning the index base, because the two consumers count from different
+  // places and getting it wrong fails SILENTLY — the trigger would watch the row
+  // under each section title instead of the title itself.
+  //
+  //   headingDataRows  → DATA-row index, header EXCLUDED (readSheetTable.rows)
+  //   the Sheets poll  → row index with the header AT 0 (the raw values array)
+  //
+  // So the poller adds one, and the heading's text is that row's column A.
+  it("is one lower than the poller's row index for the same row", () => {
+    //  grid 0 / poller 0 : Name | City   ← header
+    //  grid 1 / poller 1 : ██ Q1 Sales ██ ← heading, data row 0
+    //  grid 2 / poller 2 : Ada  | Pune
+    const rows = [["Name", "City"], ["Q1 Sales"], ["Ada", "Pune"]];
+    const merges = [
+      {
+        startRowIndex: 1,
+        endRowIndex: 2,
+        startColumnIndex: 0,
+        endColumnIndex: 2,
+      },
+    ];
+
+    const dataRows = [...headingDataRows(merges).keys()];
+    expect(dataRows).toEqual([0]);
+
+    const pollerRows = dataRows.map((i) => i + 1);
+    expect(pollerRows).toEqual([1]);
+    // The conversion lands on the merged band, not the row beneath it.
+    expect(rows[pollerRows[0]][0]).toBe("Q1 Sales");
+  });
+
   it("ignores merges that are not heading-shaped", () => {
     expect(
       headingDataRows([

@@ -1,6 +1,40 @@
 import { createHash } from "node:crypto";
+import {
+  DEFAULT_ROW_SCOPE,
+  type RowScope,
+  rowPassesScope,
+} from "@/lib/sheet-heading";
 
 export type SheetsTriggerOn = "added" | "updated" | "added_or_updated";
+
+/**
+ * A HEADING's text changing — the other half of the node.
+ *
+ * A heading is a merged section title sitting inside the data (see
+ * `headingDataRows` in `lib/google-sheets.ts`, the one definition of what
+ * qualifies). Structurally it is an ordinary row whose text lives in column A, so
+ * without the merge information it is indistinguishable from a data row — which
+ * is why it used to fire as a generic `"updated"` row change.
+ *
+ * NOT the header row (row 1, the column names). That is a different thing and is
+ * excluded from every rule here.
+ */
+export type SheetsHeadingChange = {
+  /** Poller row index (0-based; index 0 is the header row). */
+  rowIndex: number;
+  previousHeading: string;
+  heading: string;
+};
+
+/**
+ * The stored heading snapshot: poller row index → that heading's TEXT.
+ *
+ * Text rather than a hash, unlike `cellHashes`. Storing the literal is what lets
+ * the event carry `previousHeading`, which is most of the point of the trigger;
+ * headings are few and their text short, so this stays negligible beside the cell
+ * hashes.
+ */
+export type SheetsHeadingTexts = Record<string, string>;
 
 export type SheetsChange = {
   /** 1-based sheet row number. */
@@ -132,6 +166,80 @@ export function sheetsPollIdempotencyKey(params: {
   const discriminator =
     params.changeType === "added" ? hashRow(params.row) : params.pollToken;
   return `google_sheets:${params.spreadsheetId}:${params.rowIndex}:${discriminator}`;
+}
+
+/**
+ * Idempotency key for a heading's text changing. Keyed on the poll invocation for
+ * the same reason edits are: a title changed back to a value it held before would
+ * otherwise collide with that earlier change's still-live Execution and be
+ * swallowed. Distinct namespace from the row key, so a heading and a data row at
+ * the same index can't collide.
+ */
+export function sheetsHeadingIdempotencyKey(params: {
+  spreadsheetId: string;
+  rowIndex: number;
+  pollToken: string;
+}): string {
+  return `google_sheets:${params.spreadsheetId}:heading:${params.rowIndex}:${params.pollToken}`;
+}
+
+/**
+ * The heading text at each heading position, ready to store and to diff against
+ * the previous poll. `headingRows` holds POLLER row indices (see
+ * `toPollerRowIndex` at the call site — `headingDataRows` speaks data-row
+ * indices, which are one lower).
+ *
+ * A heading's text always lives in column A, which is where Sheets keeps a merged
+ * band's value; the other cells of the band come back empty.
+ */
+export function collectHeadingTexts(
+  rows: string[][],
+  headingRows: Set<number>,
+): SheetsHeadingTexts {
+  const texts: SheetsHeadingTexts = {};
+  for (const rowIndex of headingRows) {
+    const row = rows[rowIndex];
+    if (row === undefined) continue;
+    texts[String(rowIndex)] = row[0] ?? "";
+  }
+  return texts;
+}
+
+/**
+ * Which headings changed their text between two polls.
+ *
+ * Fires ONLY for a position that is a heading in BOTH snapshots whose text
+ * differs. That single rule gives the intended semantics without special cases:
+ * a heading newly added appears only in `next`, and one deleted or unmerged
+ * appears only in `previous` — neither fires, because neither is a value change.
+ *
+ * `previous` is null before the first poll records one: a baseline that fires
+ * nothing, so attaching the trigger never backfills the headings already there.
+ * The same rule the row half follows.
+ *
+ * Compared EXACTLY (no trimming or case folding) — retitling "Q1" to "Q1 " is a
+ * change the user made to the cell, and the row half treats whitespace the same
+ * way.
+ */
+export function planHeadingChanges(
+  previous: SheetsHeadingTexts | null,
+  next: SheetsHeadingTexts,
+): SheetsHeadingChange[] {
+  // A baseline poll fires nothing. Stated explicitly rather than left to fall out
+  // of the per-key lookup below (which would also yield nothing, since no key
+  // resolves): it is the contract, not a coincidence, and it stays correct if
+  // this ever grows to report headings ADDED — where null and `{}` diverge.
+  if (previous === null) return [];
+
+  const changes: SheetsHeadingChange[] = [];
+  for (const [key, heading] of Object.entries(next)) {
+    const previousHeading = previous[key];
+    // Absent = not a heading last poll (newly added or newly merged), so there is
+    // no previous value to have changed.
+    if (previousHeading === undefined || previousHeading === heading) continue;
+    changes.push({ rowIndex: Number(key), previousHeading, heading });
+  }
+  return changes.sort((a, b) => a.rowIndex - b.rowIndex);
 }
 
 /** How a header name is compared everywhere: case- and whitespace-insensitive. */
@@ -382,6 +490,11 @@ export type SheetsPollSnapshot = {
   /** Row 1 as last seen, so the next poll can spot a renamed column by diffing
    *  it against the live header. Absent in snapshots written before this. */
   header: string[];
+  /** Each HEADING's text at its poller row index, so the next poll can tell a
+   *  retitled section from one that was merely added. Absent before this
+   *  existed, and `{}` on a tab with no headings — see `readSnapshot` on why
+   *  those two must not read the same. */
+  headings: SheetsHeadingTexts;
   cellHashes: string[][];
 };
 
@@ -396,15 +509,30 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((c) => typeof c === "string");
 }
 
+function isHeadingTexts(v: unknown): v is SheetsHeadingTexts {
+  return (
+    typeof v === "object" &&
+    v !== null &&
+    !Array.isArray(v) &&
+    Object.values(v).every((t) => typeof t === "string")
+  );
+}
+
 /**
- * Reads the stored snapshot back into `{ cellHashes, projection, header }`, the
- * single place that knows its persisted shape. Current shape is
- * `{ sig, cols, header, cellHashes }`.
+ * Reads the stored snapshot back into `{ cellHashes, projection, header, headings }`,
+ * the single place that knows its persisted shape. Current shape is
+ * `{ sig, cols, header, headings, cellHashes }`.
  *
  * A snapshot written before `cols` existed still yields a usable projection —
  * names only, `cols: null` — so deploying the index identity costs no re-baseline;
  * those polls keep comparing by name until the next write records both. A missing
  * `header` likewise just means no rename healing until the next write records one.
+ *
+ * `headings` reads back as `null` when ABSENT and `{}` when present-but-empty, and
+ * the difference is load-bearing: `null` means "we have never looked", which
+ * `planHeadingChanges` treats as a baseline, while `{}` means "we looked and the
+ * tab genuinely has none". Collapsing them would make the first poll after deploy
+ * diff every existing heading against nothing.
  *
  * The two legacy shapes stored per-ROW hashes — `{ sig, hashes }` and, older
  * still, a bare `string[]`. Neither can be diffed at the cell level, so both are
@@ -417,6 +545,7 @@ export function readSnapshot(stored: unknown): {
   cellHashes: string[][] | null;
   projection: StoredProjection | null;
   header: string[] | null;
+  headings: SheetsHeadingTexts | null;
 } {
   if (stored && typeof stored === "object" && !Array.isArray(stored)) {
     const obj = stored as {
@@ -425,6 +554,7 @@ export function readSnapshot(stored: unknown): {
       sig?: unknown;
       cols?: unknown;
       header?: unknown;
+      headings?: unknown;
     };
     if (isCellHashes(obj.cellHashes)) {
       return {
@@ -437,6 +567,7 @@ export function readSnapshot(stored: unknown): {
               }
             : null,
         header: isStringArray(obj.header) ? obj.header : null,
+        headings: isHeadingTexts(obj.headings) ? obj.headings : null,
       };
     }
     // Legacy per-row hashes: re-seed once (no projection → edits suppressed,
@@ -446,6 +577,7 @@ export function readSnapshot(stored: unknown): {
         cellHashes: obj.hashes.map((h) => [h]),
         projection: null,
         header: null,
+        headings: null,
       };
     }
   }
@@ -455,9 +587,10 @@ export function readSnapshot(stored: unknown): {
       cellHashes: stored.map((h) => [h]),
       projection: null,
       header: null,
+      headings: null,
     };
   }
-  return { cellHashes: null, projection: null, header: null };
+  return { cellHashes: null, projection: null, header: null, headings: null };
 }
 
 /**
@@ -496,6 +629,19 @@ export function readSnapshot(stored: unknown): {
  * column to a scoped sheet, or changing the watched set, re-baseline cleanly
  * instead of firing a false edit storm. Renaming or reordering a header does NOT
  * trip it — see `projectionsComparable`.
+ *
+ * `rowScope` + `headingRows` decide which KIND of row may fire. A heading is
+ * structurally an ordinary row (merging is a display effect, its text sits in
+ * column A), so without this a section title fires as a plain row edit —
+ * indistinguishable from real data changing. `"data"` skips headings, `"headings"`
+ * fires no row changes at all (that half emits `planHeadingChanges` events
+ * instead), and `"all"` draws no distinction — the behaviour before headings were
+ * understood here, kept as the explicit opt-in for a tab where a merged row IS
+ * data.
+ *
+ * Hashes are computed for EVERY row regardless of scope: they are positional, so
+ * skipping a row would shift every later position and re-baseline the sheet.
+ * Scope decides what is EMITTED, never what is recorded.
  */
 export function planSheetsPollChanges(params: {
   rows: string[][];
@@ -510,6 +656,10 @@ export function planSheetsPollChanges(params: {
   oldProjection?: StoredProjection | null;
   /** Projection for this poll; null skips the check (e.g. in tests). */
   newProjection?: SheetsProjection | null;
+  /** Which kind of row may fire. Absent ⇒ the shared default ("data"). */
+  rowScope?: RowScope;
+  /** POLLER row indices (not data-row indices) that are headings. */
+  headingRows?: Set<number>;
 }): { changes: SheetsChange[]; newCellHashes: string[][] } {
   const {
     rows,
@@ -519,13 +669,20 @@ export function planSheetsPollChanges(params: {
     watchColumns,
     oldProjection = null,
     newProjection = null,
+    rowScope = DEFAULT_ROW_SCOPE,
+    headingRows,
   } = params;
   const newCellHashes = rows.map((row) => hashCells(row, watchColumns));
 
   // First poll for this trigger: capture the current sheet as the baseline and
   // fire nothing. A fresh trigger must not backfill pre-existing rows (and so
   // can't fire for the header either).
-  if (oldCellHashes === null) {
+  //
+  // `"headings"` fires no ROW changes by definition — that half emits heading
+  // events instead — but still returns the hashes, so the snapshot stays current
+  // and switching back to a row scope resumes from the sheet as it stands rather
+  // than replaying every edit made in the meantime.
+  if (oldCellHashes === null || rowScope === "headings") {
     return { changes: [], newCellHashes };
   }
 
@@ -549,6 +706,11 @@ export function planSheetsPollChanges(params: {
   // as an appended record once someone types it.
   for (let i = 1; i < rows.length; i++) {
     const rowIndex = i + 1;
+
+    // A heading is an ordinary row structurally, so scope is the only thing that
+    // keeps a section title from firing as a data change. Applied to appends as
+    // well as edits: a newly added heading is still a heading, not a new record.
+    if (!rowPassesScope(rowScope, headingRows?.has(i) ?? false)) continue;
 
     if (i >= lastRowCount) {
       // Row beyond the previous count — an append.

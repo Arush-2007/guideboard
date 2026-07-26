@@ -13,6 +13,8 @@ import {
   stripRefFromData,
 } from "@/lib/node-ref";
 import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
+import type { RowScope } from "@/lib/sheet-heading";
+import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 
 /**
  * Shared persistence + validation for AI-generated workflows.
@@ -265,6 +267,7 @@ export async function syncTriggerPollsForWorkflow(
           spreadsheetId?: string;
           sheetName?: string;
           triggerOn?: "added" | "updated" | "added_or_updated";
+          rowScope?: RowScope;
           ignoreColumns?: string[];
         }
       | undefined) ?? { spreadsheetId: "", sheetName: "" };
@@ -272,6 +275,11 @@ export async function syncTriggerPollsForWorkflow(
     // Missing on nodes saved before edit-detection existed; those keep the
     // historical append-only behavior.
     const triggerOn = triggerData.triggerOn ?? "added";
+    // Missing on nodes saved before headings were understood here; those keep
+    // firing on every row, merged section titles included — and keep making one
+    // API call per poll. The dialog resolves an absent value through the same
+    // constant, so what a user sees is what the poll runs.
+    const rowScope = triggerData.rowScope ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE;
     // Header names whose edits are ignored; empty watches every column. A change
     // here does NOT need a baseline reset from this side: the poller detects the
     // shifted watched-column projection via `sheetsProjection` and re-seeds
@@ -287,6 +295,7 @@ export async function syncTriggerPollsForWorkflow(
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
           triggerOn,
+          rowScope,
           ignoreColumns,
         },
         create: {
@@ -295,6 +304,7 @@ export async function syncTriggerPollsForWorkflow(
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
           triggerOn,
+          rowScope,
           ignoreColumns,
         },
       });

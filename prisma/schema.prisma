@@ -223,17 +223,25 @@ model GoogleSheetsPoll {
   spreadsheetId String
   sheetName     String
   lastRowCount  Int      @default(0)
-  // Last poll's edit snapshot: `{ sig, cols, header, cellHashes }` — `cellHashes`
-  // is one hash per watched cell per row (by position); `sig`/`cols` are the name
-  // and index identities of the watched-column projection they were computed under
-  // (see SheetsProjection), so a poll can tell if that projection still holds;
-  // `header` is row 1 as last seen, so a poll can spot a renamed column.
-  // Null until the first poll seeds it; `{ sig, hashes }` and a bare array are
-  // legacy shapes. Only consulted when triggerOn watches edits.
+  // Last poll's edit snapshot: `{ sig, cols, header, headings, cellHashes }` —
+  // `cellHashes` is one hash per watched cell per row (by position); `sig`/`cols`
+  // are the name and index identities of the watched-column projection they were
+  // computed under (see SheetsProjection), so a poll can tell if that projection
+  // still holds; `header` is row 1 as last seen, so a poll can spot a renamed
+  // column; `headings` is each merged heading's TEXT by row index, so a poll can
+  // spot a retitled section. Null until the first poll seeds it; `{ sig, hashes }`
+  // and a bare array are legacy shapes. Only consulted when the poll watches edits.
   rowHashes     Json?
   // Denormalized from the trigger node's `triggerOn`: "added" (append only,
   // the historical default), "updated" (edits only), or "added_or_updated".
+  // Only consulted when rowScope admits data rows.
   triggerOn     String   @default("added")
+  // Which KIND of row fires: "data" (skip merged heading rows), "headings" (fire
+  // only when a heading's text changes), or "all" (no distinction). Defaults to
+  // "all" — the behaviour before headings were understood here — so existing
+  // polls are unchanged AND keep making a single API call ("data"/"headings" need
+  // a second request for the tab's merged ranges).
+  rowScope      String   @default("all")
   // Header (row-1) NAMES whose edits are IGNORED (the unchecked columns in the
   // dialog), resolved to indices at poll time so it survives reordering; the
   // poller rewrites a name that gets renamed in the sheet (healIgnoreColumns).

@@ -62,7 +62,7 @@ export const triggerNodeOptions: NodeOption[] = [
   {
     type: NodeType.GOOGLE_SHEETS_TRIGGER,
     label: "Google Sheets Trigger",
-    description: "Runs the flow when a new row is detected",
+    description: "Runs the flow when a row or section title changes",
     icon: INTEGRATIONS.googleSheets.icon,
   },
   {
