@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,7 +12,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -33,6 +33,7 @@ export type InstagramCommentTriggerFormValues = z.infer<typeof formSchema>;
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
   onSubmit: (values: InstagramCommentTriggerFormValues) => void;
   defaultValues?: Partial<InstagramCommentTriggerFormValues>;
 }
@@ -40,6 +41,7 @@ interface Props {
 export const InstagramCommentTriggerDialog = ({
   open,
   onOpenChange,
+  currentNodeId,
   onSubmit,
   defaultValues = {},
 }: Props) => {
@@ -67,7 +69,7 @@ export const InstagramCommentTriggerDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Instagram Comment Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Trigger this workflow when a comment is posted on your Instagram
             post. Optionally limit to one post, and configure an auto reply.

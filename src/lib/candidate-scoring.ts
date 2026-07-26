@@ -15,6 +15,7 @@
 import {
   type CompareOperator,
   evaluateCondition,
+  pickCompareOptions,
 } from "@/features/executions/lib/compare";
 
 export type ScoringDecision = "SHORTLIST" | "REVIEW" | "REJECT";
@@ -33,6 +34,11 @@ export type ScoringRule = {
   points: number;
   /** Knockout: when true, a non-match forces REJECT regardless of score. */
   required?: boolean;
+  // Matching options (see `CompareOptions`) — same relaxations the Condition/
+  // Switch/Sheets comparisons offer, so a rule can match messy applicant input.
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 /** A rule whose `field` has been resolved against the run context. */
@@ -82,6 +88,7 @@ export function scoreCandidate(
       rule.operator,
       rule.fieldValue,
       rule.value ?? "",
+      pickCompareOptions(rule),
     );
     const name = ruleName(rule, index);
 

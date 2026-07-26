@@ -1,0 +1,35 @@
+# Normalise line endings.
+#
+# Without this, `core.autocrlf=true` on Windows checks every text file out as
+# CRLF while the repository stores LF. Biome's formatter expects LF, so any file
+# an editor rewrote came back flagged as entirely reformatted — the diff was
+# real, but it was pure carriage returns, and it buried actual changes.
+#
+# `text=auto eol=lf` tells Git to store LF and to check LF out on every platform,
+# regardless of each developer's `core.autocrlf`. It is the setting the formatter
+# already assumes.
+* text=auto eol=lf
+
+# Windows-only scripts genuinely need CRLF to run.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never touch binaries — Git's heuristic is good but these are worth pinning,
+# since a stray newline conversion corrupts them silently.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.node binary

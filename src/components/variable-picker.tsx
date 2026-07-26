@@ -1,10 +1,12 @@
 "use client";
 
 import { useEdges, useNodes } from "@xyflow/react";
-import { Braces } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Braces, ChevronRight } from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { CustomFeatureEntry } from "@/components/custom-feature-entry";
+import { NodeTypeIcon } from "@/components/node-type-icon";
 import { Button } from "@/components/ui/button";
+import { OverlayCloseAction } from "@/components/ui/close-button";
 import {
   Popover,
   PopoverAnchor,
@@ -12,22 +14,16 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { getCustomFeatures } from "@/config/custom-features";
+import { nodeOptionByType, nodeTypeLabel } from "@/config/node-options";
+import type { NodeType } from "@/generated/prisma";
 import {
+  buildPickerSources,
   getUpstreamFields,
-  type UpstreamFieldRow,
+  type PickerExtraGroup,
+  type PickerFieldRow,
+  type PickerSource,
 } from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
-
-/**
- * A group of fields the CURRENT node offers about itself, rather than fields
- * inherited from an upstream node — the Sheets insert action's "row it is
- * attached to" is the first of these. Listed above the upstream groups, since
- * they belong to the step the user is configuring.
- */
-export type PickerExtraGroup = {
-  label: string;
-  fields: { insertText: string; fieldLabel: string }[];
-};
 
 export type VariablePickerProps = {
   currentNodeId: string;
@@ -47,62 +43,170 @@ export type VariablePickerProps = {
    */
   bare?: boolean;
   /**
-   * Horizontal offset for the fixed popover anchor. Defaults to `ml-72` (≈ half
-   * the standard `sm:max-w-xl` dialog). Pass `ml-96` when the picker lives in a
-   * wider `WideOverlayPanel` (`sm:max-w-3xl`) so the popover clears its edge.
+   * Controls the popover from outside — how the fields' typed `@<` shortcut
+   * opens it. Left undefined, the picker owns its own open state and only the
+   * braces button opens it.
    */
-  anchorClassName?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
+
+/**
+ * The surface the popover opens beside: the innermost dialog the picker is
+ * rendered inside, found from the trigger.
+ *
+ * This used to be a Tailwind offset each call site passed in by hand (`ml-72`
+ * for a standard dialog, `ml-96` for the 1.6×-wide `WideOverlayPanel`) — a
+ * measurement of the dialog, guessed by the caller, restated in four prop
+ * doc-comments. Three of eight call sites had it wrong, and a `VariableTextarea`
+ * had no way to pass it at all. The dialog knows its own width, so ask it:
+ * `closest` naturally finds the INNERMOST dialog, which is exactly the nested
+ * `WideOverlayPanel` case the constants were hand-encoding.
+ *
+ * Returns null when the picker isn't inside a dialog, and the popover falls back
+ * to Radix's default of anchoring to the trigger.
+ */
+function enclosingDialog(el: HTMLElement | null): HTMLElement | null {
+  return el?.closest<HTMLElement>('[data-slot="dialog-content"]') ?? null;
+}
 
 /** Strips the `@<path>@` template wrapper down to the bare dotted path. */
 function toBarePath(insertText: string): string {
   return insertText.replace(/^@<\s*/, "").replace(/\s*>@$/, "");
 }
 
+/** Shared stand-in for every list a closed picker doesn't build, at one identity. */
+const EMPTY: never[] = [];
+
 /**
- * One labelled section of the picker: an upstream node's fields, or a group the
- * current node supplies itself. Both render identically — the only difference is
- * where the fields came from.
+ * The popover's height, owned by the panel shell rather than by either panel's
+ * content: the fields panel covers the node list (`absolute inset-0`), so
+ * whichever one sizes the box sizes the other. Fixed, so drilling in and back
+ * never resizes or moves it — the same reason the popover is pinned to a fixed
+ * anchor.
  */
-const PickerGroup = ({
-  label,
-  fields,
-  bare,
-  onPick,
+const PANEL_HEIGHT = "h-[min(22rem,60vh)]";
+
+/**
+ * A panel's title bar. Both panels get one, with the same red cross every other
+ * overlay in the app uses — on the node list it closes the picker, on a source's
+ * fields it steps back to the node list.
+ */
+const PanelHeader = ({
+  title,
+  onClose,
+  closeLabel,
 }: {
-  label: string;
-  fields: { insertText: string; fieldLabel: string }[];
-  bare?: boolean;
-  onPick: (inserted: string) => void;
+  title: string;
+  onClose: () => void;
+  closeLabel?: string;
 }) => (
-  <div className="mb-1">
-    <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-      {label}
-    </div>
-    <ul>
-      {fields.map((field) => {
-        const inserted = bare ? toBarePath(field.insertText) : field.insertText;
-        return (
-          <li key={field.insertText}>
-            <button
-              type="button"
-              className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
-              onClick={() => onPick(inserted)}
-            >
-              <span className="font-medium text-foreground">
-                {field.fieldLabel}
-              </span>
-              <span className="w-full break-all font-mono text-xs text-muted-foreground">
-                {inserted}
-              </span>
-            </button>
-          </li>
-        );
-      })}
-    </ul>
+  <div className="relative border-b px-8 py-2 text-center text-sm font-medium">
+    <span className="line-clamp-2 break-words">{title}</span>
+    <OverlayCloseAction
+      className="top-1.5 right-1.5"
+      onClick={onClose}
+      aria-label={closeLabel}
+    />
   </div>
 );
 
+/**
+ * A panel's scrollable body. Fills whatever its panel's header leaves, so the
+ * height belongs to the shell (`PANEL_HEIGHT`) and neither panel's own content
+ * can decide how big the popover is.
+ */
+const PanelBody = ({ children }: { children: ReactNode }) => (
+  <div
+    className="themed-scrollbar min-h-0 flex-1 overflow-y-auto overscroll-contain p-1"
+    onWheel={(e) => {
+      // The parent modal Dialog's scroll-lock (react-remove-scroll) blocks
+      // wheel/trackpad scrolling on this portaled popover, so drive the scroll
+      // manually — two-finger scrolling now works (dragging the scrollbar
+      // already did).
+      e.currentTarget.scrollTop += e.deltaY;
+    }}
+  >
+    {children}
+  </div>
+);
+
+/** One source on the first panel: a node, or a group the current node owns. */
+const SourceRow = ({
+  source,
+  onOpen,
+}: {
+  source: PickerSource;
+  onOpen: () => void;
+}) => (
+  <li>
+    <button
+      type="button"
+      // min-h-13 is the height of a two-line row (a named node, whose type sits
+      // under its name). Rows with no subtitle — an unnamed trigger — hold that
+      // same height instead of sitting shorter than the ones around them.
+      className="flex min-h-13 w-full items-center gap-2.5 rounded-md px-2 py-2 text-left hover:bg-muted"
+      onClick={onOpen}
+    >
+      {/* The slot is held even when the type has no registered icon (node-options
+          is a partial registry with no compile backstop), so one unregistered
+          node can't shift its label out of the column the others line up in. */}
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        <NodeTypeIcon
+          icon={
+            source.nodeType
+              ? nodeOptionByType[source.nodeType as NodeType]?.icon
+              : undefined
+          }
+        />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block break-words text-sm font-medium text-foreground">
+          {source.label}
+        </span>
+        {source.sublabel ? (
+          <span className="block break-words text-xs text-muted-foreground">
+            {source.sublabel}
+          </span>
+        ) : null}
+      </span>
+      <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+    </button>
+  </li>
+);
+
+/** One pickable field on the second panel: its friendly name over its path. */
+const FieldRow = ({
+  field,
+  bare,
+  onPick,
+}: {
+  field: PickerFieldRow;
+  bare?: boolean;
+  onPick: (inserted: string) => void;
+}) => {
+  const inserted = bare ? toBarePath(field.insertText) : field.insertText;
+  return (
+    <li>
+      <button
+        type="button"
+        className="flex w-full flex-col items-start gap-0.5 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted"
+        onClick={() => onPick(inserted)}
+      >
+        <span className="font-medium text-foreground">{field.fieldLabel}</span>
+        <span className="w-full break-all font-mono text-xs text-muted-foreground">
+          {inserted}
+        </span>
+      </button>
+    </li>
+  );
+};
+
+/**
+ * The "insert a field" picker, in two panels: the nodes a value can come from,
+ * and — covering it — the fields of the one you picked. One node's fields at a
+ * time, rather than every upstream field on a single scroll.
+ */
 export function VariablePicker({
   currentNodeId,
   onSelect,
@@ -111,48 +215,117 @@ export function VariablePicker({
   bare,
   currentValue,
   extraGroups = [],
-  anchorClassName = "ml-72",
+  open: controlledOpen,
+  onOpenChange,
 }: VariablePickerProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  /**
+   * Whether this opening came from the braces button. A picker summoned by
+   * typing `@<` must NOT pull focus out of the field mid-sentence — see the
+   * PopoverContent below — while one opened by clicking the button should
+   * behave like any other popover and take focus.
+   */
+  const openedByTrigger = useRef(false);
+  /**
+   * The dialog to open beside, resolved from the DOM the first render the
+   * picker is open — a ref rather than state because the popover positions
+   * itself in that same render, and a state update landing an effect later
+   * would paint one frame at the wrong place.
+   */
+  const anchorRef = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) {
+    // Resolved on each open rather than on mount: a dialog renders its content
+    // only while it is open, and a picker inside a WideOverlayPanel layered over
+    // another dialog has to find the one it is in NOW. The last anchor is kept
+    // once closed so the exit animation doesn't jump to the trigger.
+    anchorRef.current = enclosingDialog(triggerRef.current);
+  }
+  wasOpen.current = open;
+  /** Which source's fields are showing, i.e. whether panel 2 is up. */
+  const [openSourceKey, setOpenSourceKey] = useState<string | null>(null);
 
   // Read LIVE canvas state (not the saved server copy) so connections drawn a
   // moment ago are reflected immediately — no save required.
   const nodes = useNodes();
   const edges = useEdges();
 
-  const groups = useMemo(() => {
-    const rows = getUpstreamFields(currentNodeId, nodes, edges);
-
-    const byNode = new Map<
-      string,
-      { nodeLabel: string; fields: UpstreamFieldRow[] }
-    >();
-    for (const row of rows) {
-      const group = byNode.get(row.nodeId);
-      if (group) group.fields.push(row);
-      else byNode.set(row.nodeId, { nodeLabel: row.nodeLabel, fields: [row] });
-    }
-    return [...byNode.values()];
-  }, [nodes, edges, currentNodeId]);
-
+  // None of the picker's model is built until it's actually open. A Sheets
+  // column mapping holds one of these per column — dozens — and every one of
+  // them re-renders on every keystroke in the dialog, while Radix unmounts the
+  // content of all the closed ones. Computing this for them is pure waste, and
+  // gating on `open` also sidesteps the question of memoizing a source list
+  // whose `extraGroups` its call site rebuilds each render.
+  const currentNode = open
+    ? nodes.find((n) => n.id === currentNodeId)
+    : undefined;
   // Custom features belong to the CURRENT node's type (not an upstream node),
   // and are meaningless for bare-path inputs (they insert a `@<custom:…>@`
   // token, not a dotted path).
-  const customFeatures = useMemo(() => {
-    const node = nodes.find((n) => n.id === currentNodeId);
-    return getCustomFeatures(node?.type);
-  }, [nodes, currentNodeId]);
-  const showCustom = !bare && customFeatures.length > 0;
+  const customFeatures =
+    open && !bare ? getCustomFeatures(currentNode?.type) : EMPTY;
+  const rows = useMemo(
+    () => (open ? getUpstreamFields(currentNodeId, nodes, edges) : EMPTY),
+    [open, nodes, edges, currentNodeId],
+  );
+  const sources = open
+    ? buildPickerSources({
+        rows,
+        currentNode,
+        extraGroups,
+        hasCustomFeatures: customFeatures.length > 0,
+        labelForType: nodeTypeLabel,
+      })
+    : EMPTY;
+
+  // A source can disappear from under an open panel — an undo removes the edge
+  // that produced it — which falls back to the node list rather than a blank
+  // panel.
+  const activeSource = sources.find((s) => s.key === openSourceKey) ?? null;
+
+  // Falling back in render isn't enough on its own: the key would still be set,
+  // so if that same source came back (a redo) the panel would spring open over
+  // the node list unbidden. Drop the key for real.
+  const sourceIsGone = openSourceKey !== null && activeSource === null;
+  useEffect(() => {
+    if (sourceIsGone) setOpenSourceKey(null);
+  }, [sourceIsGone]);
+
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
+
+  const close = () => {
+    setOpen(false);
+    openedByTrigger.current = false;
+    // Reopening always starts on the node list, so the picker reads the same way
+    // every time rather than resuming wherever the last insert left it.
+    setOpenSourceKey(null);
+  };
 
   const pick = (inserted: string) => {
     onSelect(inserted);
-    setOpen(false);
+    close();
+  };
+
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      close();
+      return;
+    }
+    // Radix only asks to open from an interaction with the trigger.
+    openedByTrigger.current = true;
+    setOpen(true);
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
+          ref={triggerRef}
           type="button"
           variant="outline"
           size="icon"
@@ -163,81 +336,89 @@ export function VariablePicker({
           <Braces className="size-4" />
         </Button>
       </PopoverTrigger>
-      {/* Anchor the panel to a fixed point at the right edge of the centered
-          config dialog, so it opens in the SAME place every time — independent
-          of which field's button was clicked. anchorClassName sets the offset:
-          ml-72 (18rem) ≈ half the dialog's sm:max-w-xl width; a WideOverlayPanel
-          passes ml-96. top-1/2 + align="center" keeps it vertically centered
-          next to the dialog. */}
-      <PopoverAnchor
-        className={cn(
-          "pointer-events-none fixed top-1/2 left-1/2 h-0 w-0",
-          anchorClassName,
-        )}
-      />
+      {/* Anchoring to the whole dialog — with side="right" align="center" — is
+          what puts the panel just off the dialog's right edge, vertically
+          centered, in the SAME place every time regardless of which field's
+          button was clicked. With no dialog to anchor to, Radix falls back to
+          the trigger, which is the sane place for a picker outside one. */}
+      {anchorRef.current ? (
+        <PopoverAnchor virtualRef={{ current: anchorRef.current }} />
+      ) : null}
       <PopoverContent
         side="right"
         align="center"
         sideOffset={16}
         collisionPadding={16}
-        className="w-80 border-primary/60 p-0"
+        className="w-80 overflow-hidden border-primary/60 p-0"
+        // Typing `@<` opens the picker without interrupting the sentence: focus
+        // stays in the field, so the next keystroke still lands there and the
+        // panel simply waits beside it.
+        onOpenAutoFocus={(event) => {
+          if (!openedByTrigger.current) event.preventDefault();
+        }}
+        // Escape mirrors the two crosses rather than always dismissing: from a
+        // fields panel it steps back to the node list, and only from the node
+        // list does it close the picker. Otherwise the keyboard has no
+        // equivalent of the back-step and loses your place in the list.
+        onEscapeKeyDown={(event) => {
+          if (!activeSource) return;
+          event.preventDefault();
+          setOpenSourceKey(null);
+        }}
       >
-        <div className="border-b px-3 py-2 text-center text-sm font-medium">
-          Insert a field
-        </div>
-        {groups.length === 0 && !showCustom && extraGroups.length === 0 ? (
-          <div className="px-3 py-6 text-center text-sm text-muted-foreground">
-            No previous steps are connected before this one yet.
-          </div>
+        {sources.length === 0 ? (
+          <>
+            <PanelHeader title="Insert a field" onClose={close} />
+            <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+              No previous steps are connected before this one yet.
+            </div>
+          </>
         ) : (
-          <div
-            className="themed-scrollbar max-h-[60vh] overflow-y-auto overscroll-contain p-1"
-            onWheel={(e) => {
-              // The parent modal Dialog's scroll-lock (react-remove-scroll)
-              // blocks wheel/trackpad scrolling on this portaled popover, so
-              // drive the scroll manually — two-finger scrolling now works
-              // (dragging the scrollbar already did).
-              e.currentTarget.scrollTop += e.deltaY;
-            }}
-          >
-            {showCustom ? (
-              <div className="mb-1">
-                <div className="px-2 py-1 text-center text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  Custom
-                </div>
-                <ul>
-                  {customFeatures.map((feature) => (
-                    <CustomFeatureEntry
-                      key={feature.id}
-                      feature={feature}
-                      currentValue={currentValue}
-                      onInsert={(token) => {
-                        onSelect(token);
-                        setOpen(false);
-                      }}
-                    />
-                  ))}
-                </ul>
+          <div className={cn("relative flex flex-col", PANEL_HEIGHT)}>
+            <PanelHeader title="Insert a field" onClose={close} />
+            <PanelBody>
+              <ul>
+                {sources.map((source) => (
+                  <SourceRow
+                    key={source.key}
+                    source={source}
+                    onOpen={() => setOpenSourceKey(source.key)}
+                  />
+                ))}
+              </ul>
+            </PanelBody>
+            {activeSource ? (
+              // Covers the node list completely, at the same size, so it reads
+              // as a second picker laid over the first.
+              <div className="absolute inset-0 flex flex-col bg-popover">
+                <PanelHeader
+                  title={activeSource.label}
+                  onClose={() => setOpenSourceKey(null)}
+                  closeLabel="Back to the list of nodes"
+                />
+                <PanelBody>
+                  <ul>
+                    {activeSource.kind === "custom"
+                      ? customFeatures.map((feature) => (
+                          <CustomFeatureEntry
+                            key={feature.id}
+                            feature={feature}
+                            currentValue={currentValue}
+                            onInsert={pick}
+                          />
+                        ))
+                      : activeSource.fields.map((field) => (
+                          <FieldRow
+                            key={field.insertText}
+                            field={field}
+                            bare={bare}
+                            onPick={pick}
+                          />
+                        ))}
+                  </ul>
+                </PanelBody>
               </div>
             ) : null}
-            {extraGroups.map((group) => (
-              <PickerGroup
-                key={group.label}
-                label={group.label}
-                fields={group.fields}
-                bare={bare}
-                onPick={pick}
-              />
-            ))}
-            {groups.map((group) => (
-              <PickerGroup
-                key={group.fields[0].nodeId}
-                label={group.nodeLabel}
-                fields={group.fields}
-                bare={bare}
-                onPick={pick}
-              />
-            ))}
           </div>
         )}
       </PopoverContent>

@@ -55,7 +55,7 @@ export function assertNoForeignFanOut(
 /**
  * Applies the node's multi-match policy to its matched `items` and returns
  * what the executor should return. `output` is the node's normal, full output
- * object (it is what downstream sees in "first"/"error" mode, and what the
+ * object (it is what downstream sees in "first"/"last"/"error" mode, and what the
  * PARENT run shows — plus `fannedOut` — in "each" mode; children see the
  * node's reshaped per-item output via the `readFanOutSeed` short-circuit
  * instead).
@@ -115,8 +115,11 @@ export function applyMultiMatchPolicy({
     );
   }
 
-  // "first" (and "error" with 0..1 items): the node's normal output, matching
-  // the pre-policy behavior — zero matches still continue downstream, since
-  // workflows branch on fields like `matchCount`.
+  // "first"/"last" (and "error" with 0..1 items): the node's normal output,
+  // matching the pre-policy behavior — zero matches still continue downstream,
+  // since workflows branch on fields like `matchCount`. "last" is not a case
+  // here on purpose: it differs from "first" only in WHICH match the node
+  // resolved into `output` (via `selectSingleMatch`), which happened before the
+  // policy ran.
   return { ...context, [outputKey]: output };
 }

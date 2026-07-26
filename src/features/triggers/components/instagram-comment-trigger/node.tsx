@@ -1,9 +1,9 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
 import { toast } from "sonner";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
@@ -11,7 +11,7 @@ import { BaseTriggerNode } from "../base-trigger-node";
 import { saveInstagramCommentTriggerConfig } from "./actions";
 import type { InstagramCommentTriggerFormValues } from "./dialog";
 
-const InstagramCommentTriggerDialog = dynamic(() =>
+const InstagramCommentTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.InstagramCommentTriggerDialog),
 );
 
@@ -67,6 +67,7 @@ export const InstagramCommentTriggerNode = memo(
           <InstagramCommentTriggerDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            currentNodeId={props.id}
             onSubmit={handleSubmit}
             defaultValues={nodeData}
           />

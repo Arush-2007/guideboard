@@ -1,16 +1,22 @@
 "use client";
 
-import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
+import {
+  type Node,
+  type NodeProps,
+  useReactFlow,
+  useUpdateNodeInternals,
+} from "@xyflow/react";
 import { useParams } from "next/navigation";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import type { MultiMatchMode } from "@/lib/multi-match";
 import type { RowMatchCondition } from "@/lib/row-match";
 import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { GoogleSheetsActionSubmitValues } from "./dialog";
+import { sheetsActionOutputHandles } from "./handles";
 
-const GoogleSheetsActionDialog = dynamic(() =>
+const GoogleSheetsActionDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsActionDialog),
 );
 
@@ -20,7 +26,16 @@ import { NodeType } from "@/generated/prisma";
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
-  action?: "append_row" | "find_rows" | "update_row" | "insert_row_adjacent";
+  action?:
+    | "append_row"
+    | "append_heading"
+    | "find_rows"
+    | "find_heading"
+    | "update_row"
+    | "update_heading"
+    | "color_rows"
+    | "color_heading";
+  position?: "bottom" | "under_group" | "under_each";
   spreadsheetId?: string;
   sheetName?: string;
   range?: string;
@@ -30,8 +45,6 @@ type GoogleSheetsActionNodeData = {
   conditions?: RowMatchCondition[];
   onMultipleMatches?: MultiMatchMode;
   maxFanOutItems?: number;
-  blankSeparators?: boolean;
-  insertUnder?: "group" | "each_row";
   discoveredFields?: { path: string; label: string }[];
 };
 
@@ -67,16 +80,58 @@ export const GoogleSheetsActionNode = memo(
     };
 
     const nodeData = props.data;
+
+    // find_rows / update_row branch (Found/Not-found, Updated/No-match); the
+    // other two actions keep the single default handle. The handle set therefore
+    // changes when the action is switched in the dialog, so React Flow — which
+    // caches handle geometry per node — must be told to re-measure, exactly as
+    // the Switch node does when cases are added or removed. `handleKey` is the
+    // change signal (intentionally not read in the effect body).
+    const outputs = sheetsActionOutputHandles(nodeData?.action);
+    const handleKey = outputs?.map((h) => h.id).join(",") ?? "default";
+    const updateNodeInternals = useUpdateNodeInternals();
+    // biome-ignore lint/correctness/useExhaustiveDependencies: re-run on handle-set changes
+    useEffect(() => {
+      updateNodeInternals(props.id);
+    }, [handleKey, props.id, updateNodeInternals]);
+
+    // A node saved before the insert_row_adjacent → append_row merge keeps the
+    // old action + `insertUnder` until re-saved (this label reads the raw config,
+    // which is only coerced at exec time / when the dialog opens). Normalize it to
+    // a `position` so a legacy insert node still reads as "Insert…", not "Append".
+    const legacy = nodeData as
+      | { action?: string; insertUnder?: string }
+      | undefined;
+    const position =
+      legacy?.action === "insert_row_adjacent"
+        ? legacy.insertUnder === "each_row"
+          ? "under_each"
+          : "under_group"
+        : nodeData?.position;
+
     const description = nodeData?.sheetName
       ? nodeData.action === "find_rows"
         ? `Find rows in ${nodeData.sheetName}`
-        : nodeData.action === "update_row"
-          ? `Update a row in ${nodeData.sheetName}`
-          : nodeData.action === "insert_row_adjacent"
-            ? nodeData.insertUnder === "each_row"
-              ? `Insert rows into ${nodeData.sheetName}`
-              : `Insert a row into ${nodeData.sheetName}`
-            : `Append to ${nodeData.sheetName}`
+        : nodeData.action === "find_heading"
+          ? `Find a heading in ${nodeData.sheetName}`
+          : nodeData.action === "update_heading"
+            ? `Update a heading in ${nodeData.sheetName}`
+            : nodeData.action === "color_heading"
+              ? `Color headings in ${nodeData.sheetName}`
+              : nodeData.action === "update_row"
+                ? `Update a row in ${nodeData.sheetName}`
+                : nodeData.action === "color_rows"
+                  ? `Color rows in ${nodeData.sheetName}`
+                  : nodeData.action === "append_heading"
+                    ? // A heading is placed by the same `position` as an appended row,
+                      // but "insert"/"append" would read as adding data — say what it
+                      // actually adds.
+                      `Add a heading to ${nodeData.sheetName}`
+                    : position === "under_each"
+                      ? `Insert rows into ${nodeData.sheetName}`
+                      : position === "under_group"
+                        ? `Insert a row into ${nodeData.sheetName}`
+                        : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (
@@ -98,6 +153,7 @@ export const GoogleSheetsActionNode = memo(
           name={option.label}
           status={nodeStatus}
           description={description}
+          outputs={outputs}
           onSettings={handleOpenSettings}
           onDoubleClick={handleOpenSettings}
         />

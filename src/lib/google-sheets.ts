@@ -1,6 +1,7 @@
 import { NonRetriableError, RetryAfterError } from "inngest";
 import { HTTPError, type Options as KyOptions } from "ky";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "./http";
+import { type HeadingFormat, resolveHeadingFormat } from "./sheet-heading";
 
 /**
  * Shared Google Sheets v4 REST plumbing — the Sheets counterpart of
@@ -38,8 +39,9 @@ export const SHEETS_WRITE = {
 
 export const SHEETS_ABSOLUTE_WRITE = {
   timeoutClass: "WRITE",
-  // Writes each cell's FINAL value to a FIXED A1 range (values:batchUpdate). A
-  // retry rewrites the identical cells, so Inngest may safely retry — unlike
+  // Writes each cell's FINAL state to a FIXED target — its value via
+  // values:batchUpdate, or its FORMAT via a repeatCell batchUpdate (color_rows).
+  // A retry rewrites the identical cells, so Inngest may safely retry — unlike
   // :append and insertDimension, which ADD rows/dimensions and stay
   // idempotent:false.
   idempotent: true,
@@ -77,7 +79,17 @@ export function sheetsValuesUrl(
  * EVERY range this app sends to Sheets must be built here.
  */
 export function sheetRange(sheetName: string, range: string): string {
-  return `'${sheetName.trim().replace(/'/g, "''")}'!${range}`;
+  return `${quoteSheetName(sheetName)}!${range}`;
+}
+
+/**
+ * The tab title alone, quoted for A1 notation (apostrophes doubled) — a valid
+ * `ranges` value on its own, meaning "the whole tab". The single place that
+ * escaping rule lives, shared by `sheetRange` and any range-scoped read, so the
+ * "built here" chokepoint above holds for a bare title too.
+ */
+export function quoteSheetName(sheetName: string): string {
+  return `'${sheetName.trim().replace(/'/g, "''")}'`;
 }
 
 /** URL for spreadsheets.batchUpdate (structural + formatting edits). */
@@ -107,24 +119,28 @@ export type SheetTable = {
 };
 
 /**
- * Reads a tab's used range (default `A:ZZ`) into a header/rows table. The header
- * row is trimmed; data rows are string-normalized and aligned to the header
- * width. The `{ headers, rows }` shape feeds `buildSheetRow` directly, and
- * `rowsByHeader` feeds `matchRows` / downstream `rowByHeader` outputs.
+ * Reads a tab into a header/rows table. The header row is trimmed; data rows are
+ * string-normalized and aligned to the header width. The `{ headers, rows }`
+ * shape feeds `buildSheetRow` directly, and `rowsByHeader` feeds `matchRows` /
+ * downstream `rowByHeader` outputs.
+ *
+ * The range is FIXED to the whole tab (`A:ZZ`) rather than being a parameter:
+ * `nextFreeSheetRow` derives an absolute row number from `rows.length`, which is
+ * only meaningful when row 1 is the header and the rows are the whole tab. A
+ * caller reading a sub-range (`A10:ZZ`) would compute a row number 9 too high
+ * and overwrite live data, so the option is deliberately not offered.
  */
 export async function readSheetTable({
   accessToken,
   spreadsheetId,
   sheetName,
-  range = "A:ZZ",
 }: {
   accessToken: string;
   spreadsheetId: string;
   sheetName: string;
-  range?: string;
 }): Promise<SheetTable> {
   const res = await http
-    .get(sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, range)), {
+    .get(sheetsValuesUrl(spreadsheetId, sheetRange(sheetName, "A:ZZ")), {
       headers: { Authorization: `Bearer ${accessToken}` },
       timeout: HTTP_TIMEOUT.READ,
     })
@@ -146,6 +162,36 @@ export async function readSheetTable({
   return { headers, rows, rowsByHeader };
 }
 
+/**
+ * The 1-based sheet row a NEW row should occupy: the first free row under the
+ * table. `readSheetTable` always reads the WHOLE tab (its range is fixed, not a
+ * parameter — see there) and returns every row up to the last non-empty one,
+ * with row 1 the header. So the next free row is exactly `rows.length + 2`.
+ *
+ * ⚠️ Row placement is computed HERE and written to an ABSOLUTE range — never via
+ * `values:append`. Append picks its own destination by "finding a table" in the
+ * range, and that heuristic is unsafe in four ways:
+ *   1. it mis-anchors the COLUMN when the payload's first row is empty, writing
+ *      the row shifted right (and the offset compounds on later appends);
+ *   2. it ignores trailing blank rows, so a blank row can never be appended and
+ *      the next append lands on top of one;
+ *   3. a lost-response retry appends the row a SECOND time (see SHEETS_WRITE);
+ *   4. the caller can only guess where the row landed, so a reported row number
+ *      may be wrong.
+ * An absolute range has none of these failure modes and is retry-safe.
+ */
+export function nextFreeSheetRow(table: SheetTable): number {
+  return table.rows.length + 2;
+}
+
+/** A merged range as Sheets reports it (half-open, 0-based grid indexes). */
+export type SheetMergeRange = {
+  startRowIndex?: number;
+  endRowIndex?: number;
+  startColumnIndex?: number;
+  endColumnIndex?: number;
+};
+
 type SheetsMetaResponse = {
   sheets?: Array<{
     properties?: {
@@ -153,6 +199,7 @@ type SheetsMetaResponse = {
       title?: string;
       gridProperties?: { rowCount?: number };
     };
+    merges?: SheetMergeRange[];
   }>;
 };
 
@@ -165,7 +212,76 @@ export type SheetGrid = {
    * trimmed sheet must grow the grid (`appendDimension`) first.
    */
   rowCount: number;
+  /**
+   * Every merged range on the tab. This is what makes a HEADING row identifiable
+   * with certainty rather than by guesswork — see `headingDataRows`.
+   *
+   * ⚠️ `[]` unless the call passed `includeMerges: true`. An empty array from a
+   * default call means "not requested", NOT "this tab has none".
+   */
+  merges: SheetMergeRange[];
 };
+
+/**
+ * How many merged ranges on the tab sit below the header but do NOT qualify as
+ * headings — because they span more than one row, or start somewhere other than
+ * column A.
+ *
+ * Purely diagnostic, and it exists because "no headings found" is otherwise a
+ * dead end: the user is looking at something plainly merged, so being told the
+ * tab has none reads as a bug rather than as a rule they tripped. This number
+ * turns that into "2 merged rows here don't qualify, and here is why", which is
+ * the difference between a fixable sheet and a support conversation.
+ */
+export function nonHeadingMerges(merges: SheetMergeRange[]): number {
+  let count = 0;
+  for (const m of merges) {
+    const start = m.startRowIndex ?? 0;
+    const end = m.endRowIndex ?? start + 1;
+    // The header row is not a candidate at all, so a merged header is not a
+    // near miss — it is simply not in scope.
+    if (start < 1) continue;
+    const qualifies = (m.startColumnIndex ?? 0) === 0 && end - start === 1;
+    if (!qualifies) count++;
+  }
+  return count;
+}
+
+/**
+ * The heading rows of a tab: DATA-row index (0-based, as in `SheetTable.rows`)
+ * → how many columns that heading is actually MERGED across.
+ *
+ * A heading is identified by the one thing that is true of it and of nothing
+ * else: its cells are MERGED, starting at column A, across a single row. That
+ * comes from the sheet's own structure, so a genuine data row that merely
+ * happens to have only its first column filled is never mistaken for one — which
+ * a "first cell filled, rest empty" heuristic would get wrong, and silently.
+ *
+ * A Map rather than a Set because the WIDTH is load-bearing, not incidental: a
+ * heading merged when the tab had 3 columns stays 3 wide after a 4th is added,
+ * and anything re-merging it must use the width it actually has. Merging a range
+ * that overlaps an existing merge is rejected by Sheets, so re-deriving the width
+ * from today's header row would fail the write. `.has()` and `.size` read the
+ * same as on a Set, so membership callers are unaffected.
+ *
+ * Grid row 0 is the header, so data row i is grid row i + 1; anything at or above
+ * the header is ignored (a merged header is not a heading).
+ */
+export function headingDataRows(
+  merges: SheetMergeRange[],
+): Map<number, number> {
+  const rows = new Map<number, number>();
+  for (const m of merges) {
+    const start = m.startRowIndex ?? 0;
+    const end = m.endRowIndex ?? start + 1;
+    // Anchored at column A, exactly one row tall, below the header row.
+    if ((m.startColumnIndex ?? 0) !== 0) continue;
+    if (end - start !== 1) continue;
+    if (start < 1) continue;
+    rows.set(start - 1, m.endColumnIndex ?? 0);
+  }
+  return rows;
+}
 
 /**
  * Resolves a tab's `sheetId` + grid height. Case-insensitive title match.
@@ -175,16 +291,47 @@ export async function getSheetGrid({
   accessToken,
   spreadsheetId,
   sheetName,
+  includeMerges = false,
 }: {
   accessToken: string;
   spreadsheetId: string;
   sheetName: string;
+  /**
+   * Also fetch the tab's merged ranges (`merges`), which is what identifies
+   * heading rows. OFF by default: most callers here only want `sheetId` +
+   * `rowCount` — every append goes through `ensureGridRows`, and the whiten /
+   * heading-style / color paths all need the id alone. A workbook of report
+   * tabs can carry thousands of merge objects, and pulling them on every append
+   * would put that on the hot write path for nothing.
+   *
+   * Only the row-reading path, which must tell headings from data, asks for
+   * them. `merges` is `[]` when this is off — never trust it as "no merges"
+   * unless you requested them.
+   */
+  includeMerges?: boolean;
 }): Promise<SheetGrid> {
   const meta = await http
     .get(`${SHEETS_BASE}/${spreadsheetId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
       searchParams: {
-        fields: "sheets.properties(sheetId,title,gridProperties.rowCount)",
+        // One `sheets(...)` group listing every sub-field. The equivalent
+        // `sheets.properties(...),sheets.merges` form works identically —
+        // verified against the live API with `scripts/dump-sheet-merges.ts`,
+        // which returns the same payload for both and for no mask at all. This
+        // form is preferred only because naming the parent once makes it obvious
+        // that adding a sub-field means editing one group.
+        fields: includeMerges
+          ? "sheets(properties(sheetId,title,gridProperties.rowCount),merges)"
+          : "sheets(properties(sheetId,title,gridProperties.rowCount))",
+        // Scope the read to THIS tab only when we asked for merges. Without a
+        // range, `spreadsheets.get` returns the merges of EVERY tab in the
+        // workbook — thousands of objects on a multi-report book — and we then
+        // discard all but the one matched below. A `ranges` of the tab title
+        // restricts the returned sheets (and their merges) to that tab. Left off
+        // the properties-only path: it is the hot write path, carries little per
+        // tab, and every merge-reading caller reads the tab's values first (so a
+        // bad tab already fails there with a clear error before reaching here).
+        ...(includeMerges ? { ranges: quoteSheetName(sheetName) } : {}),
       },
       timeout: HTTP_TIMEOUT.READ,
     })
@@ -203,7 +350,48 @@ export async function getSheetGrid({
   return {
     sheetId: found.properties.sheetId,
     rowCount: found.properties.gridProperties?.rowCount ?? 0,
+    merges: found.merges ?? [],
   };
+}
+
+/**
+ * Grows the tab's GRID until `throughRow` exists, so an absolute-range write to
+ * that row can't fall outside the sheet (`values:batchUpdate` does NOT expand a
+ * sheet the way `:append` does — it fails). A no-op when the grid is already tall
+ * enough, which is the common case for a default 1000-row tab; it matters for a
+ * sheet a user has trimmed down to its data.
+ *
+ * Growing by a few extra rows is harmless (they are empty), so a retry that grows
+ * again cannot corrupt anything.
+ */
+export async function ensureGridRows({
+  accessToken,
+  spreadsheetId,
+  sheetName,
+  throughRow,
+}: {
+  accessToken: string;
+  spreadsheetId: string;
+  sheetName: string;
+  throughRow: number;
+}): Promise<void> {
+  const grid = await getSheetGrid({ accessToken, spreadsheetId, sheetName });
+  const shortfall = throughRow - grid.rowCount;
+  if (shortfall <= 0) return;
+  await sheetsWrite(sheetsBatchUpdateUrl(spreadsheetId), {
+    headers: sheetsAuthHeaders(accessToken),
+    json: {
+      requests: [
+        {
+          appendDimension: {
+            sheetId: grid.sheetId,
+            dimension: "ROWS",
+            length: shortfall,
+          },
+        },
+      ],
+    },
+  });
 }
 
 /**
@@ -292,4 +480,122 @@ export function hexToRgb(hex: string): SheetsColor {
     green: ((n >> 8) & 0xff) / 255,
     blue: (n & 0xff) / 255,
   };
+}
+
+/** Solid white — the background every ADDED blank row is forced to. */
+export const WHITE: SheetsColor = { red: 1, green: 1, blue: 1 };
+
+/**
+ * A `repeatCell` batchUpdate request that paints one row's background solid white
+ * across the used-column band (columns 0..`columnCount`).
+ *
+ * A row this app ADDS as blank must read as an empty gap, but "blank" only means
+ * no VALUES — a skipped `blankRowAbove` separator keeps whatever background sat at
+ * that grid position (alternating-row banding, or a deleted colored row's
+ * residue), and a blank row inserted under a group inherits the color of the row
+ * above via `insertDimension`'s `inheritFromBefore`. Writing an explicit white
+ * overrides both, since a cell's own `userEnteredFormat.backgroundColor` wins over
+ * banding. Setting a fixed color on fixed cells is idempotent, so the write is
+ * safe for Inngest to retry.
+ *
+ * `gridRow0` is the 0-based grid row: the header is grid row 0, so sheet row N is
+ * grid row N − 1.
+ */
+export function whiteRowRequest(
+  sheetId: number,
+  gridRow0: number,
+  columnCount: number,
+): { repeatCell: unknown } {
+  return {
+    repeatCell: {
+      range: {
+        sheetId,
+        startRowIndex: gridRow0,
+        endRowIndex: gridRow0 + 1,
+        startColumnIndex: 0,
+        // Exclusive bound — the full header width, so the white band matches the
+        // table exactly (the same bound color_rows paints to).
+        endColumnIndex: columnCount,
+      },
+      cell: { userEnteredFormat: { backgroundColor: WHITE } },
+      fields: "userEnteredFormat.backgroundColor",
+    },
+  };
+}
+
+/**
+ * The `batchUpdate` requests that turn one freshly-written row into a HEADING:
+ * the whole band styled from `format`, then merged into a single cell.
+ *
+ * Two requests, in this order and never separated — a merge inherits the
+ * top-left cell's format, so styling first is what makes the merged band come
+ * out uniform rather than carrying the old formatting of the cells it swallowed.
+ *
+ * `fields` names every sub-field written (rather than the whole
+ * `userEnteredFormat`) so a heading row keeps the number format, borders and
+ * padding of the tab it lives in; only the properties the user chose are
+ * touched.
+ *
+ * Both requests are IDEMPOTENT: `repeatCell` sets fixed values on fixed cells,
+ * and `mergeCells` over an already-identical merge is accepted and changes
+ * nothing. So an Inngest retry of the step carrying them repaints and re-merges
+ * to exactly the same result.
+ *
+ * `columnCount` is the table's width (the header row) — the same band
+ * `whiteRowRequest` clears and `color_rows` paints, so a heading stops where the
+ * table stops. A one-column table yields NO merge request: Sheets rejects a
+ * single-cell merge, and there is nothing to span anyway.
+ *
+ * `gridRow0` is the 0-based grid row: the header is grid row 0, so sheet row N
+ * is grid row N − 1.
+ */
+export function headingRowRequests({
+  sheetId,
+  gridRow0,
+  columnCount,
+  format,
+}: {
+  sheetId: number;
+  gridRow0: number;
+  columnCount: number;
+  format?: HeadingFormat | null;
+}): unknown[] {
+  const f = resolveHeadingFormat(format);
+  const range = {
+    sheetId,
+    startRowIndex: gridRow0,
+    endRowIndex: gridRow0 + 1,
+    startColumnIndex: 0,
+    // Exclusive bound — the full header width.
+    endColumnIndex: columnCount,
+  };
+
+  const requests: unknown[] = [
+    {
+      repeatCell: {
+        range,
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: hexToRgb(f.backgroundColor),
+            horizontalAlignment: f.align,
+            verticalAlignment: "MIDDLE",
+            textFormat: {
+              bold: f.bold,
+              italic: f.italic,
+              fontSize: f.fontSize,
+              foregroundColor: hexToRgb(f.textColor),
+            },
+          },
+        },
+        fields:
+          "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)",
+      },
+    },
+  ];
+
+  if (columnCount > 1) {
+    requests.push({ mergeCells: { range, mergeType: "MERGE_ALL" } });
+  }
+
+  return requests;
 }

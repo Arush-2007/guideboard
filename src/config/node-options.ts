@@ -1,8 +1,10 @@
 import {
   BrainCircuit,
   Building2,
+  Calculator,
   ClipboardCheck,
   Clock,
+  Code2,
   FileText,
   Filter,
   GlobeIcon,
@@ -60,7 +62,7 @@ export const triggerNodeOptions: NodeOption[] = [
   {
     type: NodeType.GOOGLE_SHEETS_TRIGGER,
     label: "Google Sheets Trigger",
-    description: "Runs the flow when a new row is detected",
+    description: "Runs the flow when a row or section title changes",
     icon: INTEGRATIONS.googleSheets.icon,
   },
   {
@@ -96,12 +98,14 @@ export const triggerNodeOptions: NodeOption[] = [
   },
 ];
 
-// Single source of truth for "is this node type a trigger?", derived from the
-// options above so it can never drift from the selectable trigger list. Consumed
-// by draw-time connection validation to reject edges that point into a trigger.
-export const triggerNodeTypeSet: ReadonlySet<NodeType> = new Set(
-  triggerNodeOptions.map((option) => option.type),
-);
+// Re-exported from `node-kinds.ts`, which is the single source of truth for
+// "is this node type a trigger?". It lives there rather than here because the
+// Inngest engine needs it too (it runs only triggers as roots) and this module
+// pulls in lucide-react + the integrations registry, which must not reach the
+// server bundle. `node-kinds.test.ts` asserts this list and that set stay in
+// lockstep, so they cannot drift. Consumed by draw-time connection validation to
+// reject edges that point into a trigger.
+export { TRIGGER_NODE_TYPES as triggerNodeTypeSet } from "@/config/node-kinds";
 
 export const executionNodeOptions: NodeOption[] = [
   {
@@ -141,6 +145,20 @@ export const executionNodeOptions: NodeOption[] = [
     description:
       "Convert to a fixed target format (input auto-detected): text (PDF/HTML→text, CSV↔JSON, Markdown→HTML), images (JPG/PNG/WebP), PDF, and audio/video (MP4/MOV/MP3)",
     icon: Replace,
+  },
+  {
+    type: NodeType.CALCULATOR,
+    label: "Calculator",
+    description:
+      "Do arithmetic on values from earlier steps — add, subtract, multiply, divide, remainder, and round",
+    icon: Calculator,
+  },
+  {
+    type: NodeType.CODE,
+    label: "Code",
+    description:
+      "Run your own JavaScript on data from earlier steps and return a value — filter, map, reshape, or compute anything",
+    icon: Code2,
   },
   {
     type: NodeType.DISCORD,
@@ -241,6 +259,15 @@ export const nodeOptionByType: Partial<Record<NodeType, NodeOption>> =
       option,
     ]),
   );
+
+// Loose label lookup, for callers holding a node type as a plain string (the
+// picker, `nodeDisplayName`) that must tolerate a type with no registration
+// rather than throw. Passed as the `labelForType` resolver into `node-ref.ts`,
+// which can't import this module — it reaches the engine, and this one pulls in
+// lucide.
+export function nodeTypeLabel(type: string): string | undefined {
+  return nodeOptionByType[type as NodeType]?.label;
+}
 
 // Strict lookup for the canvas node components, which are only ever rendered
 // for registered node types. Mirrors getExecutor in the executor registry.

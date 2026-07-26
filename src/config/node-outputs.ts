@@ -59,18 +59,59 @@ export type NodeOutputDescriptor =
   | { rootKind: "topLevel"; fields: NodeOutputField[] };
 
 // The Sheets action's pickable fields depend on the node's selected `action`
-// (append_row is the historical default when unset).
+// (append_row is the historical default when unset). The picker reads a node's
+// RAW saved config, which is coerced only at exec time / when the dialog opens —
+// so the retired `insert_row_adjacent` action is normalized here too (mirroring
+// coerceLegacySheetsAction in node-schemas.ts), or a node saved before the merge
+// would lose its output fields until re-saved.
+const isLegacyInsert = (data: Record<string, unknown> | null | undefined) =>
+  (data?.action as string | undefined) === "insert_row_adjacent";
 const sheetsAction = (data: Record<string, unknown> | null | undefined) =>
-  (data?.action as string | undefined) ?? "append_row";
+  isLegacyInsert(data)
+    ? "append_row"
+    : ((data?.action as string | undefined) ?? "append_row");
 const isSheetsAppend = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "append_row";
 const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "find_rows";
 const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "update_row";
-const isSheetsInsertAdjacent = (
+const isSheetsColor = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "color_rows";
+// append_heading — one merged cell of text rather than a mapped row, so it emits
+// its TEXT where the other row-writing actions emit header-keyed columns.
+const isSheetsHeading = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "append_heading";
+// find_heading — searches heading rows only, and reports their TEXT and row
+// numbers rather than find_rows' column grid.
+const isSheetsFindHeading = (
   data: Record<string, unknown> | null | undefined,
-) => sheetsAction(data) === "insert_row_adjacent";
+) => sheetsAction(data) === "find_heading";
+const isSheetsUpdateHeading = (
+  data: Record<string, unknown> | null | undefined,
+) => sheetsAction(data) === "update_heading";
+const isSheetsColorHeading = (
+  data: Record<string, unknown> | null | undefined,
+) => sheetsAction(data) === "color_heading";
+/** Any action that SELECTS headings — all three report `headingsOnTab`. */
+const isSheetsHeadingSelect = (
+  data: Record<string, unknown> | null | undefined,
+) =>
+  isSheetsFindHeading(data) ||
+  isSheetsUpdateHeading(data) ||
+  isSheetsColorHeading(data);
+// A non-bottom append (formerly the insert_row_adjacent action) — an append_row
+// whose `position` drops the row under a matched group / rows. It emits the
+// group/anchor fields a plain bottom append does not. A legacy insert node was
+// ALWAYS an under-append (either insertUnder value), so it qualifies regardless
+// of `position`, which it predates.
+const isSheetsAppendUnder = (
+  data: Record<string, unknown> | null | undefined,
+) =>
+  isLegacyInsert(data) ||
+  ((sheetsAction(data) === "append_row" ||
+    sheetsAction(data) === "append_heading") &&
+    ((data?.position as string | undefined) ?? "bottom") !== "bottom");
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
 // here simply contribute no mappable fields yet (the `raw`/templating escape
@@ -161,28 +202,120 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       {
         path: "rowByHeader",
         label: "The row this step wrote (all columns)",
-        pickIf: (data) =>
-          isSheetsAppend(data) ||
-          isSheetsUpdate(data) ||
-          isSheetsInsertAdjacent(data),
+        // isSheetsAppend already covers every append position.
+        pickIf: (data) => isSheetsAppend(data) || isSheetsUpdate(data),
       },
       {
         path: "appendedRows",
         label: "How many rows were added",
         example: "1",
-        pickIf: isSheetsAppend,
+        // Only a bottom append emits this; the under-append reports matchCount.
+        // append_heading's bottom path emits it too.
+        pickIf: (data) =>
+          (isSheetsAppend(data) || isSheetsHeading(data)) &&
+          !isSheetsAppendUnder(data),
+      },
+      // append_heading only: the text the merged row was given, AFTER its
+      // template was rendered — so a downstream step can repeat the section
+      // title it just wrote.
+      // append_heading writes it; update_heading rewrites it. Same key, so a
+      // reference survives a switch between them.
+      {
+        path: "headingText",
+        label: "The heading text that was written",
+        example: "Invoices — March 2026",
+        pickIf: (data) => isSheetsHeading(data) || isSheetsUpdateHeading(data),
+      },
+      // update_heading only: whether the style was re-applied as well. Branch on
+      // it to tell a rename apart from a rename-and-restyle.
+      {
+        path: "restyled",
+        label: "Whether the heading was restyled (true/false)",
+        example: "true",
+        pickIf: isSheetsUpdateHeading,
+      },
+      // update_heading only: the text BEFORE this run changed it.
+      {
+        path: "previousHeading",
+        label: "The heading text before this step changed it",
+        pickIf: isSheetsUpdateHeading,
+      },
+      // color_heading only.
+      {
+        path: "color",
+        label: "The color the headings were painted",
+        example: "#fef3c7",
+        pickIf: isSheetsColorHeading,
+      },
+      // How wide the merged band ended up: the tab's header width at write time.
+      {
+        path: "mergedColumns",
+        label: "How many columns the heading spans",
+        example: "6",
+        pickIf: isSheetsHeading,
+        developer: true,
+      },
+      // find_heading. `firstHeading` is "the heading this run found" — the
+      // single-value reference, alongside the full list.
+      {
+        path: "firstHeading",
+        label: "The heading this step found",
+        example: "Invoices — March 2026",
+        pickIf: isSheetsFindHeading,
+      },
+      {
+        path: "headings",
+        label: "Every matching heading",
+        pickIf: (data) =>
+          isSheetsFindHeading(data) || isSheetsColorHeading(data),
+      },
+      {
+        path: "headingRowIndexes",
+        label: "The sheet row number of each matching heading",
+        example: "[7, 21]",
+        pickIf: (data) =>
+          isSheetsFindHeading(data) || isSheetsColorHeading(data),
+      },
+      // How many headings the tab has AT ALL, regardless of the search. Branch
+      // on it to tell "nothing matched" from "this tab has no headings yet".
+      {
+        path: "headingsOnTab",
+        label: "How many headings the tab has in total",
+        example: "3",
+        pickIf: isSheetsHeadingSelect,
+      },
+      // find_heading: how many headings this run actually acted on (all of them,
+      // or one in first/last mode) — matchCount is how many MATCHED.
+      {
+        path: "actedCount",
+        label: "How many headings this step used",
+        example: "1",
+        pickIf: isSheetsFindHeading,
+      },
+      // Merged rows that do NOT qualify as headings (wrong start column, or
+      // spanning several rows). Diagnostic: it is what separates "this tab has
+      // nothing merged" from "what you merged doesn't count, and here's why".
+      {
+        path: "nearMisses",
+        label: "Merged rows that don't qualify as headings",
+        example: "1",
+        pickIf: isSheetsHeadingSelect,
+        developer: true,
       },
       // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
-      // the first match in "first"/"error" mode, and — in "each" (fan-out)
-      // mode — the child run's own row (each child carries a reshaped output
-      // where firstRow IS its row), so one reference works per-row everywhere.
+      // the first match in "first"/"error" mode, the bottom-most in "last",
+      // and — in "each" (fan-out) mode — the child run's own row (each child
+      // carries a reshaped output where firstRow IS its row), so one reference
+      // works per-row everywhere.
       {
         path: "firstRow",
         label: "The row this run matched (all columns)",
         pickIf: isSheetsFindRows,
       },
-      // find_rows: rows returned. update_row: rows overwritten. insert_row_adjacent:
-      // the size of the group the new row joined (0 ⇒ it started a new one).
+      // find_rows: rows returned. update_row: rows overwritten. color_rows: rows
+      // that matched (all of them, even when only the first/last is painted).
+      // under-append: the size of the group the new row joined (0 ⇒ it started a
+      // new one).
       {
         path: "matchCount",
         label: "How many rows matched the filter",
@@ -190,7 +323,17 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         pickIf: (data) =>
           isSheetsFindRows(data) ||
           isSheetsUpdate(data) ||
-          isSheetsInsertAdjacent(data),
+          isSheetsColor(data) ||
+          isSheetsAppendUnder(data) ||
+          isSheetsHeadingSelect(data),
+      },
+      // color_rows only: how many rows were actually painted — the same as
+      // matchCount in "all" mode, exactly one in "first"/"last".
+      {
+        path: "coloredCount",
+        label: "How many rows were colored",
+        example: "1",
+        pickIf: (data) => isSheetsColor(data) || isSheetsColorHeading(data),
       },
       // update_row only.
       {
@@ -204,15 +347,15 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "matched",
         label: "Whether a row was found to update (true/false)",
         example: "true",
-        pickIf: isSheetsUpdate,
+        pickIf: (data) => isSheetsUpdate(data) || isSheetsUpdateHeading(data),
       },
-      // insert_row_adjacent only. False ⇒ nothing matched, so the row started a
-      // new group at the bottom instead of joining one.
+      // under-append only. False ⇒ nothing matched, so the row started a new
+      // group at the bottom instead of joining one.
       {
         path: "insertedUnderGroup",
         label: "Whether the row joined an existing group (true/false)",
         example: "true",
-        pickIf: isSheetsInsertAdjacent,
+        pickIf: isSheetsAppendUnder,
       },
       // The row the new one was attached to: the group's last row, or — in
       // "below every match" mode — the specific row this one sits under (each
@@ -220,7 +363,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
       {
         path: "anchorRow",
         label: "The row the new row was placed under (all columns)",
-        pickIf: isSheetsInsertAdjacent,
+        pickIf: isSheetsAppendUnder,
       },
       // Where the row landed. update_row emits this too (the row it overwrote),
       // so the label reads correctly for both — one entry, one path.
@@ -228,7 +371,15 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "rowIndex",
         label: "The sheet row number this step wrote",
         example: "7",
-        pickIf: (data) => isSheetsInsertAdjacent(data) || isSheetsUpdate(data),
+        pickIf: (data) =>
+          isSheetsAppendUnder(data) ||
+          isSheetsUpdate(data) ||
+          // A heading reports its row in EVERY position — unlike a bottom
+          // append_row, whose answer is "the row after the last one".
+          isSheetsHeading(data) ||
+          // The heading SELECTORS report the row they acted on too.
+          isSheetsFindHeading(data) ||
+          isSheetsUpdateHeading(data),
       },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],
@@ -273,9 +424,24 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
   [NodeType.GOOGLE_SHEETS_TRIGGER]: {
     rootKind: "fixed",
     rootKey: "googleSheets",
+    // Only the fields present under EVERY row scope live here. What a run
+    // actually carries depends on the scope, and the two sets are disjoint:
+    // a data-row change has per-column values and no section title; a heading
+    // change has a section title and no columns. Both are offered dynamically as
+    // `discoveredFields` the dialog saves (see upstream-fields.ts), so the picker
+    // lists what this node will really produce instead of padding both scopes
+    // with entries that always resolve to "".
     fields: [
-      { path: "row", label: "Row values" },
-      { path: "rowIndex", label: "Row number", example: "2" },
+      {
+        path: "changeType",
+        label: "Change type",
+        example: "added",
+      },
+      {
+        path: "changedFields",
+        label: "Changed fields",
+        example: "Status, Amount",
+      },
       { path: "sheetName", label: "Sheet name", example: "Sheet1" },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],
@@ -392,6 +558,31 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "File type",
         example: "image/png",
         developer: true,
+      },
+    ],
+  },
+  [NodeType.CALCULATOR]: {
+    rootKind: "perNode",
+    fields: [
+      { path: "result", label: "Result", example: "1416" },
+      {
+        path: "expression",
+        label: "Expression that was calculated",
+        example: "1200 * 1.18",
+      },
+    ],
+  },
+  // The Code node's output is whatever the user's code returns, so its SHAPE is
+  // not knowable ahead of time. It is stored whole under `result`; the picker
+  // offers that single entry, and a downstream node drills into it by hand
+  // (`@<CODE_1.result.total>@`) exactly as it would any nested value.
+  [NodeType.CODE]: {
+    rootKind: "perNode",
+    fields: [
+      {
+        path: "result",
+        label: "Result (whatever your code returns)",
+        example: '{ "total": 1416 }',
       },
     ],
   },

@@ -2,6 +2,7 @@
 
 import { useAtomValue, useSetAtom } from "jotai";
 import { XIcon } from "lucide-react";
+import { NodeTypeIcon } from "@/components/node-type-icon";
 import { nodeOptionByType } from "@/config/node-options";
 import {
   STAGED_NODE_MIME,
@@ -33,15 +34,7 @@ const StagedChip = ({ node }: { node: StagedNode }) => {
       onDragStart={handleDragStart}
       className="group flex shrink-0 cursor-grab items-center gap-2 rounded-lg border border-border/70 bg-background px-3 py-2 shadow-sm transition-colors hover:border-primary active:cursor-grabbing"
     >
-      {typeof Icon === "string" ? (
-        <img
-          src={Icon}
-          alt=""
-          className="size-4 shrink-0 rounded-sm object-contain"
-        />
-      ) : Icon ? (
-        <Icon className="size-4 shrink-0" />
-      ) : null}
+      <NodeTypeIcon icon={Icon} />
       <span className="whitespace-nowrap text-xs font-medium">
         {option?.label ?? node.type}
       </span>

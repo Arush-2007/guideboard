@@ -1,4 +1,5 @@
 import { parseCustomFeatureToken } from "./custom-feature-token";
+import { stripTextForcing, toSheetsCellText } from "./sheet-cells";
 import { sanitizeHeaderKey } from "./sheet-headers";
 import { renderTemplate } from "./templating";
 
@@ -61,7 +62,7 @@ export function buildSheetRow({
   mappings,
   context,
   rows,
-  serialAsText,
+  forceTextIds,
   legacyHeaderSerial,
   legacyRowCount,
 }: {
@@ -74,11 +75,15 @@ export function buildSheetRow({
    */
   rows?: string[][];
   /**
-   * Prefix a *padded* serial with a text-forcing apostrophe so Google Sheets
-   * (USER_ENTERED) keeps its leading zeros instead of re-parsing "0006" to 6.
-   * Sheets sets this; Excel (raw Graph write) leaves it off.
+   * Force EVERY padded id in the row to text, so Google Sheets (USER_ENTERED)
+   * keeps its leading zeros instead of re-parsing "0006" to 6. Applies to a
+   * generated serial AND to a padded value referenced in from elsewhere (e.g.
+   * `@<Sheet_A.rowByHeader.Job No>@`) — the latter is why a job number used to
+   * arrive in a second sheet as "9". Sheets sets this; Excel (raw Graph write,
+   * where an apostrophe would be literal) leaves it off. See
+   * `toSheetsCellValue`.
    */
-  serialAsText?: boolean;
+  forceTextIds?: boolean;
   /**
    * Legacy header-name serial autofill (Excel action, on halt). When true, an
    * unmapped column whose header looks like a serial ("S.No", …) is filled with
@@ -91,30 +96,30 @@ export function buildSheetRow({
   return headers.map((rawHeader, i) => {
     const header = rawHeader.trim();
     const mapping = mappings[header];
-
-    // 1. Serial Number custom feature — intercept the token before templating
-    //    (an unhandled `@<custom:…>@` would otherwise render to "").
     const token = parseCustomFeatureToken(mapping);
+
+    let cell: string;
     if (token?.featureId === "serialNumber") {
+      // 1. Serial Number custom feature — intercept the token before templating
+      //    (an unhandled `@<custom:…>@` would otherwise render to "").
       const start = toInt(token.params.start, 1);
       const pad = toInt(token.params.pad, 0);
       const next = nextSerialValue(rows, i, start);
-      const value = pad > 0 ? String(next).padStart(pad, "0") : String(next);
-      // Leading apostrophe keeps Sheets from stripping the zeros (see param doc).
-      return serialAsText && pad > 0 ? `'${value}` : value;
+      cell = pad > 0 ? String(next).padStart(pad, "0") : String(next);
+    } else if (mapping?.trim()) {
+      // 2. A mapped template value.
+      cell = renderTemplate(mapping, context);
+    } else if (legacyHeaderSerial && isSerialHeader(header)) {
+      // 3. Legacy header-name serial (Excel only).
+      cell = String((legacyRowCount ?? 0) + 1);
+    } else {
+      cell = "";
     }
 
-    // 2. A mapped template value.
-    if (mapping?.trim()) {
-      return renderTemplate(mapping, context);
-    }
-
-    // 3. Legacy header-name serial (Excel only).
-    if (legacyHeaderSerial && isSerialHeader(header)) {
-      return String((legacyRowCount ?? 0) + 1);
-    }
-
-    return "";
+    // ONE text-forcing rule for the whole row, applied after the value is built
+    // — a padded id is a padded id whether this node generated it as a serial or
+    // referenced it in from another sheet.
+    return forceTextIds ? toSheetsCellText(cell) : cell;
   });
 }
 
@@ -140,27 +145,24 @@ export function findBlankRequired(
 }
 
 /**
- * The appended row as an object keyed by sanitized header — the node's
+ * The written row as an object keyed by sanitized header — the node's
  * `rowByHeader` output, so downstream nodes pick columns instead of hand-typing
- * paths. A Serial Number column written as force-text (`'0006`) carries a
- * leading apostrophe that Sheets consumes on write; it is a write artifact, so
- * it is stripped here — but ONLY for that serial column, so a literal
- * apostrophe a user mapped into an ordinary column is preserved.
+ * paths.
+ *
+ * Any padded id written as force-text (`'0006`) carries a leading apostrophe
+ * that Sheets consumes on write; it is a write artifact, so `stripTextForcing`
+ * removes it here. It is deliberately NOT keyed off the column's mapping: a
+ * padded value referenced in from another sheet is force-written too, and the
+ * old mapping-based check only recognised a generated serial — which is exactly
+ * how `'0009` could leak downstream (or the padding be lost).
  */
 export function buildRowByHeader(
   headers: string[],
   row: string[],
-  mappings: Record<string, string>,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   headers.forEach((rawHeader, i) => {
-    const header = rawHeader.trim();
-    let cell = row[i] ?? "";
-    const token = parseCustomFeatureToken(mappings[header]);
-    if (token?.featureId === "serialNumber" && cell.startsWith("'")) {
-      cell = cell.slice(1);
-    }
-    out[sanitizeHeaderKey(header)] = cell;
+    out[sanitizeHeaderKey(rawHeader.trim())] = stripTextForcing(row[i] ?? "");
   });
   return out;
 }

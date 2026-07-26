@@ -212,8 +212,9 @@ const GoogleAppActions = ({ connected }: { connected: boolean }) => {
     );
   }
 
-  // No Disconnect: Google may be the user's sign-in method, so removing the
-  // credential from here would silently break Google nodes and is surprising.
+  // No Disconnect here: Google may be the user's sign-in method, so severing it
+  // from an integrations list is surprising. Disconnecting lives on /profile
+  // instead, behind a confirmation that names the workflows it will break.
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>

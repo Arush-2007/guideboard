@@ -13,7 +13,9 @@ import { aiReplyGeneratorExecutor } from "../components/ai-reply-generator/execu
 import { aiTextExecutor } from "../components/ai-text/executor";
 import { anthropicExecutor } from "../components/anthropic/executor";
 import { atsActionExecutor } from "../components/ats-action/executor";
+import { calculatorExecutor } from "../components/calculator/executor";
 import { candidateScoringExecutor } from "../components/candidate-scoring/executor";
+import { codeExecutor } from "../components/code/executor";
 import { conditionExecutor } from "../components/condition/executor";
 import { convertExecutor } from "../components/convert/executor";
 import { discordExecutor } from "../components/discord/executor";
@@ -52,6 +54,8 @@ export const executorRegistry: Record<NodeType, NodeExecutor> = {
   [NodeType.SWITCH]: switchExecutor,
   [NodeType.RECORD_LOOKUP]: recordLookupExecutor,
   [NodeType.CONVERT]: convertExecutor,
+  [NodeType.CALCULATOR]: calculatorExecutor,
+  [NodeType.CODE]: codeExecutor,
   [NodeType.OPENAI]: openAiExecutor,
   [NodeType.DISCORD]: discordExecutor,
   [NodeType.SLACK]: slackExecutor,

@@ -16,10 +16,17 @@ import {
 import { clampJson, isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
-import { SHEETS_READ, sheetRange } from "@/lib/google-sheets";
+import {
+  getSheetGrid,
+  headingDataRows,
+  SHEETS_READ,
+  sheetRange,
+} from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
+import type { RowScope } from "@/lib/sheet-heading";
+import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
 import { planFanOutDispatches } from "./fan-out";
@@ -29,6 +36,21 @@ import {
   runWorkflowNodes,
 } from "./run-workflow";
 import { processSchedulePoll } from "./schedule-poll";
+import {
+  changedFieldNames,
+  collectHeadingTexts,
+  computeWatchedColumns,
+  healIgnoreColumns,
+  planHeadingChanges,
+  planSheetsPollChanges,
+  readSnapshot,
+  rowValuesByHeader,
+  type SheetsPollSnapshot,
+  type SheetsTriggerOn,
+  sheetsHeadingIdempotencyKey,
+  sheetsPollIdempotencyKey,
+  sheetsProjection,
+} from "./sheets-poll-diff";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
 /** The Gmail poller's reads — listing and fetching messages changes nothing. */
@@ -357,7 +379,11 @@ export const executeWorkflow = inngest.createFunction(
     if (idempotencyKey) {
       const existing = await step.run("check-idempotency", async () => {
         return prisma.execution.findUnique({
-          where: { idempotencyKey },
+          // Scoped to this workflow: the key names the external event, so an
+          // identical key under a DIFFERENT workflow is a different run that
+          // must not be deduped away (a copied workflow watching the same
+          // sheet, or another tenant watching the same public video).
+          where: { workflowId_idempotencyKey: { workflowId, idempotencyKey } },
           select: { id: true, status: true },
         });
       });
@@ -476,29 +502,80 @@ export const executeWorkflow = inngest.createFunction(
   },
 );
 
-// Dispatcher: enumerates poll rows (ids only) and fans out one
-// `polls/youtube.check` event per row. The per-poll work (external API calls,
-// workflow dispatch, lastChecked update) lives in `handleYoutubePoll`, which
-// runs with its own retries + concurrency cap so one poll can't block another.
-export const pollYoutubeComments = inngest.createFunction(
-  { id: "poll-youtube-comments", retries: 1 },
+// Dispatcher for every webhook-less trigger: enumerates poll rows (ids only)
+// and fans out one `polls/<provider>.check` event each. Rows are provisioned
+// and cleaned up by `syncTriggerPollsForWorkflow`
+// (src/lib/workflow-persistence.ts) on every workflow create/edit, so each row
+// here corresponds to a live trigger. The per-poll work (external API calls,
+// workflow dispatch, lastChecked update) lives in the matching `handle*Poll`,
+// each with its own retries + concurrency cap so one poll can't block another.
+//
+// Deliberately ONE function running ONE step for all three providers, rather
+// than the three near-identical dispatchers this replaces. A cron tick is
+// billed whether or not it finds work, and Inngest bills per step: three empty
+// `*/5` dispatchers cost three times one combined empty tick — roughly 26k
+// billed steps a month against 9k — for byte-identical behaviour. The three
+// queries share a single `step.run` for that same reason; splitting them into a
+// step apiece would hand the saving straight back.
+//
+// Each provider's event name is welded to the query that feeds it, so the two
+// can't drift out of step the way a pair of parallel literals would.
+const TRIGGER_POLL_SOURCES = [
+  {
+    event: "polls/gmail.check",
+    list: () => prisma.gmailPoll.findMany({ select: { id: true } }),
+  },
+  {
+    event: "polls/google-sheets.check",
+    list: () => prisma.googleSheetsPoll.findMany({ select: { id: true } }),
+  },
+  {
+    event: "polls/youtube.check",
+    list: () => prisma.youtubeCommentPoll.findMany({ select: { id: true } }),
+  },
+] as const;
+
+export const pollTriggers = inngest.createFunction(
+  { id: "poll-triggers", retries: 1 },
   { cron: "*/5 * * * *" },
   async ({ step }) => {
-    const polls = await step.run("fetch-poll-ids", async () => {
-      return prisma.youtubeCommentPoll.findMany({ select: { id: true } });
+    const { events, failed } = await step.run("fetch-poll-ids", async () => {
+      // `allSettled`, not `all`: sharing one step means one rejection would
+      // otherwise take the other two providers' dispatch down with it, which is
+      // the isolation the three separate functions used to give for free. A
+      // provider that fails is skipped for this tick alone and recovers on the
+      // next one five minutes later — cheaper than losing all three. Retrying
+      // instead wouldn't buy that back: with `retries: 1` a persistent fault
+      // still ends with every provider dropped.
+      const settled = await Promise.allSettled(
+        TRIGGER_POLL_SOURCES.map((source) => source.list()),
+      );
+
+      const events: { name: string; data: { pollId: string } }[] = [];
+      const failed: string[] = [];
+
+      settled.forEach((result, index) => {
+        const { event } = TRIGGER_POLL_SOURCES[index];
+        if (result.status === "rejected") {
+          failed.push(event);
+          logger.error("Trigger poll lookup failed", result.reason, { event });
+          return;
+        }
+        for (const poll of result.value) {
+          events.push({ name: event, data: { pollId: poll.id } });
+        }
+      });
+
+      return { events, failed };
     });
 
-    if (polls.length === 0) return { dispatched: 0 };
+    // `failed` rides along on both returns so a degraded tick is visible in the
+    // run output, not only in the logs.
+    if (events.length === 0) return { dispatched: 0, failed };
 
-    await step.sendEvent(
-      "dispatch-youtube-polls",
-      polls.map((poll) => ({
-        name: "polls/youtube.check",
-        data: { pollId: poll.id },
-      })),
-    );
+    await step.sendEvent("dispatch-trigger-polls", events);
 
-    return { dispatched: polls.length };
+    return { dispatched: events.length, failed };
   },
 );
 
@@ -596,32 +673,6 @@ function getHeaderValue(
   );
   return found?.value ?? "";
 }
-
-// Dispatcher: poll rows are provisioned/cleaned up by `syncTriggerPollsForWorkflow`
-// (src/lib/workflow-persistence.ts) on every workflow create/edit, so each row
-// here corresponds to a live Gmail trigger. Per-poll work lives in
-// `handleGmailPoll`.
-export const pollGmail = inngest.createFunction(
-  { id: "poll-gmail", retries: 1 },
-  { cron: "*/5 * * * *" },
-  async ({ step }) => {
-    const polls = await step.run("fetch-gmail-poll-ids", async () => {
-      return prisma.gmailPoll.findMany({ select: { id: true } });
-    });
-
-    if (polls.length === 0) return { dispatched: 0 };
-
-    await step.sendEvent(
-      "dispatch-gmail-polls",
-      polls.map((poll) => ({
-        name: "polls/gmail.check",
-        data: { pollId: poll.id },
-      })),
-    );
-
-    return { dispatched: polls.length };
-  },
-);
 
 // Handler: processes a single Gmail poll (token refresh + unread scan + N
 // metadata fetches). Isolated retries + concurrency cap; duplicate runs are
@@ -731,34 +782,47 @@ export const handleGmailPoll = inngest.createFunction(
   },
 );
 
-// Dispatcher: fans out one `polls/google-sheets.check` event per poll row.
-// Per-poll work lives in `handleGoogleSheetsPoll`.
-export const pollGoogleSheets = inngest.createFunction(
-  { id: "poll-google-sheets", retries: 1 },
-  { cron: "*/5 * * * *" },
-  async ({ step }) => {
-    const polls = await step.run("fetch-google-sheets-poll-ids", async () => {
-      return prisma.googleSheetsPoll.findMany({ select: { id: true } });
+/**
+ * Rewrites the Sheets trigger node's `ignoreColumns` after the poller followed a
+ * renamed column, keeping the config the user sees (and the copy `syncTriggerPolls`
+ * re-denormalizes) pointed at the column they actually picked.
+ *
+ * Best-effort: the poll row is already healed, so a failure here costs a stale
+ * dialog label and a re-heal on the next poll, not a missed trigger — never a
+ * reason to fail the run and re-fire the executions this poll already sent.
+ */
+async function persistHealedIgnoreColumns(
+  workflowId: string,
+  ignoreColumns: string[],
+) {
+  try {
+    const node = await prisma.node.findFirst({
+      where: { workflowId, type: NodeType.GOOGLE_SHEETS_TRIGGER },
+      select: { id: true, data: true },
     });
+    if (!node) return;
 
-    if (polls.length === 0) return { dispatched: 0 };
+    const data =
+      node.data && typeof node.data === "object" && !Array.isArray(node.data)
+        ? (node.data as Prisma.JsonObject)
+        : {};
 
-    await step.sendEvent(
-      "dispatch-google-sheets-polls",
-      polls.map((poll) => ({
-        name: "polls/google-sheets.check",
-        data: { pollId: poll.id },
-      })),
-    );
+    await prisma.node.update({
+      where: { id: node.id },
+      data: { data: { ...data, ignoreColumns } },
+    });
+  } catch (err) {
+    logger.error("Failed to heal Sheets trigger ignoreColumns", err, {
+      workflowId,
+    });
+  }
+}
 
-    return { dispatched: polls.length };
-  },
-);
-
-// Handler: processes a single Google Sheets poll. Diffs current row count
-// against `lastRowCount` and emits one execution per new row. Isolated retries
-// + concurrency cap; duplicate runs are prevented by the
-// `google_sheets:<spreadsheetId>:<rowIndex>` idempotency key.
+// Handler: processes a single Google Sheets poll. Emits one execution per
+// change the poll's `triggerOn` watches: appended rows (row count grew) and/or
+// edited rows (a stored per-position content hash changed). Isolated retries +
+// concurrency cap; duplicate runs are prevented by the
+// `google_sheets:<spreadsheetId>:<rowIndex>[:<hash>]` idempotency key.
 export const handleGoogleSheetsPoll = inngest.createFunction(
   { id: "handle-google-sheets-poll", retries: 1, concurrency: { limit: 20 } },
   { event: "polls/google-sheets.check" },
@@ -775,6 +839,11 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           spreadsheetId: true,
           sheetName: true,
           lastRowCount: true,
+          rowHashes: true,
+          triggerOn: true,
+          rowScope: true,
+          ignoreColumns: true,
+          lastChecked: true,
         },
       });
       if (!poll) return;
@@ -806,45 +875,198 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
 
       const rows = valuesResult.values ?? [];
       const currentRowCount = rows.length;
+      const header = rows[0] ?? [];
 
-      if (currentRowCount > poll.lastRowCount) {
-        for (let i = poll.lastRowCount; i < currentRowCount; i++) {
-          const rowIndex = i + 1;
-          const row = rows[i] ?? [];
+      // `readSnapshot` owns the persisted shape (incl. the legacy per-row forms).
+      const {
+        cellHashes: oldCellHashes,
+        projection: oldProjection,
+        header: lastHeader,
+        headings: lastHeadings,
+      } = readSnapshot(poll.rowHashes);
 
+      // Ignored columns are stored as header names; resolve against the current
+      // header row (so scoping tracks a column even if it was reordered) and
+      // watch everything else. Empty = watch the whole row.
+      const storedIgnoreNames = Array.isArray(poll.ignoreColumns)
+        ? (poll.ignoreColumns as string[])
+        : [];
+      // Renaming an ignored column would otherwise stop its stored name from
+      // matching, silently un-ignoring it. Follow the rename BEFORE scoping, so
+      // this poll already honours the setting rather than losing it for a poll
+      // (and widening the watched set, which would suppress its edits too).
+      const healedIgnoreNames = lastHeader
+        ? healIgnoreColumns(storedIgnoreNames, lastHeader, header)
+        : null;
+      const ignoreNames = healedIgnoreNames ?? storedIgnoreNames;
+
+      const watchColumns = computeWatchedColumns(header, ignoreNames);
+      const newProjection = sheetsProjection(header, watchColumns);
+      const rowScope =
+        (poll.rowScope as RowScope) ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE;
+
+      // Which rows are HEADINGS — merged section titles. The values endpoint
+      // can't say (a merge is grid metadata), so this is a second request.
+      //
+      // Skipped entirely under "all", which draws no distinction and so needs no
+      // merges. Combined with the legacy default above, a trigger saved before
+      // headings existed keeps making exactly ONE request per poll; only a user
+      // who opts into a heading-aware scope pays for the second.
+      //
+      // Left to throw on failure: without merges we can't tell a heading from a
+      // data row, and firing the wrong events is worse than a 5-minute retry.
+      const headingRows = new Set<number>();
+      if (rowScope !== "all") {
+        const grid = await getSheetGrid({
+          accessToken,
+          spreadsheetId: poll.spreadsheetId,
+          sheetName: poll.sheetName,
+          includeMerges: true,
+        });
+        // `headingDataRows` keys by DATA-row index (header excluded), while this
+        // poller indexes `rows` from the header at 0. Off by exactly one, and
+        // silently wrong if conflated — convert once, here.
+        for (const dataRow of headingDataRows(grid.merges).keys()) {
+          headingRows.add(dataRow + 1);
+        }
+      }
+      const newHeadings = collectHeadingTexts(rows, headingRows);
+
+      const { changes, newCellHashes } = planSheetsPollChanges({
+        rows,
+        lastRowCount: poll.lastRowCount,
+        // Null until the first poll seeds it. The first poll is a baseline that
+        // fires nothing, so attaching the trigger never backfills existing rows.
+        oldCellHashes,
+        triggerOn: poll.triggerOn as SheetsTriggerOn,
+        watchColumns,
+        oldProjection,
+        newProjection,
+        rowScope,
+        headingRows,
+      });
+
+      // The poll's prior lastChecked: stable across retries of this poll,
+      // distinct on the next one, so a value changed back later fires again.
+      const pollToken = String(poll.lastChecked.getTime());
+
+      // The heading half. Deliberately NOT gated on the projection guard that
+      // suppresses row edits: a heading's text lives in column A and has nothing
+      // to do with the watched-column projection, so an unrelated column change
+      // must not swallow a retitled section.
+      if (rowScope === "headings") {
+        for (const change of planHeadingChanges(lastHeadings, newHeadings)) {
           await sendWorkflowExecution({
             workflowId: poll.workflowId,
             initialData: {
               googleSheets: {
                 spreadsheetId: poll.spreadsheetId,
                 sheetName: poll.sheetName,
-                rowIndex,
-                row,
+                changeType: "heading_updated",
+                heading: change.heading,
+                previousHeading: change.previousHeading,
+                // No columns changed — a heading is one merged cell, not a row
+                // of fields. Both keys stay present so a downstream template
+                // referencing them resolves to "" instead of breaking.
+                changedFields: "",
+                values: {},
               },
             },
-            idempotencyKey: `google_sheets:${poll.spreadsheetId}:${rowIndex}`,
+            idempotencyKey: sheetsHeadingIdempotencyKey({
+              spreadsheetId: poll.spreadsheetId,
+              rowIndex: change.rowIndex,
+              pollToken,
+            }),
           });
         }
+      }
+
+      for (const { rowIndex, changeType, changedColumns } of changes) {
+        const row = rows[rowIndex - 1] ?? [];
+        await sendWorkflowExecution({
+          workflowId: poll.workflowId,
+          initialData: {
+            googleSheets: {
+              spreadsheetId: poll.spreadsheetId,
+              sheetName: poll.sheetName,
+              changeType,
+              // The column NAMES that changed, as plain text ("Status, Amount").
+              // Empty for an added row (nothing to diff against).
+              changedFields: changedFieldNames(header, changedColumns).join(
+                ", ",
+              ),
+              // Cells keyed by column name, so a downstream node picks
+              // `googleSheets.values.<Header>` instead of a positional index.
+              values: rowValuesByHeader(header, row),
+            },
+          },
+          idempotencyKey: sheetsPollIdempotencyKey({
+            spreadsheetId: poll.spreadsheetId,
+            rowIndex,
+            changeType,
+            row,
+            pollToken,
+          }),
+        });
       }
 
       await prisma.googleSheetsPoll.update({
         where: { id: poll.id },
         data: {
           lastRowCount: currentRowCount,
+          // Snapshot = the hashes, the projection they were computed under (so
+          // the next poll can tell whether that projection still holds), the
+          // header they were read under (so it can spot a rename), and each
+          // heading's text (so it can spot a retitled section).
+          rowHashes: {
+            sig: newProjection.names,
+            cols: newProjection.cols,
+            header,
+            headings: newHeadings,
+            cellHashes: newCellHashes,
+          } satisfies SheetsPollSnapshot,
+          ...(healedIgnoreNames ? { ignoreColumns: healedIgnoreNames } : {}),
           lastChecked: new Date(),
         },
       });
+
+      // The poll row is a denormalized copy — `syncTriggerPolls` rewrites it from
+      // the trigger node's `data` on every workflow save, so healing only the copy
+      // would be undone by the next save (and leave the dialog showing the old
+      // name). Update the source of truth too.
+      if (healedIgnoreNames) {
+        await persistHealedIgnoreColumns(poll.workflowId, healedIgnoreNames);
+      }
     });
   },
 );
 
+// How often to look for due schedules. Deployment-configurable because this
+// tick is billed whether or not anything is due: an installation with no
+// SCHEDULE_TRIGGER workflows pays ~43k empty executions a month at the default.
+//
+// The default stays every-minute so minute-grained crons fire on time out of
+// the box. A deployment whose schedules are coarse — or absent — sets
+// SCHEDULE_POLL_CRON="*/5 * * * *" and pays a fifth of that. Note this interval
+// caps granularity: a schedule can only fire as precisely as the poll that
+// finds it.
+//
+// `?.trim() ||`, not `??`: setting an env var to an empty value is the ordinary
+// way to unset one, and `??` only falls back on undefined — so "" (or "  ")
+// would reach createFunction as an invalid cron. That doesn't just break
+// schedules: every function is registered through the single serve() handler in
+// app/api/inngest/route.ts, so one bad cron takes executeWorkflow and every
+// other poller down with it.
+const SCHEDULE_POLL_CRON =
+  process.env.SCHEDULE_POLL_CRON?.trim() || "* * * * *";
+
 // Dispatcher: scans for SchedulePoll rows whose `nextRunAt` is due (indexed on
 // `nextRunAt`, so this is O(due) not O(all)) and fans out one
-// `polls/schedule.check` event per row. Runs every minute for minute-grained
-// schedules. Per-poll work (dispatch + advance) lives in `handleSchedulePoll`.
+// `polls/schedule.check` event per row. Per-poll work (dispatch + advance)
+// lives in `handleSchedulePoll`.
 export const pollSchedules = inngest.createFunction(
   { id: "poll-schedules", retries: 1 },
-  { cron: "* * * * *" },
+  { cron: SCHEDULE_POLL_CRON },
   async ({ step }) => {
     const polls = await step.run("fetch-due-schedule-poll-ids", async () => {
       return prisma.schedulePoll.findMany({

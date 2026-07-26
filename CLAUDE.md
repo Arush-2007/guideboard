@@ -31,15 +31,26 @@ The Prisma client is generated to `src/generated/prisma` (not the default `node_
 
 ## Architecture
 
-### The node system is a triple registry
+### The node system is a set of parallel registries
 
-Every node type is an enum member in `NodeType` (Prisma schema) plus three parallel registrations that **must all be kept in sync** when adding or removing a node:
+Every node type is an enum member in `NodeType` (Prisma schema) plus a set of parallel registrations that **must all be kept in sync** when adding or removing a node.
+
+Three are typed as a total `Record<NodeType, ...>`, so missing one is a **compile error**:
 
 1. **`src/config/node-components.ts`** — maps `NodeType` → the React Flow canvas component (the visual node).
 2. **`src/config/node-schemas.ts`** — maps `NodeType` → a Zod schema validating that node's `data` JSON. `parseNodeConfig(type, data)` is the single validation entry point, called by executors at runtime. Schemas are `.passthrough()` by default; field names must match the dialog forms exactly.
 3. **`src/features/executions/lib/executor-registry.ts`** — maps `NodeType` → its server-side `NodeExecutor`. `getExecutor(type)` throws if a type is unregistered.
 
-For executors that emit realtime status, there are two more registrations:
+Four more are **partial** — an array, a `Set`, or a `Partial<Record<...>>` — so omitting one compiles cleanly and passes the test suite while shipping a node that is broken in the UI. There is no compiler backstop here; these have to be done from the checklist:
+
+4. **`src/config/node-options.ts`** — label, description and icon. **Without this the node cannot be added from the node selector at all.** Brand icons come from the integrations registry; Lucide icons for utility nodes are imported here.
+5. **`src/config/node-outputs.ts`** — the fields the node writes into `context`. **Without this the node's output never appears in the variable picker, so no downstream node can reference it** — the node runs, but nothing can consume its result.
+6. **`src/lib/node-output-summary.ts`** — the one-line "what happened" summary for the execution page's Friendly view. Returning `null`, or having no entry, falls back to the raw output table.
+7. **`src/features/executions/lib/node-status-registry.ts`** — the `STATUS_EMITTING_NODE_TYPES` allowlist, for nodes whose executor publishes realtime status (see below).
+
+`src/config/node-kinds.ts` (`TRIGGER_NODE_TYPES`) needs an entry **only for triggers**; `node-kinds.test.ts` asserts it matches the `_TRIGGER`-suffixed enum members exactly, so a trigger left out fails the build. The conversational builder needs nothing — its allowlist derives from `Object.values(NodeType)` (`src/lib/workflow-persistence.ts`).
+
+On realtime status, two further notes:
 1. The status-emitting `NodeType` allowlist (`STATUS_EMITTING_NODE_TYPES`) in **`src/features/executions/lib/node-status-registry.ts`**, consumed by the editor's `<NodeStatusSubscriber>`. When you add a node whose executor streams status, add its `NodeType` here.
 2. All node statuses share **one** per-user channel, `src/inngest/channels/node-status.ts` — `channel((userId) => \`node-status:${userId}\`)`, parameterized by `userId` so each user's stream is isolated. Executors publish with `nodeStatusChannel(userId).status({ nodeId, status })`; the single `fetchNodeStatusRealtimeToken` action (`src/features/executions/lib/node-status-token.ts`) mints a session-scoped token via `mintUserStatusToken(nodeStatusChannel)` (`src/inngest/channels/mint-status-token.ts`). The editor opens exactly one subscription regardless of node-type count — do **not** add a channel file per node.
 
@@ -61,9 +72,14 @@ A single node feature is split across two locations by convention:
 
 A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so Inngest can checkpoint it, and `publish(channel(userId).status({ nodeId, status }))` to stream UI status (channels are user-scoped — see the registration notes above). Throw `NonRetriableError` for config/validation failures so Inngest doesn't retry them.
 
-**Templating:** action executors render user-authored fields (message bodies, etc.) through Handlebars against the `context`, so users reference upstream output with `{{some_node_output.field}}`. A `json` helper is registered.
+**Templating:** action executors render user-authored fields (message bodies, etc.) against the `context` through **`renderTemplate` (`src/lib/templating.ts`)** — never by calling Handlebars directly. It resolves two syntaxes:
 
-**Polling triggers:** Gmail, Google Sheets, and YouTube comment triggers are not webhooks — they're cron Inngest functions (`pollGmail`, `pollGoogleSheets`, `pollYoutubeComments`, every 5 min) that diff external state against `*Poll` tables and emit workflow executions with idempotency keys. `pruneOldExecutions` deletes executions older than 30 days. All four functions are registered in `src/app/api/inngest/route.ts` — new Inngest functions must be added there to be served.
+- `@<path>@` — the primary, user-facing placeholder, inserted by the variable picker and carrying a canonical context path (`@<AI_TEXT_1.output>@`). Resolved by direct substitution, so it never collides with JSON braces. Its grammar lives in one place, `PLACEHOLDER_RE` (`src/lib/template-token.ts`), shared by the resolver and the ref-rename rewriter.
+- `{{...}}` — legacy Handlebars, still honoured for back-compat and power users. The `json` helper is registered once, inside `templating.ts`.
+
+A node may narrow this. The Calculator (`components/calculator/executor.ts`) rejects `{{...}}` outright and resolves each `@<path>@` token **individually**, because there a rendered value is substituted into an expression that then gets parsed: a single-pass whole-string render would let an upstream *value* rewrite the expression's *structure* (`2 * @<x>@` with `x = "1+1"` evaluating to 3, not 4). Any executor that parses what it renders needs the same treatment.
+
+**Polling triggers:** Gmail, Google Sheets, and YouTube comment triggers are not webhooks — they're driven by one cron Inngest function, `pollTriggers` (every 5 min), which lists all three providers' `*Poll` rows in a single step and fans out a `polls/<provider>.check` event per row. The per-poll work (external API calls, workflow dispatch) lives in the matching `handle*Poll` function, each with its own retries and concurrency cap, and emits workflow executions with idempotency keys. Keep the dispatchers combined: a cron tick is billed whether or not it finds work, so splitting them back into one function (or one step) per provider triples the cost of an idle install for identical behaviour. Schedule triggers have their own dispatcher, `pollSchedules`, whose cron is `SCHEDULE_POLL_CRON` (default every minute). `pruneOldExecutions` deletes executions older than 30 days. Every one of these is registered in `src/app/api/inngest/route.ts` — new Inngest functions must be added there to be served.
 
 ### API layer (tRPC)
 

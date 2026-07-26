@@ -2,16 +2,19 @@ import { randomBytes } from "node:crypto";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
+import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
 import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
 import {
   legacyOutputKey,
-  nextNodeRef,
-  nodeTypeHasRef,
+  resolveNodeRefs,
   rewriteRefsInJson,
+  stripRefFromData,
 } from "@/lib/node-ref";
 import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
+import type { RowScope } from "@/lib/sheet-heading";
+import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 
 /**
  * Shared persistence + validation for AI-generated workflows.
@@ -52,6 +55,41 @@ export type GeneratedNode = GeneratedWorkflow["nodes"][number];
 const NODE_TYPE_VALUES = new Set<string>(Object.values(NodeType));
 
 /**
+ * Rejects any edge pointing INTO a trigger.
+ *
+ * Triggers are workflow roots: the engine runs them unconditionally and never
+ * reads an incoming edge (the reachability gate in `src/inngest/run-workflow.ts`
+ * roots on node TYPE, not in-degree). An edge into a trigger is therefore
+ * meaningless — and worse than inert, because the trigger would fire even on
+ * paths that are supposed to be dead: an untaken branch, or once per item inside
+ * a fan-out child's replay slice, which the engine explicitly promises won't
+ * re-fire triggers.
+ *
+ * The canvas already refuses to draw one (`invalidConnectionReason` in
+ * features/editor/lib/connection-validation.ts) — but that is a *client-side*
+ * guard, so every server write path has to enforce it too or a generated (or
+ * scripted) graph can persist a shape no user could ever draw. Called by
+ * `validateGeneratedWorkflowGraph` (covering both AI builders) and by
+ * `workflows.update` (the editor's save). Deliberately the same message as the
+ * canvas toast, so the rule reads identically wherever it surfaces.
+ */
+export function assertNoEdgeIntoTrigger(
+  nodes: { id: string; type?: string | null }[],
+  edges: { target: string }[],
+): void {
+  const typeById = new Map(nodes.map((node) => [node.id, node.type ?? null]));
+  for (const edge of edges) {
+    const type = typeById.get(edge.target);
+    if (type && TRIGGER_NODE_TYPES.has(type as NodeType)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Triggers can't receive a connection",
+      });
+    }
+  }
+}
+
+/**
  * Validates a generated graph beyond what the Zod schema covers: every node
  * type is a real `NodeType`, node ids are unique, and every edge references
  * known nodes. Throws `TRPCError(BAD_REQUEST)` on the first violation.
@@ -85,6 +123,10 @@ export function validateGeneratedWorkflowGraph(
       });
     }
   }
+
+  // Runs after the endpoint check, so every edge target is known to be a real
+  // node before its type is consulted.
+  assertNoEdgeIntoTrigger(nodes, edges);
 }
 
 /**
@@ -104,18 +146,21 @@ export async function persistGeneratedWorkflow(
     // Assign a frozen ref to each ref-eligible node, then rewrite any legacy
     // `<type>_<id>` references the model emitted to the new refs, so generated
     // references resolve against the ref-keyed context.
-    const usedRefs = new Set<string>();
+    //
+    // Shares `resolveNodeRefs` with `workflows.update` rather than re-deriving
+    // the numbering here: `@@unique([workflowId, ref])` has exactly two write
+    // paths and both go through one door, the same way `assertNoEdgeIntoTrigger`
+    // guards the edge invariant for both. A generated node carries no `data.ref`
+    // today so every ref is minted, but if the model ever emits one it is now
+    // deduped instead of aborting the transaction on a constraint error.
+    const { refByNodeId: nodeRefById } = resolveNodeRefs(parsed.nodes);
+
     const legacyKeyToRef = new Map<string, string>();
-    const nodeRefById = new Map<string, string | null>();
     for (const node of parsed.nodes) {
-      if (!nodeTypeHasRef(node.type)) {
-        nodeRefById.set(node.id, null);
-        continue;
+      const ref = nodeRefById.get(node.id);
+      if (ref) {
+        legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
       }
-      const ref = nextNodeRef(node.type, usedRefs);
-      usedRefs.add(ref);
-      legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
-      nodeRefById.set(node.id, ref);
     }
 
     await tx.node.createMany({
@@ -126,8 +171,14 @@ export async function persistGeneratedWorkflow(
         type: node.type as NodeType,
         ref: nodeRefById.get(node.id) ?? null,
         position: node.position,
+        // Same invariant as `workflows.update`: the ref lives in the column, not
+        // the blob. `stripRefFromData` is a no-op for the model's own output
+        // today, but keeps both write paths enforcing it identically.
         data: JSON.parse(
-          rewriteRefsInJson(JSON.stringify(node.data ?? {}), legacyKeyToRef),
+          rewriteRefsInJson(
+            JSON.stringify(stripRefFromData(node.data)),
+            legacyKeyToRef,
+          ),
         ),
       })),
     });
@@ -212,8 +263,29 @@ export async function syncTriggerPollsForWorkflow(
 
   if (googleSheetsTrigger) {
     const triggerData = (googleSheetsTrigger.data as
-      | { spreadsheetId?: string; sheetName?: string }
+      | {
+          spreadsheetId?: string;
+          sheetName?: string;
+          triggerOn?: "added" | "updated" | "added_or_updated";
+          rowScope?: RowScope;
+          ignoreColumns?: string[];
+        }
       | undefined) ?? { spreadsheetId: "", sheetName: "" };
+
+    // Missing on nodes saved before edit-detection existed; those keep the
+    // historical append-only behavior.
+    const triggerOn = triggerData.triggerOn ?? "added";
+    // Missing on nodes saved before headings were understood here; those keep
+    // firing on every row, merged section titles included — and keep making one
+    // API call per poll. The dialog resolves an absent value through the same
+    // constant, so what a user sees is what the poll runs.
+    const rowScope = triggerData.rowScope ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE;
+    // Header names whose edits are ignored; empty watches every column. A change
+    // here does NOT need a baseline reset from this side: the poller detects the
+    // shifted watched-column projection via `sheetsProjection` and re-seeds
+    // itself (see `planSheetsPollChanges`), which also covers header changes made
+    // directly in the sheet — the same mechanism in one place.
+    const ignoreColumns = triggerData.ignoreColumns ?? [];
 
     if (triggerData.spreadsheetId && triggerData.sheetName) {
       await prisma.googleSheetsPoll.upsert({
@@ -222,12 +294,18 @@ export async function syncTriggerPollsForWorkflow(
           userId,
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
+          triggerOn,
+          rowScope,
+          ignoreColumns,
         },
         create: {
           userId,
           workflowId,
           spreadsheetId: triggerData.spreadsheetId,
           sheetName: triggerData.sheetName,
+          triggerOn,
+          rowScope,
+          ignoreColumns,
         },
       });
     }

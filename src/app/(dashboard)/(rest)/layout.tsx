@@ -1,5 +1,4 @@
 import { AppHeader } from "@/components/app-header";
-import { DashboardRightRail } from "@/components/dashboard-right-rail";
 
 const Layout = ({ children }: { children: React.ReactNode }) => {
   return (
@@ -8,10 +7,10 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
     <div className="flex h-svh flex-col overflow-hidden">
       <AppHeader />
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[1400px] gap-6 px-4 py-6 md:px-6">
-          <main className="min-w-0 flex-1">{children}</main>
-          <DashboardRightRail />
-        </div>
+        {/* The layout owns the page gutter and nothing else; each page sets its
+            own max-width (list pages are wider than form pages), so adding one
+            here too would just fight them. */}
+        <main className="w-full px-4 py-6 md:px-6">{children}</main>
       </div>
     </div>
   );

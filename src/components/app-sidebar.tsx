@@ -7,10 +7,18 @@ import {
   LayoutGridIcon,
   LogOutIcon,
   SettingsIcon,
+  UserRoundIcon,
 } from "lucide-react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -24,6 +32,7 @@ import {
   SidebarMenuItem,
 } from "@/components/ui/sidebar";
 import { useNavGuard } from "@/features/editor/hooks/use-nav-guard";
+import { UserAvatar } from "@/features/profile/components/user-avatar";
 import { authClient } from "@/lib/auth-client";
 
 const menuItems = [
@@ -54,10 +63,18 @@ const menuItems = [
   },
 ];
 
-export const AppSidebar = () => {
+type SidebarUser = { name: string; email: string; image?: string | null };
+
+export const AppSidebar = ({ user: initialUser }: { user: SidebarUser }) => {
   const router = useRouter();
   const pathname = usePathname();
   const guardNav = useNavGuard();
+  // Client-side session so the footer card reflects a rename or a new avatar
+  // without waiting out the server session's cookie cache. Falls back to the
+  // server-seeded user so the first render matches SSR (see layout) rather than
+  // flashing a placeholder — a client/server mismatch that broke hydration.
+  const { data: session } = authClient.useSession();
+  const user = session?.user ?? initialUser;
 
   // The workflow editor (/workflows/<id>) renders a heavy React Flow canvas in
   // the content area. Animating the rail width resizes that canvas every frame
@@ -144,22 +161,54 @@ export const AppSidebar = () => {
       <SidebarFooter className="border-t border-sidebar-border/70 px-2 py-3">
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Sign out"
-              className="h-10 gap-x-3 rounded-xl px-3 text-[13px] font-semibold transition-all duration-200 hover:bg-destructive/10 hover:text-destructive group-data-[collapsible=icon]:!h-10 group-data-[collapsible=icon]:!w-8"
-              onClick={() =>
-                authClient.signOut({
-                  fetchOptions: {
-                    onSuccess: () => {
-                      router.push("/login");
-                    },
-                  },
-                })
-              }
-            >
-              <LogOutIcon className="h-4 w-4" />
-              <span>Sign out</span>
-            </SidebarMenuButton>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <SidebarMenuButton
+                  tooltip={user.name}
+                  className="h-12 gap-x-3 rounded-xl px-2 transition-all duration-200 hover:bg-sidebar-accent/80 group-data-[collapsible=icon]:!h-10 group-data-[collapsible=icon]:!w-8 group-data-[collapsible=icon]:!p-0.5"
+                >
+                  <UserAvatar
+                    name={user.name}
+                    email={user.email}
+                    image={user.image}
+                    className="size-8"
+                    fallbackClassName="text-xs"
+                  />
+                  <div className="min-w-0 text-left group-data-[collapsible=icon]:hidden">
+                    <p className="truncate text-[13px] font-semibold leading-tight">
+                      {user.name}
+                    </p>
+                    <p className="truncate text-[11px] leading-tight text-muted-foreground">
+                      {user.email}
+                    </p>
+                  </div>
+                </SidebarMenuButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" side="top" className="w-52">
+                <DropdownMenuItem asChild>
+                  <Link href="/profile" prefetch onClick={guardNav("/profile")}>
+                    <UserRoundIcon className="size-4" />
+                    Profile
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() =>
+                    authClient.signOut({
+                      fetchOptions: {
+                        onSuccess: () => {
+                          router.push("/login");
+                        },
+                      },
+                    })
+                  }
+                >
+                  <LogOutIcon className="size-4" />
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>

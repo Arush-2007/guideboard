@@ -1,9 +1,9 @@
 import type { NodeProps } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseTriggerNode } from "../base-trigger-node";
 
-const GmailTriggerDialog = dynamic(() =>
+const GmailTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.GmailTriggerDialog),
 );
 
@@ -23,7 +23,11 @@ export const GmailTriggerNode = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <GmailTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <GmailTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

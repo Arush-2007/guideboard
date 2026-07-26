@@ -1,6 +1,7 @@
 import { createId } from "@paralleldrive/cuid2";
 import type { Node } from "@xyflow/react";
 import { NodeType } from "@/generated/prisma";
+import { collectNodeRefs, withAssignedRef } from "@/lib/node-ref";
 
 // How far a duplicated node is offset from its source, so the copy doesn't land
 // exactly on top of the original.
@@ -13,6 +14,12 @@ const DUPLICATE_OFFSET = 40;
  * originals are deselected so the selection follows the copies. Only
  * `type`/`position`/`data` are carried over — volatile React Flow fields
  * (`measured`, `width`, `dragging`, …) are dropped so the copy re-measures.
+ *
+ * Each clone also gets its OWN ref: `data` is deep-copied, so without this a
+ * copy of AI_TEXT_1 would be a second node claiming the ref AI_TEXT_1 — a
+ * duplicate identity on the canvas and a `@@unique([workflowId, ref])` violation
+ * on save. One `usedRefs` set threads through the whole batch, so duplicating a
+ * multi-selection in a single tick can't hand two clones the same ref either.
  *
  * Pure and side-effect free (the id generator is injectable for tests). If
  * nothing eligible is selected, the input array is returned unchanged so callers
@@ -31,16 +38,25 @@ export const duplicateSelectedNodes = (
     return nodes;
   }
 
-  const clones: Node[] = selected.map((node) => ({
-    id: makeId(),
-    type: node.type,
-    position: {
-      x: node.position.x + DUPLICATE_OFFSET,
-      y: node.position.y + DUPLICATE_OFFSET,
-    },
-    data: structuredClone(node.data),
-    selected: true,
-  }));
+  // Seeded from the whole canvas, not just the selection, so a clone can't
+  // collide with an unselected node's ref.
+  const usedRefs = collectNodeRefs(nodes);
+
+  const clones: Node[] = selected.map((node) =>
+    withAssignedRef(
+      {
+        id: makeId(),
+        type: node.type,
+        position: {
+          x: node.position.x + DUPLICATE_OFFSET,
+          y: node.position.y + DUPLICATE_OFFSET,
+        },
+        data: structuredClone(node.data),
+        selected: true,
+      },
+      usedRefs,
+    ),
+  );
 
   return [
     ...nodes.map((node) =>

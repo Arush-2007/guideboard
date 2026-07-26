@@ -88,6 +88,18 @@ export const nodeSummaries: Partial<Record<NodeType, NodeSummary>> = {
       ? `Converted ${from ? FORMAT_META[from].label : "input"} to ${FORMAT_META[to].label}.`
       : "Converted the input.";
   },
+  [NodeType.CALCULATOR]: ({ output }) => {
+    if (typeof output?.result !== "number") return null;
+    // Shows the resolved expression, not the template, so the line reads as a
+    // sum the user can check: "Calculated 1200 * 1.18 = 1416."
+    const expression =
+      typeof output?.expression === "string" ? output.expression : "";
+    return expression
+      ? `Calculated ${expression} = ${output.result}.`
+      : `Calculated ${output.result}.`;
+  },
+  [NodeType.CODE]: ({ output }) =>
+    output && "result" in output ? "Ran your code." : null,
   [NodeType.INSTAGRAM_REPLY_COMMENT]: () => "Reply posted to the comment.",
   [NodeType.YOUTUBE_REPLY_COMMENT]: () => "Reply posted to the comment.",
 };

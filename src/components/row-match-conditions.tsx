@@ -2,6 +2,7 @@
 
 import { createId } from "@paralleldrive/cuid2";
 import { Plus, Trash2 } from "lucide-react";
+import { MatchingOptions } from "@/components/matching-options";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -31,8 +32,6 @@ export type RowMatchConditionsProps = {
    * text input (e.g. color_rows targeting tabs whose headers aren't loaded).
    */
   columnOptions?: string[];
-  /** Popover anchor override for the value picker inside a wide overlay (ml-96). */
-  anchorClassName?: string;
 };
 
 /** A fresh condition, with a stable UI id for React keys. */
@@ -61,7 +60,6 @@ export function RowMatchConditions({
   currentNodeId,
   workflowId,
   columnOptions,
-  anchorClassName,
 }: RowMatchConditionsProps) {
   const update = (index: number, patch: Partial<RowMatchCondition>) => {
     onChange(value.map((c, i) => (i === index ? { ...c, ...patch } : c)));
@@ -162,10 +160,18 @@ export function RowMatchConditions({
                   placeholder="Value or field"
                   currentNodeId={currentNodeId}
                   workflowId={workflowId}
-                  anchorClassName={anchorClassName}
                 />
               ) : null}
             </div>
+
+            <MatchingOptions
+              operator={condition.operator}
+              ignoreCase={condition.ignoreCase}
+              ignoreChars={condition.ignoreChars}
+              numeric={condition.numeric}
+              onChange={(patch) => update(index, patch)}
+              idPrefix={`row-cond-${condition.id ?? index}`}
+            />
           </div>
         );
       })}

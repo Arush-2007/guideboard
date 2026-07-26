@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,7 +13,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -41,6 +41,7 @@ export type YoutubeCommentTriggerFormValues = z.infer<typeof formSchema>;
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
   onSubmit: (values: YoutubeCommentTriggerFormValues) => void;
   defaultValues?: Partial<YoutubeCommentTriggerFormValues>;
 }
@@ -48,6 +49,7 @@ interface Props {
 export const YoutubeCommentTriggerDialog = ({
   open,
   onOpenChange,
+  currentNodeId,
   onSubmit,
   defaultValues = {},
 }: Props) => {
@@ -80,7 +82,7 @@ export const YoutubeCommentTriggerDialog = ({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>YouTube Comment Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Trigger this workflow when a comment is posted on your YouTube
             video. Optionally limit to one video.

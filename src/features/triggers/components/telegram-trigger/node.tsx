@@ -1,9 +1,9 @@
 import type { NodeProps } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseTriggerNode } from "../base-trigger-node";
 
-const TelegramTriggerDialog = dynamic(() =>
+const TelegramTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.TelegramTriggerDialog),
 );
 
@@ -23,7 +23,11 @@ export const TelegramTrigger = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <TelegramTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <TelegramTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

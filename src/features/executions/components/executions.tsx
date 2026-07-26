@@ -114,8 +114,13 @@ const formatStatus = (status: ExecutionStatus) => {
  * Buffer/engine code this client bundle must not pull in).
  */
 const fanOutItemNumber = (idempotencyKey: string | null): number | null => {
-  if (!idempotencyKey?.startsWith("fanout:")) return null;
-  const parts = idempotencyKey.split(":");
+  if (!idempotencyKey) return null;
+  // Located rather than position-indexed, because rows written during the brief
+  // window when scoping was a `wf:<workflowId>:` key prefix (rather than the
+  // unique constraint it is now) carry that prefix ahead of "fanout:".
+  const marker = idempotencyKey.indexOf("fanout:");
+  if (marker === -1) return null;
+  const parts = idempotencyKey.slice(marker).split(":");
   const index = Number(parts[3]);
   return parts.length === 4 && Number.isInteger(index) ? index + 1 : null;
 };

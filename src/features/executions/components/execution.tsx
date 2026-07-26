@@ -14,6 +14,7 @@ import {
 import Link from "next/link";
 import { type ReactNode, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { NodeTypeIcon } from "@/components/node-type-icon";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,10 +29,13 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
+import { nodeOptionByType, nodeTypeLabel } from "@/config/node-options";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
 import {
   COMPARE_OPERATOR_LABELS,
   type CompareOperator,
+  describeCompareOptions,
+  pickCompareOptions,
 } from "@/features/executions/lib/compare";
 import { formatDuration } from "@/features/executions/lib/format-duration";
 import {
@@ -49,7 +53,11 @@ import {
   resolveReferencedInput,
 } from "@/lib/friendly-output";
 import { nodeSummaries } from "@/lib/node-output-summary";
-import { NON_REF_NODE_TYPES } from "@/lib/node-ref";
+import {
+  displayNameFor,
+  humanizeNodeType,
+  NON_REF_NODE_TYPES,
+} from "@/lib/node-ref";
 import {
   ROW_MATCH_OPERATOR_LABELS,
   type RowMatchOperator,
@@ -225,16 +233,21 @@ const FieldTable = ({
 // which of several matches this particular workflow run was for.
 // `rowLabels` adds a leading label column (the same one RowChangeGrid uses) —
 // the insert action labels each added row with the sheet row it landed on.
+// `rowColors` (color_rows) shows the #RRGGBB each row was actually painted as a
+// swatch in that same label column — the one thing a plain text grid can't say
+// about a coloring run.
 const RowsGrid = ({
   columns,
   rows,
   actedRowIndex = null,
   rowLabels = null,
+  rowColors = null,
 }: {
   columns: string[];
   rows: Record<string, string>[];
   actedRowIndex?: number | null;
   rowLabels?: string[] | null;
+  rowColors?: string[] | null;
 }) => {
   const shown = rows.slice(0, 50);
   return (
@@ -268,7 +281,16 @@ const RowsGrid = ({
               >
                 {rowLabels ? (
                   <td className="whitespace-nowrap px-2 py-1.5 text-xs font-medium text-muted-foreground">
-                    {rowLabels[i] ?? ""}
+                    <span className="flex items-center gap-1.5">
+                      {rowColors?.[i] ? (
+                        <span
+                          className="size-3 shrink-0 rounded-sm border"
+                          style={{ backgroundColor: rowColors[i] }}
+                          title={rowColors[i]}
+                        />
+                      ) : null}
+                      {rowLabels[i] ?? ""}
+                    </span>
                   </td>
                 ) : null}
                 {columns.map((col) => (
@@ -298,6 +320,65 @@ const RowsGrid = ({
 // A written row as a spreadsheet would show it: the sheet's columns across the
 // top, and either the single row that was added, or the row BEFORE the write and
 // the row AFTER it stacked underneath with every changed cell highlighted.
+/**
+ * What "no headings at all" means, said once. All three heading actions have to
+ * explain that a merged row is the only thing that counts, and repeating the
+ * sentence per view is exactly how the wording drifts apart.
+ */
+const noHeadingsHint = (nearMisses: number | null) =>
+  nearMisses && nearMisses > 0
+    ? nearMisses === 1
+      ? "This tab does have a merged row, but it doesn't qualify: a heading must start at column A and span exactly ONE row. A merge that begins further right, or covers two rows, is read as ordinary data."
+      : `This tab does have ${nearMisses} merged rows, but none of them qualify: a heading must start at column A and span exactly ONE row. A merge that begins further right, or covers two rows, is read as ordinary data.`
+    : "A row only counts as a heading when its cells are actually MERGED across the tab, starting at column A — text that merely looks like a title, or was typed in by hand without merging, is an ordinary data row.";
+
+/**
+ * The headings a run acted on — matched by find, painted by colour. One shared
+ * view, because both answer the same two questions: which headings, and what row
+ * each is on. Renders nothing when there are none, so callers need no guard.
+ */
+/**
+ * The heading-run fields common to find_heading and color_heading, pulled off a
+ * recorded output root with the same defensive coercion each view was repeating:
+ * the two lists default to empty, the two tab-level counts to null (absent ⇒
+ * "not recorded", which the summaries render differently from zero).
+ */
+const readHeadingRun = (root: Record<string, unknown>) => ({
+  headings: Array.isArray(root.headings) ? (root.headings as string[]) : [],
+  headingRowIndexes: Array.isArray(root.headingRowIndexes)
+    ? (root.headingRowIndexes as number[])
+    : [],
+  onTab: typeof root.headingsOnTab === "number" ? root.headingsOnTab : null,
+  nearMisses: typeof root.nearMisses === "number" ? root.nearMisses : null,
+});
+
+const HeadingListView = ({
+  headings,
+  rowIndexes,
+  colors = null,
+}: {
+  headings: string[];
+  rowIndexes: number[];
+  /** color_heading paints them all one colour; find passes none. */
+  colors?: string[] | null;
+}) => {
+  if (headings.length === 0) return null;
+  return (
+    <RowsGrid
+      columns={["heading"]}
+      rows={headings.map((h) => ({ heading: h }))}
+      // Only label rows when the two lists line up — a truncated pairing would
+      // put the wrong row number against a heading.
+      rowLabels={
+        rowIndexes.length === headings.length
+          ? rowIndexes.map((n) => `Row ${n}`)
+          : null
+      }
+      rowColors={colors}
+    />
+  );
+};
+
 const RowChangeGrid = ({
   columns,
   before,
@@ -431,6 +512,9 @@ type DisplayCondition = {
   operator?: string;
   value?: string;
   enabled?: boolean;
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 const CONDITION_TONES = {
@@ -504,6 +588,7 @@ const RowConditionsTable = ({
               ? VALUELESS_ROW_MATCH_OPERATORS.has(op)
               : false;
             const resolved = valueless ? "—" : renderReferences(c.value, input);
+            const optsNote = describeCompareOptions(pickCompareOptions(c), op);
             return (
               <tr
                 key={c.id ?? `${c.column}-${c.operator}`}
@@ -512,7 +597,14 @@ const RowConditionsTable = ({
                 <td className="break-words px-2 py-1 font-medium">
                   {c.column}
                 </td>
-                <td className="px-2 py-1">{opLabel}</td>
+                <td className="px-2 py-1">
+                  {opLabel}
+                  {optsNote ? (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {optsNote}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="break-words px-2 py-1">{resolved}</td>
               </tr>
             );
@@ -581,18 +673,28 @@ const SourceTables = ({
 // Condition, or one Switch case). Each operand is labeled by where it came from —
 // the upstream field's name if referenced, or "Entered by user" for a literal.
 const criteriaRows = (
-  cfg: { field?: unknown; operator?: unknown; value?: unknown },
+  cfg: {
+    field?: unknown;
+    operator?: unknown;
+    value?: unknown;
+    ignoreCase?: boolean;
+    ignoreChars?: string;
+    numeric?: boolean;
+  },
   input: unknown,
   producers: Producer[],
   runNodeTypes: string[],
 ): { label: string; value: unknown }[] => {
   const operator = typeof cfg.operator === "string" ? cfg.operator : "";
   const field = describeConfigValue(cfg.field, input, producers, runNodeTypes);
+  const opLabel =
+    COMPARE_OPERATOR_LABELS[operator as CompareOperator] ?? operator;
+  const optsNote = describeCompareOptions(pickCompareOptions(cfg), operator);
   const rows = [
     { label: field.label, value: field.value },
     {
       label: "Operator",
-      value: COMPARE_OPERATOR_LABELS[operator as CompareOperator] ?? operator,
+      value: optsNote ? `${opLabel} — ${optsNote}` : opLabel,
     },
   ];
   // is_empty / is_not_empty take no comparison value.
@@ -664,10 +766,11 @@ const DataSection = ({
   );
 };
 
+// Deliberately no `nodeName`: it holds the node TYPE string, never the name the
+// user gave the node. Rows take a resolved `name` instead — see `NodeRow`.
 type NodeExecutionRow = {
   id: string;
   nodeId: string;
-  nodeName: string;
   nodeType: string;
   status: string;
   durationMs: number | null;
@@ -676,14 +779,19 @@ type NodeExecutionRow = {
   error: string | null;
 };
 
+// Only ever rendered for a node that actually ran — skipped ones are listed on
+// their own in `SkippedNodes`, so nothing here handles the SKIPPED status.
 const NodeRow = ({
   node,
+  name,
   executionId,
   producers,
   runNodeTypes,
   config,
 }: {
   node: NodeExecutionRow;
+  /** The name the user gave this node, resolved by `nodeDisplayNames`. */
+  name: string;
   executionId: string;
   producers: Producer[];
   runNodeTypes: string[];
@@ -691,8 +799,16 @@ const NodeRow = ({
   config: Record<string, unknown> | undefined;
 }) => {
   const [open, setOpen] = useState(false);
-  const isSkipped = node.status === NodeExecutionStatus.SKIPPED;
   const isTrigger = NON_REF_NODE_TYPES.has(node.nodeType);
+  // What kind of node this is, beside the name the user gave it. Falls back the
+  // same way `displayNameFor` does, because `nodeOptionByType` is a partial
+  // registry: an unregistered type has no label and no icon, and a row reading
+  // only "AI_TEXT_1" would say the least exactly when the type matters most.
+  // Dropped when it repeats the name — a ref-less node's name already IS its
+  // label, and printing both says "Telegram Trigger  Telegram Trigger".
+  const typeLabel =
+    nodeTypeLabel(node.nodeType) ?? humanizeNodeType(node.nodeType);
+  const subtitle = typeLabel === name ? null : typeLabel;
 
   // Input. A trigger has no upstream, so it shows its own payload (user-relevant
   // fields only). A middle node shows ONLY the upstream fields it references in
@@ -729,16 +845,9 @@ const NodeRow = ({
     return <SourceTables sources={sources} />;
   }, [isTrigger, node.nodeType, config, node.input, producers, runNodeTypes]);
 
-  // Output. Status first (failed/skipped get a note), then a per-node "what
+  // Output. Status first (a failure gets a note), then a per-node "what
   // happened" summary line plus the details table. Triggers just announce the run.
   const outputFriendly = useMemo<ReactNode | null>(() => {
-    if (node.status === NodeExecutionStatus.SKIPPED) {
-      return (
-        <StatusNote>
-          Skipped — an earlier branch didn't reach this node, so it never ran.
-        </StatusNote>
-      );
-    }
     if (node.status === NodeExecutionStatus.FAILED) {
       return (
         <StatusNote variant="error">
@@ -817,7 +926,13 @@ const NodeRow = ({
       const childTotal = typeof root?.total === "number" ? root.total : null;
       const isChildRun = root?.__fanOut === true && childIndex !== null;
 
-      if (root?.action === "append_row") {
+      // A bottom append. A non-bottom append (position under_*) renders as an
+      // insert below — the two used to be separate actions and keep separate
+      // summaries. `?? "bottom"` covers pre-position append records too.
+      if (
+        root?.action === "append_row" &&
+        (root.position ?? "bottom") === "bottom"
+      ) {
         // Header-keyed row, in sheet-column order. The legacy raw-values path
         // emits none, so that falls back to the count alone.
         const appendedRow = (root.rowByHeader ?? {}) as Record<string, string>;
@@ -825,12 +940,16 @@ const NodeRow = ({
         const added =
           typeof root.appendedRows === "number" ? root.appendedRows : 1;
 
+        const withSeparator = root.blankRowAbove === true;
         return (
           <div className="space-y-2">
             <SummaryMessage>
               {added === 1
                 ? `Added 1 new row to the bottom of ${tab}.`
                 : `Added ${added} new rows to the bottom of ${tab}.`}
+              {withSeparator
+                ? " A blank separator row was added directly above it."
+                : ""}
             </SummaryMessage>
             {appendedColumns.length > 0 ? (
               <RowChangeGrid
@@ -840,6 +959,223 @@ const NodeRow = ({
                 singleRowLabel="Added"
               />
             ) : null}
+          </div>
+        );
+      }
+
+      // A heading row, in ANY position. It shares append_row's placement, but
+      // never its column grid: there is one merged cell, so what the run has to
+      // report is the TEXT, the row it landed on, and — off the bottom — the
+      // group it was placed under.
+      if (root?.action === "append_heading") {
+        const headingPosition = (root.position ?? "bottom") as string;
+        const atBottom = headingPosition === "bottom";
+        const headingText =
+          typeof root.headingText === "string" ? root.headingText : "";
+        const rowNumber =
+          typeof root.rowIndex === "number" ? root.rowIndex : null;
+        const count = typeof root.matchCount === "number" ? root.matchCount : 0;
+        const joinedGroup = root.insertedUnderGroup === true;
+        // Present only on the "under every matching row" PARENT — a child's
+        // reshaped output carries just the one heading it handled.
+        const addedHeadings = Array.isArray(root.insertedRows)
+          ? (root.insertedRows as Record<string, string>[])
+          : null;
+        const addedRowNumbers = Array.isArray(root.insertedRowIndexes)
+          ? (root.insertedRowIndexes as number[])
+          : null;
+        const perMatch = addedHeadings !== null && !isChildRun && joinedGroup;
+
+        const at = rowNumber !== null ? ` It is now row ${rowNumber}.` : "";
+        const summary = atBottom
+          ? `Added a heading row at the bottom of ${tab}, merged across its columns.${at}${
+              root.blankRowAbove === true
+                ? " A blank separator row was left directly above it."
+                : ""
+            }`
+          : !joinedGroup
+            ? // Nothing matched: still a success — the heading went to the bottom
+              // instead. In "per match" mode that also means NO fan-out happened,
+              // which the user chose "once per row" expecting.
+              `No rows in ${tab} matched the filter, so there was no group to head. The heading was added at the bottom of the tab instead.${at}${
+                addedHeadings !== null
+                  ? " Nothing was fanned out, so the steps after this one ran once."
+                  : ""
+              }`
+            : isChildRun && childTotal !== null
+              ? `Run ${childIndex} of ${childTotal} — this run is handling the heading below, one of the ${childTotal} this step added.`
+              : fannedOut !== null
+                ? fannedOut === 1
+                  ? `1 row in ${tab} matched the filter, and a heading was added directly below it. Started one run for it, so the steps after this one ran once.`
+                  : `${fannedOut} rows in ${tab} matched the filter, and a heading was added directly below each one. Started one run per heading, so the steps after this one ran ${fannedOut} times.`
+                : count === 1
+                  ? `Added a heading to ${tab}, directly below the row that matched.${at}`
+                  : `${count} rows in ${tab} matched the filter — they are the group. Added a heading directly below the last of them.${at}`;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>{summary}</SummaryMessage>
+            {atBottom ? null : (
+              <RowConditionsTable
+                conditions={conditionRows}
+                input={node.input}
+                unmatched={!joinedGroup}
+                unmatchedLabel="No rows matched these conditions, so the heading went to the bottom of the tab:"
+                // Not a failure — a heading was still written.
+                unmatchedTone="muted"
+              />
+            )}
+            {perMatch ? (
+              <RowsGrid
+                columns={["heading"]}
+                rows={addedHeadings as Record<string, string>[]}
+                rowLabels={addedRowNumbers?.map((n) => `Row ${n}`) ?? null}
+              />
+            ) : headingText ? (
+              <FieldTable
+                rows={[
+                  { label: "Heading", value: headingText },
+                  ...(rowNumber !== null
+                    ? [{ label: "Sheet row", value: rowNumber }]
+                    : []),
+                ]}
+              />
+            ) : null}
+          </div>
+        );
+      }
+
+      // A heading SEARCH. It returns no column grid — just which headings
+      // matched and where they are — so it renders as a short list rather than
+      // find_rows' spreadsheet view.
+      if (root?.action === "find_heading") {
+        const { headings, headingRowIndexes, onTab, nearMisses } =
+          readHeadingRun(root);
+        // matchCount is how many headings MATCHED; the mode may have narrowed
+        // what was acted on (first/last), which `headings` reflects.
+        const count =
+          typeof root.matchCount === "number"
+            ? root.matchCount
+            : headings.length;
+        const acted =
+          typeof root.actedCount === "number" ? root.actedCount : count;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {isChildRun && childTotal !== null
+                ? `Run ${childIndex} of ${childTotal} — this run is handling heading ${childIndex} of the ${childTotal} that matched.`
+                : // A fan-out only records a parent when ≥1 heading matched — a
+                  // 0-match run routes Not-found before fanning out — so
+                  // fannedOut is always ≥1 here.
+                  fannedOut !== null
+                  ? `${fannedOut} heading${fannedOut === 1 ? "" : "s"} in ${tab} matched. Started one run per heading, so the steps after this one ran ${fannedOut} time${fannedOut === 1 ? "" : "s"}.`
+                  : count === 0
+                    ? onTab === 0
+                      ? `${tab} has no heading rows at all, so there was nothing to search. ${noHeadingsHint(nearMisses)}`
+                      : onTab !== null
+                        ? `${tab} has ${onTab} heading row${onTab === 1 ? "" : "s"}, but none matched. Only the heading's own text is searched — check the search text and the step's Restraints.`
+                        : `No heading in ${tab} matched. Ordinary data rows are never searched by this step, so a matching data row wouldn't change this.`
+                    : acted < count
+                      ? `${count} headings in ${tab} matched; this step used only ${acted === 1 ? "one" : acted}, and the rest were ignored.`
+                      : count === 1
+                        ? `Found 1 heading in ${tab}.`
+                        : `Found ${count} headings in ${tab}.`}
+            </SummaryMessage>
+            <HeadingListView
+              headings={headings}
+              rowIndexes={headingRowIndexes}
+            />
+          </div>
+        );
+      }
+
+      // Renaming / restyling one section title.
+      if (root?.action === "update_heading") {
+        const matched = root.matched === true;
+        const before =
+          typeof root.previousHeading === "string" ? root.previousHeading : "";
+        const after =
+          typeof root.headingText === "string" ? root.headingText : "";
+        const rowNumber =
+          typeof root.rowIndex === "number" ? root.rowIndex : null;
+        const { onTab, nearMisses } = readHeadingRun(root);
+        const restyled = root.restyled === true;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {!matched
+                ? onTab === 0
+                  ? `${tab} has no heading rows at all, so there was nothing to update. ${noHeadingsHint(nearMisses)}`
+                  : `No heading in ${tab} matched, so nothing was changed. This step only ever touches heading rows — your data is never affected.`
+                : before !== after
+                  ? // Renamed, and possibly restyled on top.
+                    `Renamed the heading in ${tab} from “${before}” to “${after}”.${
+                      rowNumber !== null ? ` It is row ${rowNumber}.` : ""
+                    }${restyled ? " It was restyled too." : ""}`
+                  : restyled
+                    ? `Restyled the heading “${after}” in ${tab}.${
+                        rowNumber !== null ? ` It is row ${rowNumber}.` : ""
+                      }`
+                    : // Matched, but the new text was identical and no restyle
+                      // was asked for. Nothing changed, and the line must not
+                      // claim a formatting write that never happened.
+                      `The heading “${after}” in ${tab} already read exactly that, so nothing was changed.`}
+            </SummaryMessage>
+            {matched && before !== after ? (
+              <FieldTable
+                rows={[
+                  { label: "Was", value: before },
+                  { label: "Now", value: after },
+                  ...(rowNumber !== null
+                    ? [{ label: "Sheet row", value: rowNumber }]
+                    : []),
+                ]}
+              />
+            ) : null}
+          </div>
+        );
+      }
+
+      // Painting section titles one colour.
+      if (root?.action === "color_heading") {
+        const { headings, headingRowIndexes, onTab, nearMisses } =
+          readHeadingRun(root);
+        const matched =
+          typeof root.matchCount === "number"
+            ? root.matchCount
+            : headings.length;
+        const colored =
+          typeof root.coloredCount === "number"
+            ? root.coloredCount
+            : headings.length;
+        const color = typeof root.color === "string" ? root.color : null;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {isChildRun && childTotal !== null
+                ? `Run ${childIndex} of ${childTotal} — this run is handling the heading below, one of the ${childTotal} that were colored.`
+                : // fannedOut is always ≥1 here: a 0-match run routes No-match
+                  // before fanning out.
+                  fannedOut !== null
+                  ? `${fannedOut} heading${fannedOut === 1 ? "" : "s"} in ${tab} matched and ${fannedOut === 1 ? "was" : "were"} colored. Started one run per heading, so the steps after this one ran ${fannedOut} time${fannedOut === 1 ? "" : "s"}.`
+                  : colored === 0
+                    ? onTab === 0
+                      ? `${tab} has no heading rows at all, so nothing was colored. ${noHeadingsHint(nearMisses)}`
+                      : `No heading in ${tab} matched, so nothing was colored.`
+                    : matched > colored
+                      ? `${matched} headings in ${tab} matched, but only ${colored === 1 ? "one was" : `${colored} were`} colored.`
+                      : colored === 1
+                        ? `Colored 1 heading in ${tab}.`
+                        : `Colored ${colored} headings in ${tab}.`}
+            </SummaryMessage>
+            <HeadingListView
+              headings={headings}
+              rowIndexes={headingRowIndexes}
+              colors={color ? headings.map(() => color) : null}
+            />
           </div>
         );
       }
@@ -931,8 +1267,70 @@ const NodeRow = ({
         );
       }
 
-      if (root?.action === "insert_row_adjacent") {
-        // This action ALWAYS writes — there is no no-op outcome. What varies is
+      if (root?.action === "color_rows") {
+        const columns = Array.isArray(root.columns)
+          ? (root.columns as string[])
+          : [];
+        const rows = Array.isArray(root.rows)
+          ? (root.rows as Record<string, string>[])
+          : [];
+        const rowIndexes = Array.isArray(root.rowIndexes)
+          ? (root.rowIndexes as number[])
+          : [];
+        const colors = Array.isArray(root.colors)
+          ? (root.colors as string[])
+          : [];
+        const matched =
+          typeof root.matchCount === "number" ? root.matchCount : rows.length;
+        // How many were actually painted. Falls back to `matched` for runs
+        // recorded before the first/last modes existed (no `coloredCount`), when
+        // every match was always painted.
+        const colored =
+          typeof root.coloredCount === "number" ? root.coloredCount : matched;
+        // How many DISTINCT rules actually fired — worth saying, because the
+        // whole point of several rules is that different rows get different
+        // colors.
+        const distinctColors = new Set(colors).size;
+
+        return (
+          <div className="space-y-2">
+            <SummaryMessage>
+              {colored === 0
+                ? `No rows in ${tab} matched any color rule, so nothing was colored.`
+                : matched > colored
+                  ? // "first"/"last" mode: several matched, only one painted.
+                    `${matched} rows in ${tab} matched a color rule, but only one was colored.`
+                  : colored === 1
+                    ? `1 row in ${tab} matched a color rule and was colored.`
+                    : `${colored} rows in ${tab} matched a color rule and were colored${
+                        distinctColors > 1
+                          ? `, in ${distinctColors} different colors`
+                          : ""
+                      }. A row matching more than one rule takes the first rule's color.`}
+            </SummaryMessage>
+            {/* No RowConditionsTable here: this action has N rule filters, and
+                that table renders exactly one flat condition list — it cannot
+                state which rule claimed which row without misleading. */}
+            {columns.length > 0 && rows.length > 0 ? (
+              <RowsGrid
+                columns={columns}
+                rows={rows}
+                rowLabels={rowIndexes.map((n) => `Row ${n}`)}
+                rowColors={colors}
+              />
+            ) : null}
+          </div>
+        );
+      }
+
+      // A non-bottom append (position under_*), or a historical run recorded
+      // under the old `insert_row_adjacent` action before the two were merged.
+      if (
+        root?.action === "insert_row_adjacent" ||
+        (root?.action === "append_row" &&
+          (root.position ?? "bottom") !== "bottom")
+      ) {
+        // This path ALWAYS writes — there is no no-op outcome. What varies is
         // how many rows it wrote and where they went, so every line below states
         // both. The cases: nothing matched (one row starts a new group at the
         // bottom); one row went below the group; one row went below EACH match
@@ -943,7 +1341,6 @@ const NodeRow = ({
         const joinedGroup = root.insertedUnderGroup === true;
         const rowNumber =
           typeof root.rowIndex === "number" ? root.rowIndex : null;
-        const separated = root.blankSeparatorAdded === true;
         // Present only in "below every matching row" mode, and only on the
         // PARENT run — a child's reshaped output carries just its own row.
         const addedRows = Array.isArray(root.insertedRows)
@@ -962,9 +1359,7 @@ const NodeRow = ({
           ? // Nothing matched. Still a success — and in "per match" mode the
             // fan-out did NOT happen, which the user has to be told: they chose
             // "once per row", and the steps after this one ran exactly once.
-            `No rows in ${tab} matched the filter, so there was no group to add to. One new row was added at the bottom of the tab${
-              separated ? ", after a blank separator row" : ""
-            }, starting a group of its own.${at}${
+            `No rows in ${tab} matched the filter, so there was no group to add to. One new row was added at the bottom of the tab, starting a group of its own.${at}${
               addedRows !== null
                 ? " No rows matched, so nothing was fanned out — the steps after this one ran once."
                 : ""
@@ -1065,20 +1460,23 @@ const NodeRow = ({
     <div className="rounded-md border p-3">
       <div className="flex items-center gap-2">
         {getStatusIcon(node.status)}
-        <span className="text-sm font-medium">{node.nodeName}</span>
-        <span className="text-xs text-muted-foreground">{node.nodeType}</span>
+        <NodeTypeIcon
+          icon={nodeOptionByType[node.nodeType as NodeType]?.icon}
+        />
+        <span className="text-sm font-medium">{name}</span>
+        {subtitle ? (
+          <span className="text-xs text-muted-foreground">{subtitle}</span>
+        ) : null}
         <div className="ml-auto flex items-center gap-2">
           {node.durationMs != null ? (
             <span className="text-xs text-muted-foreground">
               {formatDuration(node.durationMs)}
             </span>
           ) : null}
-          {!isSkipped ? (
-            <ReplayFromNodeButton
-              executionId={executionId}
-              nodeId={node.nodeId}
-            />
-          ) : null}
+          <ReplayFromNodeButton
+            executionId={executionId}
+            nodeId={node.nodeId}
+          />
         </div>
       </div>
 
@@ -1109,12 +1507,64 @@ const NodeRow = ({
   );
 };
 
+/**
+ * The nodes that never ran, listed on their own beside the run.
+ *
+ * A run that finishes records a `NodeExecution` row for every node in the
+ * topological order, skipped ones included, so without this split a five-node
+ * run of a twenty-node workflow reads as twenty results. Name and logo only: a
+ * skipped node has no output and its input is just the context that passed it
+ * by, so there is nothing here worth expanding.
+ *
+ * Not a complete accounting of what didn't run: a failed run rethrows at the
+ * failing node (`runWorkflowNodes`), so nodes past it are never recorded at all
+ * and appear in neither column.
+ */
+const SkippedNodes = ({
+  nodes,
+  isReplay,
+}: {
+  nodes: { id: string; nodeType: string; name: string }[];
+  isReplay: boolean;
+}) => {
+  return (
+    <Card className="rounded-md shadow-none">
+      <CardHeader>
+        <CardTitle className="text-sm">Skipped ({nodes.length})</CardTitle>
+        <CardDescription>
+          {/* Two causes, one panel: a replay runs only the slice forward of the
+              replayed node, everything else is a branch that wasn't taken. */}
+          {isReplay
+            ? "Not part of this replay."
+            : "These nodes weren't reached in this run."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {nodes.map((node) => (
+          <div
+            key={node.id}
+            className="flex items-center gap-2 rounded-md border border-dashed p-2"
+          >
+            <NodeTypeIcon
+              icon={nodeOptionByType[node.nodeType as NodeType]?.icon}
+              className="opacity-60"
+            />
+            <span className="truncate text-sm text-muted-foreground">
+              {node.name}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+};
+
 // Suspense fallback for the execution detail route. Mirrors `ExecutionView`'s
 // card — status-icon header, the 2-col metadata grid, and a short stack of
 // node-row placeholders — so the real detail lands without a layout jump.
 export const ExecutionDetailLoading = () => {
   return (
-    <Card className="shadow-none">
+    <Card className="rounded-md shadow-none">
       <CardHeader>
         <div className="flex items-center gap-3">
           <Skeleton className="size-5 rounded-full" />
@@ -1144,7 +1594,7 @@ export const ExecutionDetailLoading = () => {
             <Skeleton
               // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder list
               key={index}
-              className="h-14 w-full rounded-xl"
+              className="h-14 w-full rounded-md"
             />
           ))}
         </div>
@@ -1163,6 +1613,46 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
       new Date(execution.startedAt).getTime()
     : null;
 
+  // The name each node goes by, by node id. `NodeExecution.nodeName` is a
+  // snapshot of `Node.name`, which is only ever the node TYPE string — the name
+  // the user gave the node is its `ref`, which lives on the workflow's nodes.
+  // Resolved through the same rule the editor and the variable picker use, so a
+  // node reads the same everywhere. A node deleted from the workflow since the
+  // run has no ref left to find and falls back to its registry label.
+  const nodeDisplayNames = useMemo(() => {
+    const refByNodeId = new Map(
+      execution.workflow.nodes.map((n) => [n.id, n.ref]),
+    );
+    return new Map(
+      execution.nodeExecutions.map((n) => [
+        n.nodeId,
+        displayNameFor(refByNodeId.get(n.nodeId), n.nodeType, nodeTypeLabel),
+      ]),
+    );
+  }, [execution.workflow.nodes, execution.nodeExecutions]);
+
+  // Only the nodes that actually ran belong in the run summary; the rest are
+  // listed separately (see `SkippedNodes`).
+  const ranNodes = useMemo(
+    () =>
+      execution.nodeExecutions.filter(
+        (n) => n.status !== NodeExecutionStatus.SKIPPED,
+      ),
+    [execution.nodeExecutions],
+  );
+
+  const skippedNodes = useMemo(
+    () =>
+      execution.nodeExecutions
+        .filter((n) => n.status === NodeExecutionStatus.SKIPPED)
+        .map((n) => ({
+          id: n.id,
+          nodeType: n.nodeType,
+          name: nodeDisplayNames.get(n.nodeId) ?? n.nodeType,
+        })),
+    [execution.nodeExecutions, nodeDisplayNames],
+  );
+
   // Map each context key to the node that wrote it, so a downstream node's input
   // can be labeled with its source node's name. A node's output diff is a single
   // namespaced key, so its first key is the context key it contributes.
@@ -1172,9 +1662,15 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
         if (!n.output || typeof n.output !== "object") return [];
         const contextKey = Object.keys(n.output)[0];
         if (!contextKey) return [];
-        return [{ contextKey, nodeType: n.nodeType, label: n.nodeName }];
+        return [
+          {
+            contextKey,
+            nodeType: n.nodeType,
+            label: nodeDisplayNames.get(n.nodeId) ?? n.nodeType,
+          },
+        ];
       }),
-    [execution.nodeExecutions],
+    [execution.nodeExecutions, nodeDisplayNames],
   );
 
   // Node types present in this run — lets the input view group "topLevel"
@@ -1195,153 +1691,179 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
   }, [execution.workflow.nodes]);
 
   return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          {getStatusIcon(execution.status)}
-          <div>
-            <CardTitle>{formatStatus(execution.status)}</CardTitle>
-            <CardDescription>
-              Execution for {execution.workflow.name}
-            </CardDescription>
-          </div>
-          <div className="ml-auto">
-            <RerunButton executionId={execution.id} />
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">
-              Workflow
-            </p>
-            <Link
-              prefetch
-              className="text-sm hover:underline text-primary"
-              href={`/workflows/${execution.workflowId}`}
-            >
-              {execution.workflow.name}
-            </Link>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Status</p>
-            <p className="text-sm">{formatStatus(execution.status)}</p>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Started</p>
-            <p className="text-sm">
-              {formatDistanceToNow(execution.startedAt, { addSuffix: true })}
-            </p>
-          </div>
-
-          {execution.completedAt ? (
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">
-                Completed
-              </p>
-              <p className="text-sm">
-                {formatDistanceToNow(execution.completedAt, {
-                  addSuffix: true,
-                })}
-              </p>
-            </div>
-          ) : null}
-
-          {totalDurationMs !== null ? (
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">
-                Duration
-              </p>
-              <p className="text-sm">{formatDuration(totalDurationMs)}</p>
-            </div>
-          ) : null}
-
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">
-              Event ID
-            </p>
-            <p className="text-sm">{execution.inngestEventId}</p>
-          </div>
-        </div>
-
-        {execution.nodeExecutions.length > 0 && (
-          <div className="mt-6 space-y-2">
-            <p className="text-sm font-medium">Nodes</p>
-            {execution.nodeExecutions.map((node) => (
-              <NodeRow
-                key={node.id}
-                node={node}
-                executionId={execution.id}
-                producers={producers}
-                runNodeTypes={runNodeTypes}
-                config={configByNodeId.get(node.nodeId)}
-              />
-            ))}
-          </div>
-        )}
-
-        {execution.error && (
-          <div className="mt-6 p-4 bg-red-50 rounded-md space-y-3">
-            <div>
-              <p className="text-sm font-medium text-red-900 mb-2">Error</p>
-              <p className="text-sm text-red-800 font-mono">
-                {execution.error}
-              </p>
-            </div>
-
-            {execution.errorStack && (
-              <Collapsible
-                open={showStackTrace}
-                onOpenChange={setShowStackTrace}
-              >
-                <CollapsibleTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-red-900 hover:bg-red-100"
-                  >
-                    {showStackTrace ? "Hide stack trace" : "Show stack trace"}
-                  </Button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <pre className="text-xs font-mono text-red-800 overflow-auto mt-2 p-2 bg-red-100">
-                    {execution.errorStack}
-                  </pre>
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-          </div>
-        )}
-
-        {execution.output != null && (
-          <div className="mt-6 p-4 bg-muted rounded-md">
-            <Collapsible
-              open={showFinalOutput}
-              onOpenChange={setShowFinalOutput}
-            >
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Final output</p>
-                <div className="flex items-center gap-1">
-                  <CopyJsonButton value={execution.output} />
-                  <CollapsibleTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-7 px-2">
-                      {showFinalOutput ? "Hide data" : "Show data"}
-                    </Button>
-                  </CollapsibleTrigger>
-                </div>
+    // The run summary takes the page's width, the skipped list the gutter beside
+    // it; below lg the aside stacks under the summary.
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="min-w-0 flex-1">
+        {/* `rounded-md` over the Card default, so the summary box and the node
+            rows inside it share one corner radius. */}
+        <Card className="rounded-md shadow-none">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              {getStatusIcon(execution.status)}
+              <div>
+                <CardTitle>{formatStatus(execution.status)}</CardTitle>
+                <CardDescription>
+                  Execution for {execution.workflow.name}
+                </CardDescription>
               </div>
-              <CollapsibleContent className="mt-2">
-                <pre className="text-xs font-mono overflow-auto">
-                  {JSON.stringify(execution.output, null, 2)}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+              <div className="ml-auto">
+                <RerunButton executionId={execution.id} />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Workflow
+                </p>
+                <Link
+                  prefetch
+                  className="text-sm hover:underline text-primary"
+                  href={`/workflows/${execution.workflowId}`}
+                >
+                  {execution.workflow.name}
+                </Link>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Status
+                </p>
+                <p className="text-sm">{formatStatus(execution.status)}</p>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Started
+                </p>
+                <p className="text-sm">
+                  {formatDistanceToNow(execution.startedAt, {
+                    addSuffix: true,
+                  })}
+                </p>
+              </div>
+
+              {execution.completedAt ? (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Completed
+                  </p>
+                  <p className="text-sm">
+                    {formatDistanceToNow(execution.completedAt, {
+                      addSuffix: true,
+                    })}
+                  </p>
+                </div>
+              ) : null}
+
+              {totalDurationMs !== null ? (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Duration
+                  </p>
+                  <p className="text-sm">{formatDuration(totalDurationMs)}</p>
+                </div>
+              ) : null}
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Event ID
+                </p>
+                <p className="text-sm">{execution.inngestEventId}</p>
+              </div>
+            </div>
+
+            {ranNodes.length > 0 && (
+              <div className="mt-6 space-y-2">
+                <p className="text-sm font-medium">Nodes</p>
+                {ranNodes.map((node) => (
+                  <NodeRow
+                    key={node.id}
+                    node={node}
+                    name={nodeDisplayNames.get(node.nodeId) ?? node.nodeType}
+                    executionId={execution.id}
+                    producers={producers}
+                    runNodeTypes={runNodeTypes}
+                    config={configByNodeId.get(node.nodeId)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {execution.error && (
+              <div className="mt-6 p-4 bg-red-50 rounded-md space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-red-900 mb-2">Error</p>
+                  <p className="text-sm text-red-800 font-mono">
+                    {execution.error}
+                  </p>
+                </div>
+
+                {execution.errorStack && (
+                  <Collapsible
+                    open={showStackTrace}
+                    onOpenChange={setShowStackTrace}
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-900 hover:bg-red-100"
+                      >
+                        {showStackTrace
+                          ? "Hide stack trace"
+                          : "Show stack trace"}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <pre className="text-xs font-mono text-red-800 overflow-auto mt-2 p-2 bg-red-100">
+                        {execution.errorStack}
+                      </pre>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+              </div>
+            )}
+
+            {execution.output != null && (
+              <div className="mt-6 p-4 bg-muted rounded-md">
+                <Collapsible
+                  open={showFinalOutput}
+                  onOpenChange={setShowFinalOutput}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Final output</p>
+                    <div className="flex items-center gap-1">
+                      <CopyJsonButton value={execution.output} />
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-7 px-2">
+                          {showFinalOutput ? "Hide data" : "Show data"}
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+                  </div>
+                  <CollapsibleContent className="mt-2">
+                    <pre className="text-xs font-mono overflow-auto">
+                      {JSON.stringify(execution.output, null, 2)}
+                    </pre>
+                  </CollapsibleContent>
+                </Collapsible>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {skippedNodes.length > 0 ? (
+        <aside className="lg:sticky lg:top-6 lg:w-72 lg:shrink-0">
+          <SkippedNodes
+            nodes={skippedNodes}
+            isReplay={execution.replayOfId != null}
+          />
+        </aside>
+      ) : null}
+    </div>
   );
 };

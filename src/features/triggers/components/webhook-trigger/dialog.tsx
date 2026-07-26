@@ -4,13 +4,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CopyIcon, RefreshCwIcon } from "lucide-react";
 import { useParams } from "next/navigation";
 import { toast } from "sonner";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,11 +19,16 @@ import { useTRPC } from "@/trpc/client";
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
 }
 
 const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
-export const WebhookTriggerDialog = ({ open, onOpenChange }: Props) => {
+export const WebhookTriggerDialog = ({
+  open,
+  onOpenChange,
+  currentNodeId,
+}: Props) => {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const params = useParams();
@@ -62,7 +67,7 @@ export const WebhookTriggerDialog = ({ open, onOpenChange }: Props) => {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Webhook Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Send a POST request to this URL to run the workflow. The request
             body is available to downstream nodes as{" "}

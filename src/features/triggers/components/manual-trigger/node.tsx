@@ -1,9 +1,9 @@
 import type { NodeProps } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseTriggerNode } from "../base-trigger-node";
 
-const ManualTriggerDialog = dynamic(() =>
+const ManualTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.ManualTriggerDialog),
 );
 
@@ -23,7 +23,11 @@ export const ManualTriggerNode = memo((props: NodeProps) => {
   return (
     <>
       {dialogOpen && (
-        <ManualTriggerDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+        <ManualTriggerDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          currentNodeId={props.id}
+        />
       )}
       <BaseTriggerNode
         {...props}

@@ -6,6 +6,7 @@ import Image from "next/image";
 import { memo, type ReactNode } from "react";
 import { BaseHandle } from "@/components/react-flow/base-handle";
 import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
+import { CannotRunBadge } from "@/components/react-flow/cannot-run-badge";
 import { NeedsConfigBadge } from "@/components/react-flow/needs-config-badge";
 import { NodeFailureBadge } from "@/components/react-flow/node-failure-badge";
 import {
@@ -13,9 +14,14 @@ import {
   NodeStatusIndicator,
 } from "@/components/react-flow/node-status-indicator";
 import { WorkflowNode } from "@/components/workflow-node";
+import { readNodeRef } from "@/lib/node-ref";
 
 interface BaseExecutionNodeProps extends NodeProps {
   icon: LucideIcon | string;
+  /**
+   * The node type's static label ("AI Text"). Used as the image alt text and as
+   * the visible caption only until a ref exists — see the caption note below.
+   */
   name: string;
   description?: string;
   children?: ReactNode;
@@ -36,6 +42,7 @@ const DEFAULT_OUTPUTS = [{ id: "source-1" }];
 export const BaseExecutionNode = memo(
   ({
     id,
+    data,
     icon: Icon,
     name,
     description,
@@ -55,12 +62,26 @@ export const BaseExecutionNode = memo(
       void deleteElements({ nodes: [{ id }] });
     };
 
+    // The caption IS the ref (`AI_TEXT_1`) — the same string the variable picker
+    // groups by and the same one `@<AI_TEXT_1.output>@` names — so a node is
+    // identified by one token everywhere and two nodes of a type are never
+    // indistinguishable. Renaming lives in the node's settings dialog (its
+    // `<EditableNodeTitle>`), not here. Every non-trigger node renders through
+    // this component and every non-trigger type is ref-eligible, so the `name`
+    // fallback is only reached by a node whose ref hasn't been assigned yet (a
+    // pre-ref workflow still awaiting its first save).
+    const caption = readNodeRef(data) ?? name;
+
     return (
-      <WorkflowNode name={name} onDelete={handleDelete} onSettings={onSettings}>
+      <WorkflowNode
+        name={caption}
+        onDelete={handleDelete}
+        onSettings={onSettings}
+      >
         <NodeStatusIndicator
           status={status}
           variant="border"
-          className="rounded-2xl"
+          className="rounded-[18px]"
         >
           <BaseNode
             status={status}
@@ -68,6 +89,7 @@ export const BaseExecutionNode = memo(
             className="relative size-20 rounded-2xl"
           >
             <NeedsConfigBadge nodeId={id} />
+            <CannotRunBadge nodeId={id} />
             {status === "error" ? <NodeFailureBadge nodeId={id} /> : null}
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (

@@ -44,14 +44,28 @@ vi.mock("@aws-sdk/client-s3", () => ({
       this.input = input;
     }
   },
+  DeleteObjectCommand: class {
+    kind = "deleteOne";
+    input: unknown;
+    constructor(input: unknown) {
+      this.input = input;
+    }
+  },
 }));
+
+/** Stands in for the SDK's streaming body, which only exposes async readers. */
+const responseBody = (text: string) => ({
+  transformToByteArray: async () => new TextEncoder().encode(text),
+});
 
 vi.mock("@aws-sdk/s3-request-presigner", () => ({
   getSignedUrl: getSignedUrlMock,
 }));
 
 import {
+  deleteBlob,
   deleteBlobsByPrefix,
+  getBlobBytes,
   getBlobJson,
   getSignedBlobUrl,
   isBlobConfigured,
@@ -210,9 +224,7 @@ describe("getSignedBlobUrl", () => {
 
 describe("getBlobJson", () => {
   it("downloads and parses the object body", async () => {
-    sendMock.mockResolvedValueOnce({
-      Body: { transformToString: async () => '{"a":1}' },
-    });
+    sendMock.mockResolvedValueOnce({ Body: responseBody('{"a":1}') });
     await expect(getBlobJson("replay-contexts/e1/n1.json")).resolves.toEqual({
       a: 1,
     });
@@ -228,6 +240,45 @@ describe("getBlobJson", () => {
   it("throws when the object has no body", async () => {
     sendMock.mockResolvedValueOnce({});
     await expect(getBlobJson("missing.json")).rejects.toThrow(/no body/);
+  });
+});
+
+describe("getBlobBytes", () => {
+  it("returns the raw bytes alongside the stored content type", async () => {
+    sendMock.mockResolvedValueOnce({
+      Body: responseBody("PNGDATA"),
+      ContentType: "image/png",
+    });
+
+    const result = await getBlobBytes("avatars/u1/abc.png");
+
+    expect(new TextDecoder().decode(result.bytes)).toBe("PNGDATA");
+    expect(result.contentType).toBe("image/png");
+  });
+
+  it("falls back to a generic content type when the object has none", async () => {
+    sendMock.mockResolvedValueOnce({ Body: responseBody("x") });
+    await expect(getBlobBytes("avatars/u1/abc.png")).resolves.toMatchObject({
+      contentType: "application/octet-stream",
+    });
+  });
+});
+
+describe("deleteBlob", () => {
+  it("deletes exactly the one key it was given", async () => {
+    sendMock.mockResolvedValueOnce({});
+
+    await deleteBlob("avatars/u1/old.webp");
+
+    const sent = sendMock.mock.calls[0][0] as {
+      kind: string;
+      input: Record<string, unknown>;
+    };
+    expect(sent.kind).toBe("deleteOne");
+    expect(sent.input).toMatchObject({
+      Bucket: "guideboard-blobs",
+      Key: "avatars/u1/old.webp",
+    });
   });
 });
 

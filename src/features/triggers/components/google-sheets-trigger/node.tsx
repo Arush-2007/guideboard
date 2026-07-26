@@ -1,24 +1,29 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { BaseTriggerNode } from "../base-trigger-node";
-import type { GoogleSheetsTriggerFormValues } from "./dialog";
+import type { GoogleSheetsTriggerSubmitValues } from "./dialog";
 
-const GoogleSheetsTriggerDialog = dynamic(() =>
+const GoogleSheetsTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.GoogleSheetsTriggerDialog),
 );
 
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
+import type { RowScope } from "@/lib/sheet-heading";
 
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_TRIGGER);
 
 type GoogleSheetsTriggerNodeData = {
   spreadsheetId?: string;
   sheetName?: string;
+  triggerOn?: "added" | "updated" | "added_or_updated";
+  rowScope?: RowScope;
+  ignoreColumns?: string[];
+  discoveredFields?: { path: string; label: string }[];
 };
 
 type GoogleSheetsTriggerFlowNode = Node<GoogleSheetsTriggerNodeData>;
@@ -32,7 +37,7 @@ export const GoogleSheetsTriggerNode = memo(
 
     const handleOpenSettings = () => setDialogOpen(true);
 
-    const handleSubmit = (values: GoogleSheetsTriggerFormValues) => {
+    const handleSubmit = (values: GoogleSheetsTriggerSubmitValues) => {
       setNodes((nodes) =>
         nodes.map((node) => {
           if (node.id === props.id) {
@@ -49,8 +54,12 @@ export const GoogleSheetsTriggerNode = memo(
       );
     };
 
+    // Name the scope on the canvas: watching a tab's section titles and watching
+    // its data are different enough that two such nodes shouldn't read alike.
     const description = props.data?.sheetName
-      ? `Watching ${props.data.sheetName}`
+      ? props.data.rowScope === "headings"
+        ? `Watching ${props.data.sheetName} headings`
+        : `Watching ${props.data.sheetName}`
       : "Not configured";
 
     return (
@@ -59,6 +68,7 @@ export const GoogleSheetsTriggerNode = memo(
           <GoogleSheetsTriggerDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            currentNodeId={props.id}
             onSubmit={handleSubmit}
             defaultValues={props.data}
           />

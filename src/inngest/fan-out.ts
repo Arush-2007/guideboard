@@ -61,9 +61,11 @@ export type FanOutDispatchPlan = {
  *   sees `{ item, index, total, __fanOut }` where the parent saw its summary.
  * - `idempotencyKey` includes `nodeId` so two fan-out nodes in the same
  *   execution can't collide, and `i` so items within a node stay distinct.
- *   Format consumer: `fanOutItemNumber` in
- *   src/features/executions/components/executions.tsx parses this key for the
- *   lineage badge — change the shape there too.
+ *   The key is stored verbatim — `sendWorkflowExecution` adds no prefix, since
+ *   workflow scoping is held by the `@@unique([workflowId, idempotencyKey])`
+ *   constraint rather than by the key's text. Format consumer:
+ *   `fanOutItemNumber` in src/features/executions/components/executions.tsx
+ *   parses this key for the lineage badge — change the shape there too.
  * - `blobKey` sits under the existing `replay-contexts/${executionId}/` prefix
  *   so `pruneOldExecutions`'s blob GC drops it with zero new wiring.
  * - `oversized` is true when the inline seed would exceed `inlineLimitBytes`;

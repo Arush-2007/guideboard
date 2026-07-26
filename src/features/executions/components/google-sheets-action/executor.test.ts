@@ -52,13 +52,14 @@ vi.mock("@/inngest/channels/node-status", () => ({
 import {
   type FanOutOutcome,
   isFanOut,
+  isRouted,
   type NodeExecutorParams,
 } from "@/features/executions/types";
 import { encodeCustomFeatureToken } from "@/lib/custom-feature-token";
 import { googleSheetsActionExecutor } from "./executor";
 
 // Records the step names the executor checkpoints under. Which work lands in
-// WHICH step is a correctness property here (insert_row_adjacent splits its
+// WHICH step is a correctness property here (an under-group append splits its
 // insert from its write so an Inngest retry of the write replays the memoized
 // insert instead of opening a second row), so the tests can assert on it.
 let stepNames: string[];
@@ -75,12 +76,34 @@ const publish = (async (msg: { status: string }) => {
 }) as unknown as NodeExecutorParams["publish"];
 
 // readSheetTable does `ky.get(url).json<T>()` — return the values payload.
-function mockRead(values: unknown[][]) {
-  kyGetMock.mockReturnValue({ json: async () => ({ values }) });
+/**
+ * Tab titles the fixtures in this file use. `mockRead` answers getSheetGrid with
+ * all of them, so a read test needn't restate which tab it is on — every
+ * row-reading action now looks the tab's merges up to tell headings from data,
+ * and `getSheetGrid` throws when the title is absent.
+ */
+const FIXTURE_TABS = ["Ledger", "Master", "Grouped", "Jobs", "Sheet1"];
+
+function mockRead(values: unknown[][], merges: unknown[] = []) {
+  kyGetMock.mockImplementation((url: string) => ({
+    json: async () =>
+      url.includes("/values/")
+        ? { values }
+        : {
+            sheets: FIXTURE_TABS.map((title, i) => ({
+              properties: {
+                sheetId: i,
+                title,
+                gridProperties: { rowCount: 1000 },
+              },
+              merges,
+            })),
+          },
+  }));
 }
 
 // As mockRead, but also answers getSheetGrid's metadata GET (same ky.get, a
-// different URL). insert_row_adjacent needs both: the tab's numeric sheetId to
+// different URL). An under-group append needs both: the tab's numeric sheetId to
 // address it in a structural batchUpdate, and its grid HEIGHT to know whether
 // the row it wants to insert into even exists yet.
 function mockReadWithGrid(
@@ -88,7 +111,8 @@ function mockReadWithGrid(
   {
     sheetId = 77,
     rowCount = 1000,
-  }: { sheetId?: number; rowCount?: number } = {},
+    title = "Grouped",
+  }: { sheetId?: number; rowCount?: number; title?: string } = {},
 ) {
   kyGetMock.mockImplementation((url: string) => ({
     json: async () =>
@@ -99,13 +123,23 @@ function mockReadWithGrid(
               {
                 properties: {
                   sheetId,
-                  title: "Grouped",
+                  title,
                   gridProperties: { rowCount },
                 },
               },
             ],
           },
   }));
+}
+
+/** The single ValueRange of an absolute-range write (values:batchUpdate). */
+function writtenRange(index: number) {
+  const body = postBody(index);
+  const [first] = (body.data ?? []) as Array<{
+    range: string;
+    values: unknown[][];
+  }>;
+  return { url: body.url, range: first?.range, values: first?.values };
 }
 
 /**
@@ -132,6 +166,7 @@ type SheetsResult = Record<
   {
     action: string;
     appendedRows?: number;
+    blankRowAbove?: boolean;
     row?: string[];
     rowByHeader?: Record<string, string>;
     matchCount?: number;
@@ -143,9 +178,25 @@ type SheetsResult = Record<
     rowIndex?: number;
     previousRow?: Record<string, string>;
     insertedUnderGroup?: boolean;
-    blankSeparatorAdded?: boolean;
     anchorRow?: Record<string, string>;
     insertedRows?: Record<string, string>[];
+    // append_heading
+    headingText?: string;
+    mergedColumns?: number;
+    // find_heading / update_heading / color_heading
+    headings?: string[];
+    headingRowIndexes?: number[];
+    firstHeading?: string;
+    headingsOnTab?: number;
+    nearMisses?: number;
+    actedCount?: number;
+    previousHeading?: string;
+    restyled?: boolean;
+    color?: string;
+    // color_rows
+    rowIndexes?: number[];
+    colors?: string[];
+    coloredCount?: number;
   }
 >;
 
@@ -163,6 +214,23 @@ const run = (
     publish,
   } as unknown as NodeExecutorParams) as Promise<SheetsResult>;
 
+// find_rows and update_row now BRANCH: they return a routed outcome (Found /
+// Not-found, Updated / No-match) whose context holds the same output shape the
+// tests assert on, or a fan-out outcome in "each" mode. `ctx` unwraps either
+// back to the plain result the assertions expect; `outputs` reads the active
+// handle set off a routed outcome.
+function ctx(outcome: unknown): SheetsResult {
+  return (
+    isRouted(outcome) || isFanOut(outcome)
+      ? (outcome as { context: unknown }).context
+      : outcome
+  ) as SheetsResult;
+}
+function outputs(outcome: unknown): string[] {
+  if (!isRouted(outcome)) throw new Error("expected a routed outcome");
+  return outcome.outputs;
+}
+
 const serialToken = encodeCustomFeatureToken("serialNumber", {
   start: 1,
   pad: 4,
@@ -177,11 +245,14 @@ beforeEach(() => {
 });
 
 describe("googleSheetsActionExecutor — append with mappings", () => {
-  it("appends a mapped row and emits apostrophe-free, dot-stripped rowByHeader", async () => {
-    mockRead([
-      ["Job No.", "Name"],
-      ["0001", "X"],
-    ]);
+  it("writes the row to its ABSOLUTE range, never :append", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
 
     const result = await run(
       {
@@ -196,13 +267,228 @@ describe("googleSheetsActionExecutor — append with mappings", () => {
       { telegram: { from: { firstName: "Ada" } } },
     );
 
+    // ONE write, to a fixed A1 range. `:append` picks its own destination by
+    // "finding a table", which mis-anchors the column and duplicates on retry.
     expect(kyPostMock).toHaveBeenCalledOnce();
+    const w = writtenRange(0);
+    expect(w.url).toContain("values:batchUpdate");
+    expect(w.url).not.toContain(":append");
+    // Header row + 1 data row ⇒ the first free row is 3.
+    expect(w.range).toBe("'Master'!A3:ZZ3");
+    expect(w.values).toEqual([["'0002", "Ada"]]);
+
+    // append_row does NOT branch — it returns a plain context, not a routed
+    // outcome (only find_rows / update_row gained outputs).
+    expect(isRouted(result)).toBe(false);
+    expect(isFanOut(result)).toBe(false);
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.appendedRows).toBe(1);
+    // The row number is now chosen by us, so it is exact rather than a guess.
+    expect(out.rowIndex).toBe(3);
     // serialAsText → '0002 written; rowByHeader strips the apostrophe + dot.
     expect(out.row).toEqual(["'0002", "Ada"]);
     expect(out.rowByHeader).toEqual({ "Job No": "0002", Name: "Ada" });
     expect(publishedStatuses).toContain("success");
+  });
+
+  it("writes a BLANK row when no column is mapped (every cell empty)", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    const result = await run({
+      action: "append_row",
+      spreadsheetId: "s",
+      sheetName: "Master",
+      // No columnMappings at all — a deliberately blank row.
+    });
+
+    // Two writes: the (empty) values, then a repaint of that blank row to white
+    // so it can't show the sheet's alternating-row banding.
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+    const w = writtenRange(0);
+    expect(w.range).toBe("'Master'!A3:ZZ3");
+    expect(w.values).toEqual([["", ""]]);
+
+    // Row 3 (grid row 2) painted solid white across the 2-column header band.
+    const whiten = postBody(1);
+    expect(whiten.url).toContain(":batchUpdate");
+    expect(whiten.url).not.toContain("values:batchUpdate");
+    expect(whiten.requests).toEqual([
+      {
+        repeatCell: {
+          range: {
+            sheetId: 77,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 0,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+            },
+          },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      },
+    ]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.appendedRows).toBe(1);
+    expect(out.rowByHeader).toEqual({ "Job No": "", Name: "" });
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("does NOT whiten a MAPPED row whose values render empty (intent, not content)", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    // The node maps a column, so it is a DATA row by intent — even though the
+    // template resolves to "" this run (no `who` in context). Whitening is keyed
+    // on config, not the rendered result, so the row keeps the sheet's banding
+    // rather than being forced white just because its data came out empty.
+    const result = await run({
+      action: "append_row",
+      spreadsheetId: "s",
+      sheetName: "Master",
+      columnMappings: { Name: "@<who>@" },
+    });
+
+    // Just the value write — no whitening batchUpdate.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const w = writtenRange(0);
+    expect(w.range).toBe("'Master'!A3:ZZ3");
+    expect(w.values).toEqual([["", ""]]);
+
+    expect(result.GOOGLE_SHEETS_ACTION_1.appendedRows).toBe(1);
+  });
+
+  it("blankRowAbove skips a row instead of writing an empty one", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    const result = await run(
+      {
+        action: "append_row",
+        spreadsheetId: "s",
+        sheetName: "Master",
+        blankRowAbove: true,
+        columnMappings: { Name: "@<who>@" },
+      },
+      { who: "Ada" },
+    );
+
+    // The separator is a row we LEAVE EMPTY (row 3); the data goes one lower.
+    // Nothing empty is sent to Sheets — an all-empty payload row is exactly what
+    // made `:append` mis-place the data seven columns to the right.
+    //
+    // Two writes: the data row (row 4), then a repaint of the blank separator
+    // (row 3) to white so the gap can't inherit the sheet's banding.
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+    const w = writtenRange(0);
+    expect(w.range).toBe("'Master'!A4:ZZ4");
+    expect(w.values).toEqual([["", "Ada"]]);
+
+    // The separator sits at sheet row 3 → grid row 2, painted white; the data row
+    // itself (row 4, with content) is NOT whitened.
+    const whiten = postBody(1);
+    expect(whiten.url).toContain(":batchUpdate");
+    expect(whiten.url).not.toContain("values:batchUpdate");
+    expect(whiten.requests).toEqual([
+      {
+        repeatCell: {
+          range: {
+            sheetId: 77,
+            startRowIndex: 2,
+            endRowIndex: 3,
+            startColumnIndex: 0,
+            endColumnIndex: 2,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+            },
+          },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      },
+    ]);
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.appendedRows).toBe(1);
+    expect(out.rowIndex).toBe(4);
+    expect(out.rowByHeader).toEqual({ "Job No": "", Name: "Ada" });
+    expect(out.blankRowAbove).toBe(true);
+  });
+
+  it("no row is skipped when blankRowAbove is off", async () => {
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master" },
+    );
+
+    const result = await run(
+      {
+        action: "append_row",
+        spreadsheetId: "s",
+        sheetName: "Master",
+        columnMappings: { Name: "@<who>@" },
+      },
+      { who: "Ada" },
+    );
+
+    expect(writtenRange(0).range).toBe("'Master'!A3:ZZ3");
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(3);
+    expect(result.GOOGLE_SHEETS_ACTION_1.blankRowAbove).toBe(false);
+  });
+
+  it("grows the grid when the tab is trimmed shorter than the target row", async () => {
+    // A tab trimmed to exactly its 2 rows: the target row 3 doesn't exist yet.
+    // `values:batchUpdate` (unlike :append) will NOT expand a sheet, so the grid
+    // has to be grown first or the write falls outside it.
+    mockReadWithGrid(
+      [
+        ["Job No.", "Name"],
+        ["0001", "X"],
+      ],
+      { title: "Master", rowCount: 2, sheetId: 12 },
+    );
+
+    const result = await run({
+      action: "append_row",
+      spreadsheetId: "s",
+      sheetName: "Master",
+      columnMappings: { Name: "Ada" },
+    });
+
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+    // First the structural growth…
+    const grow = postBody(0);
+    expect(grow.url).toContain(":batchUpdate");
+    expect(grow.requests).toEqual([
+      { appendDimension: { sheetId: 12, dimension: "ROWS", length: 1 } },
+    ]);
+    // …then the absolute write into the row that now exists.
+    expect(writtenRange(1).range).toBe("'Master'!A3:ZZ3");
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(3);
   });
 
   it("throws NonRetriableError naming a blank required column", async () => {
@@ -272,7 +558,11 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
     });
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // ≥1 match → routed down Found, with the legacy aliases for old workflows.
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["found", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(2); // Ada (10) and Cy (5)
     expect(out.columns).toEqual(["Name", "Buyer", "Pending"]);
     expect(out.rows).toEqual([
@@ -304,7 +594,7 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       range: "A1:B2",
     });
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.action).toBe("find_rows");
     // No conditions ⇒ every row matches — the closest surviving equivalent.
     expect(out.matchCount).toBe(2);
@@ -328,7 +618,9 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       conditions: [{ column: "Pending", operator: "greater_than", value: "0" }],
     });
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // 0 matches → routed down Not-found (only — no legacy aliases on this path).
+    expect(outputs(result)).toEqual(["notfound"]);
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(0);
     expect(out.columns).toEqual(["Name", "Pending"]);
     expect(out.rows).toEqual([]);
@@ -369,7 +661,108 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
       onMultipleMatches: "error",
     });
-    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
+    expect(outputs(result)).toContain("found");
+    expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
+  });
+
+  it("'last' resolves firstRow to the BOTTOM-most match, keeping every other field", async () => {
+    mockRead([
+      ["Name", "Buyer", "Pending"],
+      ["Ada", "Acme", "10"],
+      ["Bo", "Globex", "3"],
+      ["Cy", "Acme", "5"],
+    ]);
+
+    const config = {
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+    };
+
+    const lastOutcome = await run({ ...config, onMultipleMatches: "last" });
+    const last = ctx(lastOutcome).GOOGLE_SHEETS_ACTION_1;
+    const first = ctx(
+      await run({ ...config, onMultipleMatches: "first" }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(last.firstRow).toEqual({ Name: "Cy", Buyer: "Acme", Pending: "5" });
+    expect(first.firstRow).toEqual({
+      Name: "Ada",
+      Buyer: "Acme",
+      Pending: "10",
+    });
+    // Only the acted-on row differs: the match list, the count and the
+    // unique-value lists describe ALL matches in both modes.
+    expect(last.matchCount).toBe(2);
+    expect(last.rows).toEqual(first.rows);
+    expect(last.columnValues).toEqual(first.columnValues);
+    // Still a single, non-fan-out run down the Found branch.
+    expect(isFanOut(lastOutcome)).toBe(false);
+    expect(outputs(lastOutcome)).toContain("found");
+  });
+
+  it("'last' with a single match behaves exactly like 'first'", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Acme"],
+      ["Cy", "Globex"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "last",
+    });
+
+    expect(outputs(result)).toContain("found");
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(1);
+    expect(out.firstRow).toEqual({ Name: "Ada", Buyer: "Acme" });
+  });
+
+  it("'last' with zero matches routes Not-found with an empty firstRow", async () => {
+    mockRead([
+      ["Name", "Buyer"],
+      ["Ada", "Globex"],
+    ]);
+
+    const result = await run({
+      action: "find_rows",
+      spreadsheetId: "s",
+      sheetName: "Ledger",
+      conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+      onMultipleMatches: "last",
+    });
+
+    expect(outputs(result)).toEqual(["notfound"]);
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.firstRow).toEqual({});
+  });
+
+  it("'last' stores the TAIL of the matches, so firstRow is inside the capped rows", async () => {
+    const rows = Array.from({ length: 120 }, (_, i) => [`P${i}`, "Acme"]);
+    mockRead([["Name", "Buyer"], ...rows]);
+
+    const out = ctx(
+      await run({
+        action: "find_rows",
+        spreadsheetId: "s",
+        sheetName: "Ledger",
+        conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
+        onMultipleMatches: "last",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(120);
+    // The stored window is the LAST 100 (P20…P119), not the first — otherwise
+    // the row the run acted on would be missing from the grid it reports.
+    expect(out.rows).toHaveLength(100);
+    expect((out.rows as { Name: string }[])[0].Name).toBe("P20");
+    expect(out.firstRow).toEqual({ Name: "P119", Buyer: "Acme" });
   });
 
   it("ANDs conditions and resolves in_list from a templated value", async () => {
@@ -392,7 +785,7 @@ describe("googleSheetsActionExecutor — find_rows", () => {
       { ctx: { buyers: JSON.stringify(["Acme"]) } },
     );
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matchCount).toBe(2);
     expect(out.rows).toEqual([
       { Name: "Ada", Buyer: "Acme" },
@@ -480,22 +873,26 @@ describe("googleSheetsActionExecutor — find_rows multi-match fan-out", () => {
     expect(publishedStatuses).toContain("error");
   });
 
-  it("'each' with zero matches fans out zero children", async () => {
+  it("'each' with zero matches routes Not-found instead of fanning out", async () => {
     mockRead([
       ["Name", "Buyer"],
       ["Ada", "Globex"],
     ]);
 
-    const outcome = (await run({
+    const outcome = await run({
       action: "find_rows",
       spreadsheetId: "s",
       sheetName: "Ledger",
       conditions: [{ column: "Buyer", operator: "equals", value: "Acme" }],
       onMultipleMatches: "each",
-    })) as unknown as FanOutOutcome;
+    });
 
-    expect(isFanOut(outcome)).toBe(true);
-    expect(outcome.items).toEqual([]);
+    // A 0-match run must NOT fan out: zero children would mark the whole
+    // downstream sub-graph SKIPPED, when the Not-found branch is exactly what
+    // should run. So even in "each" mode, no matches routes Not-found.
+    expect(isFanOut(outcome)).toBe(false);
+    expect(outputs(outcome)).toEqual(["notfound"]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(0);
   });
 
   it("child run short-circuits on its seed: no Sheets call, first-match-shaped output", async () => {
@@ -519,7 +916,11 @@ describe("googleSheetsActionExecutor — find_rows multi-match fan-out", () => {
 
     expect(kyGetMock).not.toHaveBeenCalled();
     expect(refreshTokenMock).not.toHaveBeenCalled();
-    const out = result.GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>;
+    // A child carries a matched row, so it flows down Found (with legacy aliases).
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["found", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>;
     // Same reference shape as a single "first"-mode match — plus the kept
     // marker so retries still short-circuit and nested guards still trip.
     expect(out.firstRow).toEqual({ Name: "Bo", Buyer: "Acme" });
@@ -621,7 +1022,11 @@ describe("googleSheetsActionExecutor — update_row", () => {
       "google-sheets-update-write",
     ]);
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // A row was written → routed down Updated, with the legacy aliases.
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["updated", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matched).toBe(true);
     expect(out.matchCount).toBe(1);
     expect(out.rowIndex).toBe(2);
@@ -676,14 +1081,16 @@ describe("googleSheetsActionExecutor — update_row", () => {
     // The plan step ran and found nothing; the write step never started.
     expect(stepNames).toEqual(["google-sheets-update-plan"]);
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // Nothing matched → routed down No-match (only), so the branch that adds the
+    // missing row runs.
+    expect(outputs(result)).toEqual(["no_match"]);
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.matched).toBe(false);
     expect(out.matchCount).toBe(0);
     // No row was touched, so there is nothing to show as before/after either.
     expect(out.rowByHeader).toBeUndefined();
     expect(out.previousRow).toBeUndefined();
-    // It is a SUCCESS, not a failure — a Condition node downstream branches on
-    // `matched` to handle the missing row.
+    // It is a SUCCESS, not a failure — the No-match branch handles the missing row.
     expect(publishedStatuses).toContain("success");
   });
 
@@ -778,7 +1185,54 @@ describe("googleSheetsActionExecutor — update_row", () => {
       { range: "'Ledger'!A2:ZZ2", values: [[null, 5]] },
     ]);
     // matchCount still reports the truth, so a workflow can branch on it.
-    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
+    expect(outputs(result)).toContain("updated");
+    expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
+  });
+
+  it("'last' mode updates only the BOTTOM-most matching row", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Acme", "40"],
+      ["Globex", "0"],
+      ["Acme", "10"],
+    ]);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { Pending: "5" },
+      onMultipleMatches: "last",
+    });
+
+    // The second Acme is data row 2 → sheet row 4. The first Acme (row 2) is
+    // left alone: exactly one row is written, as in "first" mode.
+    expect(batchUpdateBody().data).toEqual([
+      { range: "'Ledger'!A4:ZZ4", values: [[null, 5]] },
+    ]);
+    expect(outputs(result)).toContain("updated");
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    // matchCount still reports every match; rowIndex/previousRow/rowByHeader
+    // describe the row this run actually wrote.
+    expect(out.matchCount).toBe(2);
+    expect(out.rowIndex).toBe(4);
+    expect(out.previousRow).toEqual({ "Service Buyer": "Acme", Pending: "10" });
+    expect(out.rowByHeader).toEqual({ "Service Buyer": "Acme", Pending: "5" });
+  });
+
+  it("'last' with no match writes nothing and routes No-match", async () => {
+    mockRead([
+      ["Service Buyer", "Pending"],
+      ["Globex", "0"],
+    ]);
+
+    const result = await run({
+      ...baseConfig,
+      columnMappings: { Pending: "5" },
+      onMultipleMatches: "last",
+    });
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(result)).toEqual(["no_match"]);
+    expect(ctx(result).GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
   });
 
   it("'each' mode writes EVERY matched row in one request and fans out one child run per row", async () => {
@@ -851,9 +1305,11 @@ describe("googleSheetsActionExecutor — update_row", () => {
     });
 
     // Fanning out zero children would skip everything downstream — which is
-    // precisely the branch that has to run to handle the missing row.
-    expect(isFanOut(outcome as unknown as FanOutOutcome)).toBe(false);
-    expect(outcome.GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
+    // precisely the branch that has to run to handle the missing row. Instead a
+    // 0-match "each" run routes No-match, in any mode.
+    expect(isFanOut(outcome)).toBe(false);
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.matched).toBe(false);
   });
 
   it("a fan-out CHILD run reshapes its seed and touches Sheets not at all (the parent already wrote every row)", async () => {
@@ -877,7 +1333,11 @@ describe("googleSheetsActionExecutor — update_row", () => {
     expect(kyGetMock).not.toHaveBeenCalled();
     expect(kyPostMock).not.toHaveBeenCalled();
 
-    const out = result.GOOGLE_SHEETS_ACTION_1;
+    // A child represents one updated row, so it flows down Updated.
+    expect(outputs(result)).toEqual(
+      expect.arrayContaining(["updated", "main", "source-1"]),
+    );
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
     expect(out.action).toBe("update_row");
     expect(out.matched).toBe(true);
     expect(out.matchCount).toBe(1);
@@ -887,7 +1347,7 @@ describe("googleSheetsActionExecutor — update_row", () => {
   });
 });
 
-describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
+describe("googleSheetsActionExecutor — append under a group", () => {
   // A "Grouped"-style tab: rows kept together by buyer, so a new job card has to
   // land INSIDE its buyer's block rather than at the bottom of the sheet.
   const grouped = [
@@ -898,7 +1358,8 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
   ];
 
   const baseConfig = {
-    action: "insert_row_adjacent",
+    action: "append_row",
+    position: "under_group",
     spreadsheetId: "s",
     sheetName: "Grouped",
     columnMappings: { "Service Buyer": "Acme", Status: "Open" },
@@ -907,6 +1368,96 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
   const matchAcme = [
     { column: "Service Buyer", operator: "equals", value: "Acme" },
   ];
+
+  it("coerces a legacy insert_row_adjacent node to an under-append and still inserts", async () => {
+    mockReadWithGrid(grouped);
+
+    // A node saved before the merge: the retired action + its `insertUnder`.
+    // parseNodeConfig (inside the executor) rewrites it to append_row +
+    // position, so it runs exactly like a modern under_group append.
+    const result = await run({
+      action: "insert_row_adjacent",
+      insertUnder: "group",
+      spreadsheetId: "s",
+      sheetName: "Grouped",
+      columnMappings: { "Service Buyer": "Acme", Status: "Open" },
+      conditions: matchAcme,
+    });
+
+    expect(postBody(0).url).toContain("/s:batchUpdate");
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.action).toBe("append_row");
+    expect(out.insertedUnderGroup).toBe(true);
+    expect(out.rowIndex).toBe(4);
+    expect(isRouted(result)).toBe(false); // append never branches
+  });
+
+  it("forces a BLANK row inserted under a group to white (it inherited the group's color)", async () => {
+    mockReadWithGrid(grouped);
+
+    // A spacer: an under-group insert with NO column mapping, so every cell is
+    // empty. `insertDimension inheritFromBefore` copies Acme's banding onto it —
+    // the exact way a blank spacer came out tinted — so it must be repainted white.
+    const result = await run({
+      ...baseConfig,
+      columnMappings: {},
+      conditions: matchAcme,
+    });
+
+    // Three writes: structural insert, the (empty) values, then the whitening.
+    expect(kyPostMock).toHaveBeenCalledTimes(3);
+    expect(postBody(0).url).toContain("/s:batchUpdate");
+    expect(postBody(0).url).not.toContain("values:batchUpdate");
+    // The blank row landed at sheet row 4 (under Acme's block).
+    expect(writtenRange(1).range).toBe("'Grouped'!A4:ZZ4");
+    expect(writtenRange(1).values).toEqual([["", "", ""]]);
+
+    // Sheet row 4 → grid row 3, painted white across the 3-column header band.
+    const whiten = postBody(2);
+    expect(whiten.url).toContain(":batchUpdate");
+    expect(whiten.url).not.toContain("values:batchUpdate");
+    expect(whiten.requests).toEqual([
+      {
+        repeatCell: {
+          range: {
+            sheetId: 77,
+            startRowIndex: 3,
+            endRowIndex: 4,
+            startColumnIndex: 0,
+            endColumnIndex: 3,
+          },
+          cell: {
+            userEnteredFormat: {
+              backgroundColor: { red: 1, green: 1, blue: 1 },
+            },
+          },
+          fields: "userEnteredFormat.backgroundColor",
+        },
+      },
+    ]);
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(4);
+  });
+
+  it("does NOT whiten a row inserted under a group when it has content", async () => {
+    mockReadWithGrid(grouped);
+
+    // A normal under-group insert (mapped cells) keeps the group banding it
+    // inherited — only BLANK inserts are repainted. So no whitening write.
+    await run({ ...baseConfig, conditions: matchAcme });
+
+    // Structural insert + values write, and nothing more.
+    expect(kyPostMock).toHaveBeenCalledTimes(2);
+    expect(
+      kyPostMock.mock.calls.some(([, opts]) =>
+        (opts as { json?: { requests?: unknown[] } }).json?.requests?.some(
+          (r) =>
+            typeof r === "object" &&
+            r !== null &&
+            "repeatCell" in (r as Record<string, unknown>),
+        ),
+      ),
+    ).toBe(false);
+  });
 
   it("inserts a row directly under the LAST row of the matching group, then fills it", async () => {
     mockReadWithGrid(grouped);
@@ -949,6 +1500,8 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
       "google-sheets-insert-adjacent-write",
     ]);
 
+    // insert_row_adjacent does NOT branch — it keeps the single default output.
+    expect(isRouted(result)).toBe(false);
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.insertedUnderGroup).toBe(true);
     expect(out.matchCount).toBe(2); // the group's size, not a dilemma
@@ -972,23 +1525,26 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
       ],
     });
 
-    // Globex's block ends at the last data row, so appending IS inserting under
-    // it: ONE request, and no blank row ever exists on its own to be orphaned.
+    // Globex's block ends at the last data row, so no structural insert is
+    // needed — the row is simply the first free one, written to its ABSOLUTE
+    // range (never `:append`, which would pick its own destination).
     expect(kyPostMock).toHaveBeenCalledOnce();
-    const append = postBody(0);
-    expect(append.url).toContain("/values/");
-    expect(append.url).toContain(":append");
-    expect(append.searchParams).toEqual({ valueInputOption: "USER_ENTERED" });
-    expect(append.values).toEqual([["Globex", "", "Open"]]);
-    expect(stepNames).toEqual(["google-sheets-insert-adjacent"]);
+    const w = writtenRange(0);
+    expect(w.url).toContain("values:batchUpdate");
+    expect(w.url).not.toContain(":append");
+    expect(w.range).toBe("'Grouped'!A5:ZZ5");
+    expect(w.values).toEqual([["Globex", "", "Open"]]);
+    expect(stepNames).toEqual([
+      "google-sheets-insert-adjacent",
+      "google-sheets-insert-adjacent-write",
+    ]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     expect(out.insertedUnderGroup).toBe(true);
     expect(out.rowIndex).toBe(5); // 3 data rows + header + 1
-    expect(out.blankSeparatorAdded).toBe(false);
   });
 
-  it("starts a new group at the bottom when nothing matches, separated by a blank row", async () => {
+  it("starts a new group at the bottom when nothing matches", async () => {
     mockReadWithGrid(grouped);
 
     const result = await run({
@@ -997,36 +1553,33 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
       conditions: [
         { column: "Service Buyer", operator: "equals", value: "Initech" },
       ],
-      blankSeparators: true,
     });
 
-    // A brand-new buyer: no group to join, so one blank separator row then the
-    // row itself — both in the SAME append, so the separator can never be left
-    // behind on its own.
+    // A brand-new buyer: no group to join, so the row goes to the first free
+    // row of the tab, starting a group of its own.
     expect(kyPostMock).toHaveBeenCalledOnce();
-    expect(postBody(0).values).toEqual([[""], ["Initech", "", "Open"]]);
+    expect(writtenRange(0).range).toBe("'Grouped'!A5:ZZ5");
+    expect(writtenRange(0).values).toEqual([["Initech", "", "Open"]]);
 
     const out = result.GOOGLE_SHEETS_ACTION_1;
     // Matching nothing is a normal outcome here — a row is still written.
     expect(out.insertedUnderGroup).toBe(false);
     expect(out.matchCount).toBe(0);
-    expect(out.blankSeparatorAdded).toBe(true);
-    expect(out.rowIndex).toBe(6); // 3 data rows + header + separator + 1
+    expect(out.rowIndex).toBe(5); // 3 data rows + header + 1
     expect(publishedStatuses).toContain("success");
   });
 
-  it("adds no separator to a tab that has only a header row (nothing to separate from)", async () => {
+  it("appends to a tab that has only a header row (no data yet)", async () => {
     mockReadWithGrid([["Service Buyer", "Job No", "Status"]]);
 
     const result = await run({
       ...baseConfig,
       conditions: matchAcme,
-      blankSeparators: true,
     });
 
-    expect(postBody(0).values).toEqual([["Acme", "", "Open"]]);
+    expect(writtenRange(0).range).toBe("'Grouped'!A2:ZZ2");
+    expect(writtenRange(0).values).toEqual([["Acme", "", "Open"]]);
     const out = result.GOOGLE_SHEETS_ACTION_1;
-    expect(out.blankSeparatorAdded).toBe(false);
     expect(out.rowIndex).toBe(2);
   });
 
@@ -1111,13 +1664,17 @@ describe("googleSheetsActionExecutor — insert_row_adjacent", () => {
       conditions: matchAcme,
     });
 
+    // The anchor's Job No is a PADDED id, so it is force-texted (`'0002`) on the
+    // way in. Written bare, USER_ENTERED would store it as the number 2 and the
+    // padding would be gone — the same way a job number referenced into a second
+    // sheet used to arrive as "9".
     expect(postBody(1).data).toEqual([
-      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "0002", "Follow-up"]] },
+      { range: "'Grouped'!A4:ZZ4", values: [["Acme", "'0002", "Follow-up"]] },
     ]);
   });
 });
 
-describe("googleSheetsActionExecutor — insert_row_adjacent, one row per match", () => {
+describe("googleSheetsActionExecutor — append under each matching row", () => {
   // Acme's rows are NOT contiguous here, so each match anchors its own new row
   // at a different depth — which is what makes the bottom-up insert order and
   // the row-number shifting load-bearing.
@@ -1130,10 +1687,10 @@ describe("googleSheetsActionExecutor — insert_row_adjacent, one row per match"
   ];
 
   const eachRow = {
-    action: "insert_row_adjacent",
+    action: "append_row",
+    position: "under_each",
     spreadsheetId: "s",
     sheetName: "Grouped",
-    insertUnder: "each_row",
     conditions: [
       { column: "Service Buyer", operator: "equals", value: "Acme" },
     ],
@@ -1323,5 +1880,1569 @@ describe("googleSheetsActionExecutor — insert_row_adjacent, one row per match"
       }),
     ).rejects.toBeInstanceOf(NonRetriableError);
     expect(kyPostMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("googleSheetsActionExecutor — color_rows", () => {
+  // Row 2 is Done, row 3 Blocked, row 4 Done — and row 5 is BOTH, which is what
+  // makes "first rule wins" observable.
+  const statuses = [
+    ["Job", "Status"],
+    ["A", "Done"],
+    ["B", "Blocked"],
+    ["C", "Done"],
+    ["D", "Done Blocked"],
+  ];
+
+  const rule = (color: string, value: string, operator = "equals") => ({
+    color,
+    conditions: [{ column: "Status", operator, value, enabled: true }],
+  });
+
+  const twoRules = {
+    action: "color_rows",
+    spreadsheetId: "sheet1",
+    sheetName: "Grouped",
+    colorRules: [rule("#22c55e", "Done"), rule("#ef4444", "Blocked")],
+  };
+
+  /** The repeatCell requests of the single structural batchUpdate. */
+  function paintRequests(index = 0) {
+    const body = postBody(index);
+    return (body.requests ?? []) as Array<{
+      repeatCell: {
+        range: {
+          sheetId: number;
+          startRowIndex: number;
+          endRowIndex: number;
+          startColumnIndex?: number;
+          endColumnIndex?: number;
+        };
+        cell: {
+          userEnteredFormat: {
+            backgroundColor: { red: number; green: number; blue: number };
+          };
+        };
+        fields: string;
+      };
+    }>;
+  }
+
+  it("paints every matched row in ONE batchUpdate, across the used columns", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run(twoRules);
+
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    expect(postBody(0).url).toContain(":batchUpdate");
+    expect(postBody(0).url).not.toContain("values:batchUpdate");
+
+    const requests = paintRequests();
+    // 3 of the 4 data rows: these rules use `equals`, so "Done Blocked" matches
+    // neither and is left alone — an unmatched row must never be repainted.
+    expect(requests).toHaveLength(3);
+
+    for (const r of requests) {
+      expect(r.repeatCell.range.sheetId).toBe(42);
+      expect(r.repeatCell.fields).toBe("userEnteredFormat.backgroundColor");
+      // Bounded to the USED columns: the fixture's header row is
+      // ["Job", "Status"], so the paint spans exactly columns A–B and stops
+      // there rather than banding across the empty rest of the grid.
+      expect(r.repeatCell.range.startColumnIndex).toBe(0);
+      expect(r.repeatCell.range.endColumnIndex).toBe(2);
+    }
+
+    // Data row i is grid row i + 1 (the header occupies grid row 0), and each
+    // request spans exactly one row. Emitted in ascending sheet order.
+    expect(requests.map((r) => r.repeatCell.range.startRowIndex)).toEqual([
+      1, 2, 3,
+    ]);
+    expect(requests.map((r) => r.repeatCell.range.endRowIndex)).toEqual([
+      2, 3, 4,
+    ]);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(3);
+    // Sheet row numbers (1-based, past the header), ascending.
+    expect(out.rowIndexes).toEqual([2, 3, 4]);
+  });
+
+  it("colors every matched row when set to all (the explicit default)", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run({ ...twoRules, onMultipleColorMatches: "all" });
+
+    // "all" is identical to leaving the mode unset — every match is painted, so
+    // matched and colored counts coincide.
+    expect(paintRequests()).toHaveLength(3);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(3);
+    expect(out.rowIndexes).toEqual([2, 3, 4]);
+  });
+
+  it("colors only the topmost matched row when set to first", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run({
+      ...twoRules,
+      onMultipleColorMatches: "first",
+    });
+
+    // Three rows match, but only ONE is painted — the topmost (row 2, "A" Done).
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const requests = paintRequests();
+    expect(requests).toHaveLength(1);
+    // Grid row 1 = sheet row 2.
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(1);
+    expect(requests[0].repeatCell.range.endRowIndex).toBe(2);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    // matchCount is the TRUE match count (3), coloredCount is what was painted (1).
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(1);
+    expect(out.rowIndexes).toEqual([2]);
+    expect(out.colors).toEqual(["#22c55e"]);
+    // Still the happy branch, with the legacy aliases.
+    expect(outputs(outcome)).toEqual(["colored", "main", "source-1"]);
+  });
+
+  it("colors only the bottom-most matched row when set to last", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    const outcome = await run({
+      ...twoRules,
+      onMultipleColorMatches: "last",
+    });
+
+    // Three rows match (2, 3, 4); only the last one — row 4 ("C" Done) — is
+    // painted, in the Done rule's green.
+    expect(kyPostMock).toHaveBeenCalledOnce();
+    const requests = paintRequests();
+    expect(requests).toHaveLength(1);
+    // Grid row 3 = sheet row 4.
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(3);
+    expect(requests[0].repeatCell.range.endRowIndex).toBe(4);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    // Three matched, one painted.
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(1);
+    expect(out.rowIndexes).toEqual([4]);
+    expect(out.colors).toEqual(["#22c55e"]);
+    expect(outputs(outcome)).toEqual(["colored", "main", "source-1"]);
+  });
+
+  it("first picks the sheet-topmost match, not the first rule's match", async () => {
+    mockReadWithGrid(statuses, { sheetId: 42 });
+
+    // Rule order is Blocked-then-Done, but row 2 ("Done") sits above row 3
+    // ("Blocked"). "first" paints row 2 in rule 2's red — proving the topmost
+    // ROW wins, not the first RULE.
+    const outcome = await run({
+      action: "color_rows",
+      spreadsheetId: "sheet1",
+      sheetName: "Grouped",
+      colorRules: [rule("#22c55e", "Blocked"), rule("#ef4444", "Done")],
+      onMultipleColorMatches: "first",
+    });
+
+    const requests = paintRequests();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(1);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.rowIndexes).toEqual([2]);
+    expect(out.colors).toEqual(["#ef4444"]);
+  });
+
+  it("first with no matches still writes nothing and routes No-match", async () => {
+    mockReadWithGrid(statuses);
+
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Shipped")],
+      onMultipleColorMatches: "first",
+    });
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.coloredCount).toBe(0);
+  });
+
+  it("last with no matches still writes nothing and routes No-match", async () => {
+    mockReadWithGrid(statuses);
+
+    // Exercises the slice(-1) branch on an empty match set — it must stay a
+    // clean no-op, symmetric with the "first" case above.
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Shipped")],
+      onMultipleColorMatches: "last",
+    });
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    expect(out.coloredCount).toBe(0);
+  });
+
+  it("gives a row matching two rules the FIRST rule's color", async () => {
+    mockReadWithGrid(statuses);
+
+    // "Done Blocked" (row 5) contains both — matched by rule 1 and rule 2.
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [
+        rule("#22c55e", "Done", "contains"),
+        rule("#ef4444", "Blocked", "contains"),
+      ],
+    });
+
+    const green = { red: 34 / 255, green: 197 / 255, blue: 94 / 255 };
+    const red = { red: 239 / 255, green: 68 / 255, blue: 68 / 255 };
+    const painted = paintRequests().map(
+      (r) => r.repeatCell.cell.userEnteredFormat.backgroundColor,
+    );
+
+    // Rows: A Done→green, B Blocked→red, C Done→green, D BOTH→green (rule 1).
+    expect(painted).toEqual([green, red, green, green]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.colors).toEqual([
+      "#22c55e",
+      "#ef4444",
+      "#22c55e",
+      "#22c55e",
+    ]);
+  });
+
+  it("writes NOTHING and routes No-match when no row matches any rule", async () => {
+    mockReadWithGrid(statuses);
+
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Shipped")],
+    });
+
+    // A colouring run that matched nothing must not touch the sheet at all.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+    // Columns are still recorded so the run view can render its headers.
+    expect(out.columns).toEqual(["Job", "Status"]);
+    expect(publishedStatuses).toContain("success");
+  });
+
+  it("routes Colored (with the legacy aliases) when rows were painted", async () => {
+    mockReadWithGrid(statuses);
+
+    const outcome = await run({
+      ...twoRules,
+      colorRules: [rule("#22c55e", "Blocked")],
+    });
+
+    // The happy branch carries main/source-1 so a pre-branching edge still fires.
+    expect(outputs(outcome)).toEqual(["colored", "main", "source-1"]);
+  });
+
+  it("refuses a rule whose filter is empty — it would color every row", async () => {
+    mockReadWithGrid(statuses);
+
+    await expect(
+      run({
+        ...twoRules,
+        colorRules: [
+          rule("#22c55e", "Done"),
+          { color: "#ef4444", conditions: [] },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a run with no rules at all", async () => {
+    mockReadWithGrid(statuses);
+
+    await expect(run({ ...twoRules, colorRules: [] })).rejects.toBeInstanceOf(
+      NonRetriableError,
+    );
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to paint more rows than one run may color", async () => {
+    // 1,001 data rows all matching one rule — one repeatCell each would build a
+    // batchUpdate too large to send, so the run must fail BEFORE writing rather
+    // than after committing the user's whole tab to a request Sheets rejects.
+    const many = [
+      ["Job", "Status"],
+      ...Array.from({ length: 1001 }, (_, i) => [`J${i}`, "Done"]),
+    ];
+    mockReadWithGrid(many);
+
+    await expect(
+      run({ ...twoRules, colorRules: [rule("#22c55e", "Done")] }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("skips the grid lookup entirely when nothing matches", async () => {
+    mockReadWithGrid(statuses);
+
+    await run({ ...twoRules, colorRules: [rule("#22c55e", "Shipped")] });
+
+    // Only the values read — the sheetId is needed solely to build the write,
+    // so a no-op run must not pay for the metadata round-trip.
+    expect(kyGetMock).toHaveBeenCalledOnce();
+    expect(kyGetMock.mock.calls[0][0]).toContain("/values/");
+  });
+
+  it("refuses a tab with no header row instead of painting a zero-width range", async () => {
+    // No header row: every row reads as an empty object, so an `is_empty`
+    // condition would "match" everything — and the paint would have no width.
+    mockReadWithGrid([[], ["A"], ["B"]]);
+
+    await expect(
+      run({
+        ...twoRules,
+        colorRules: [
+          {
+            color: "#22c55e",
+            conditions: [
+              { column: "Status", operator: "is_empty", enabled: true },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a malformed color instead of writing a partial repaint", async () => {
+    mockReadWithGrid(statuses);
+
+    await expect(
+      run({ ...twoRules, colorRules: [rule("not-a-color", "Done")] }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("googleSheetsActionExecutor — append_heading", () => {
+  const table = [
+    ["Service Buyer", "Job No", "Status"],
+    ["Acme", "0001", "Open"], // data row 0 → sheet row 2
+    ["Globex", "0002", "Open"], // data row 1 → sheet row 3
+    ["Acme", "0003", "Open"], // data row 2 → sheet row 4
+  ];
+
+  const heading = {
+    action: "append_heading",
+    spreadsheetId: "s",
+    sheetName: "Grouped",
+    headingText: "Invoices — March",
+  };
+
+  const matchAcme = [
+    { column: "Service Buyer", operator: "equals", value: "Acme" },
+  ];
+
+  /** The requests of the Nth batchUpdate, typed for the two heading shapes. */
+  function formatRequests(index: number) {
+    return (postBody(index).requests ?? []) as Array<{
+      repeatCell?: {
+        range: Record<string, number>;
+        cell: { userEnteredFormat: Record<string, unknown> };
+        fields: string;
+      };
+      mergeCells?: { range: Record<string, number>; mergeType: string };
+    }>;
+  }
+
+  it("writes the text to column A, then styles and merges the band", async () => {
+    mockReadWithGrid(table);
+
+    const result = await run(heading);
+
+    // The value goes to the first free row (5) at its ABSOLUTE range, as a
+    // ONE-cell row — Sheets leaves B..ZZ alone, which is what the merge then
+    // swallows.
+    expect(writtenRange(0).range).toBe("'Grouped'!A5:ZZ5");
+    expect(writtenRange(0).values).toEqual([["Invoices — March"]]);
+
+    // …then ONE format batchUpdate: style the band, THEN merge it. Order
+    // matters — a merge inherits the top-left cell's format.
+    expect(postBody(1).url).toContain(":batchUpdate");
+    expect(postBody(1).url).not.toContain("values:batchUpdate");
+    const requests = formatRequests(1);
+    expect(requests).toHaveLength(2);
+
+    // Sheet row 5 → grid row 4, across the 3-column header band.
+    const band = {
+      sheetId: 77,
+      startRowIndex: 4,
+      endRowIndex: 5,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    };
+    expect(requests[0].repeatCell?.range).toEqual(band);
+    expect(requests[0].repeatCell?.cell.userEnteredFormat).toEqual({
+      backgroundColor: { red: 1, green: 1, blue: 1 },
+      horizontalAlignment: "CENTER",
+      verticalAlignment: "MIDDLE",
+      textFormat: {
+        bold: true,
+        italic: false,
+        fontSize: 12,
+        foregroundColor: { red: 0, green: 0, blue: 0 },
+      },
+    });
+    // Only the sub-fields the heading owns — so the row keeps the tab's number
+    // format, borders and padding.
+    expect(requests[0].repeatCell?.fields).toBe(
+      "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)",
+    );
+    expect(requests[1].mergeCells).toEqual({
+      range: band,
+      mergeType: "MERGE_ALL",
+    });
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.action).toBe("append_heading");
+    expect(out.headingText).toBe("Invoices — March");
+    expect(out.rowIndex).toBe(5);
+    expect(out.mergedColumns).toBe(3);
+    // A heading has no columns, so it must not claim a header-keyed row.
+    expect(out.rowByHeader).toBeUndefined();
+  });
+
+  it("splits plan from write so a retry cannot add a second heading", async () => {
+    mockReadWithGrid(table);
+
+    await run(heading);
+
+    // The row number is settled in a memoized step BEFORE the write, exactly as
+    // a mapped append is — a replay rewrites the same cells rather than reading
+    // a sheet the landed write already changed. The merge is its own step, after
+    // the text exists.
+    expect(stepNames).toEqual([
+      "google-sheets-append-plan",
+      "google-sheets-append-write",
+      "google-sheets-style-heading-rows",
+    ]);
+  });
+
+  it("honours a custom format", async () => {
+    mockReadWithGrid(table);
+
+    await run({
+      ...heading,
+      headingFormat: {
+        bold: false,
+        italic: true,
+        fontSize: 18,
+        textColor: "#ff0000",
+        backgroundColor: "#000000",
+        align: "LEFT",
+      },
+    });
+
+    expect(formatRequests(1)[0].repeatCell?.cell.userEnteredFormat).toEqual({
+      backgroundColor: { red: 0, green: 0, blue: 0 },
+      horizontalAlignment: "LEFT",
+      verticalAlignment: "MIDDLE",
+      textFormat: {
+        bold: false,
+        italic: true,
+        fontSize: 18,
+        foregroundColor: { red: 1, green: 0, blue: 0 },
+      },
+    });
+  });
+
+  it("refuses a one-column tab, where a heading could never be found again", async () => {
+    // Sheets rejects a single-cell merge, so on a one-column tab this would
+    // write text carrying NO merge — and the merge is the only thing that makes
+    // a heading a heading. It would be invisible to every heading action
+    // forever, and find_rows would hand it back as data. Fail instead of
+    // leaving that behind.
+    mockReadWithGrid([["Only"], ["a"]], { title: "Grouped" });
+
+    await expect(run(heading)).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("clears the blankRowAbove separator in the SAME format call", async () => {
+    mockReadWithGrid(table);
+
+    const result = await run({ ...heading, blankRowAbove: true });
+
+    // Row 5 is skipped (left empty), the heading lands on row 6.
+    expect(writtenRange(0).range).toBe("'Grouped'!A6:ZZ6");
+
+    // One batchUpdate carries both: the heading's style + merge, and the
+    // separator (sheet row 5 → grid row 4) forced white.
+    const requests = formatRequests(1);
+    expect(requests).toHaveLength(3);
+    expect(requests[2].repeatCell?.range).toEqual({
+      sheetId: 77,
+      startRowIndex: 4,
+      endRowIndex: 5,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    });
+    expect(requests[2].repeatCell?.fields).toBe(
+      "userEnteredFormat.backgroundColor",
+    );
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowIndex).toBe(6);
+  });
+
+  it("refuses to merge a blank band when the text renders empty", async () => {
+    mockReadWithGrid(table);
+
+    // The template is non-empty (so the config schema passes), but the value it
+    // reads is missing — an unlabelled merged row would hide that.
+    await expect(
+      run({ ...heading, headingText: "@<AI_TEXT_1.output>@" }, {}),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a tab with no header row (nothing to merge across)", async () => {
+    mockReadWithGrid([]);
+
+    await expect(run(heading)).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("places a heading under a matched group and styles it there", async () => {
+    mockReadWithGrid(table);
+
+    // Globex sits MID-table (data row 1 → sheet row 3), so room has to be made
+    // — unlike a group that already ends at the bottom, which just writes the
+    // next free row.
+    const result = await run({
+      ...heading,
+      position: "under_group",
+      conditions: [
+        { column: "Service Buyer", operator: "equals", value: "Globex" },
+      ],
+    });
+
+    // Data row 1 → grid row 2, so the slot under it is grid row 3.
+    expect(postBody(0).requests).toEqual([
+      {
+        insertDimension: {
+          range: { sheetId: 77, dimension: "ROWS", startIndex: 3, endIndex: 4 },
+          inheritFromBefore: true,
+        },
+      },
+    ]);
+    expect(writtenRange(1).range).toBe("'Grouped'!A4:ZZ4");
+    expect(writtenRange(1).values).toEqual([["Invoices — March"]]);
+
+    // The insert inherited Globex's banding — the style pass overrides it.
+    // Sheet row 4 → grid row 3.
+    const requests = formatRequests(2);
+    expect(requests[0].repeatCell?.range.startRowIndex).toBe(3);
+    expect(requests[1].mergeCells?.mergeType).toBe("MERGE_ALL");
+
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.insertedUnderGroup).toBe(true);
+    expect(out.matchCount).toBe(1);
+    expect(out.headingText).toBe("Invoices — March");
+    expect(out.rowIndex).toBe(4);
+  });
+
+  it("resolves @<anchorRow.…>@ in the heading text, per anchor", async () => {
+    mockReadWithGrid(table);
+
+    const outcome = (await run({
+      ...heading,
+      position: "under_each",
+      headingText: "@<anchorRow.Job No>@ — follow-up",
+      conditions: matchAcme,
+    })) as unknown as FanOutOutcome;
+
+    // One heading under EACH Acme row, each naming the row it sits under.
+    expect(postBody(1).data).toEqual([
+      { range: "'Grouped'!A3:ZZ3", values: [["0001 — follow-up"]] },
+      { range: "'Grouped'!A6:ZZ6", values: [["0003 — follow-up"]] },
+    ]);
+
+    // A heading item carries its TEXT, not a header-keyed row.
+    expect(isFanOut(outcome)).toBe(true);
+    expect(outcome.items).toEqual([
+      {
+        headingText: "0001 — follow-up",
+        rowIndex: 3,
+        anchorRow: {
+          "Service Buyer": "Acme",
+          "Job No": "0001",
+          Status: "Open",
+        },
+      },
+      {
+        headingText: "0003 — follow-up",
+        rowIndex: 6,
+        anchorRow: {
+          "Service Buyer": "Acme",
+          "Job No": "0003",
+          Status: "Open",
+        },
+      },
+    ]);
+
+    const summary = outcome.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(2);
+    expect(summary.insertedRows).toEqual([
+      { heading: "0001 — follow-up" },
+      { heading: "0003 — follow-up" },
+    ]);
+    expect(summary.insertedRowIndexes).toEqual([3, 6]);
+  });
+
+  it("a fan-out CHILD reshapes its seed and writes nothing", async () => {
+    mockReadWithGrid(table);
+
+    const result = await run(
+      { ...heading, position: "under_each", conditions: matchAcme },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          __fanOut: true,
+          index: 2,
+          total: 2,
+          item: {
+            headingText: "0003 — follow-up",
+            rowIndex: 6,
+            anchorRow: { "Job No": "0003" },
+          },
+        },
+      },
+    );
+
+    // The parent already inserted every heading — a child must not insert again.
+    expect(kyPostMock).not.toHaveBeenCalled();
+    const out = result.GOOGLE_SHEETS_ACTION_1;
+    expect(out.headingText).toBe("0003 — follow-up");
+    expect(out.rowIndex).toBe(6);
+    expect(out.matchCount).toBe(1);
+    expect(out.rowByHeader).toBeUndefined();
+  });
+
+  it("refuses a non-bottom heading with no filter (it would head the whole tab)", async () => {
+    mockReadWithGrid(table);
+
+    await expect(
+      run({ ...heading, position: "under_group", conditions: [] }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("googleSheetsActionExecutor — headings vs the reading actions", () => {
+  // A tab whose FIRST column is "Job No." with an "Acme" HEADING among the data.
+  // A merged heading keeps its text in the top-left cell, so that is exactly how
+  // the values API returns the row.
+  const withHeading = [
+    ["Job No.", "Name", "Status"],
+    ["0001", "Widget", "Open"], // data row 0 → sheet row 2
+    ["Acme"], //                   data row 1 → sheet row 3  ← the heading
+    ["0002", "Gadget", "Open"], // data row 2 → sheet row 4
+    ["Acme", "Gizmo", "Open"], //  data row 3 → sheet row 5  ← REAL data, same text
+  ];
+
+  /**
+   * Answers the values read AND the metadata read, with the heading's merge
+   * declared — grid row 2 (data row 1), anchored at column A, one row tall.
+   */
+  function mockWithMerge(values: unknown[][], merges: unknown[]) {
+    kyGetMock.mockImplementation((url: string) => ({
+      json: async () =>
+        url.includes("/values/")
+          ? { values }
+          : {
+              sheets: [
+                {
+                  properties: {
+                    sheetId: 77,
+                    title: "Jobs",
+                    gridProperties: { rowCount: 1000 },
+                  },
+                  merges,
+                },
+              ],
+            },
+    }));
+  }
+
+  const headingMerge = [
+    {
+      startRowIndex: 2,
+      endRowIndex: 3,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    },
+  ];
+
+  const findAcme = {
+    action: "find_rows",
+    spreadsheetId: "s",
+    sheetName: "Jobs",
+    conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+  };
+
+  it("find_rows does NOT return a heading whose text matches the filter", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(await run(findAcme)).GOOGLE_SHEETS_ACTION_1;
+
+    // Two rows hold "Acme" in the first column — the heading (row 3) and a real
+    // data row (row 5). Only the real one comes back.
+    expect(out.matchCount).toBe(1);
+    // Output keys are sanitized headers, so "Job No." loses its dot.
+    expect(out.firstRow).toEqual({
+      "Job No": "Acme",
+      Name: "Gizmo",
+      Status: "Open",
+    });
+  });
+
+  it("keeps a DATA row that merely looks like a heading (no merge on it)", async () => {
+    // Same tab, but the sheet reports NO merges — so row 3 is just a sparse data
+    // row, and hiding it would be data loss. This is why the merge ranges decide,
+    // not the row's shape.
+    mockWithMerge(withHeading, []);
+
+    const out = ctx(await run(findAcme)).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(2);
+  });
+
+  it("excludes a heading whose row carries stray content in another column", async () => {
+    // The shape a discarded optimisation used to mis-read: a genuine merged
+    // heading that also holds a leftover value, so "first column filled, rest
+    // empty" is false. Only the MERGE decides, so it is still excluded.
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["0001", "Widget", "Open"],
+        ["Acme", "", "leftover"], // merged heading + stray cell
+      ],
+      [
+        {
+          startRowIndex: 2,
+          endRowIndex: 3,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(await run(findAcme)).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+  });
+
+  it("update_row will not overwrite a heading by default", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_row",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+        columnMappings: { Status: "Closed" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    // Two rows read "Acme" in the first column; only the real data row (sheet
+    // row 5) is written. The heading is left alone.
+    expect(out.matchCount).toBe(1);
+    expect(out.rowIndex).toBe(5);
+  });
+
+  it("update_row CAN target a heading when scoped to headings", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_row",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        rowScope: "headings",
+        conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+        columnMappings: { "Job No.": "Renamed" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    // Now the opposite row: the heading at sheet row 3, not the data row.
+    expect(out.matchCount).toBe(1);
+    expect(out.rowIndex).toBe(3);
+  });
+
+  it("rowScope 'all' restores the pre-heading behaviour", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_row",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        rowScope: "all",
+        onMultipleMatches: "each",
+        conditions: [{ column: "Job No.", operator: "equals", value: "Acme" }],
+        columnMappings: { Status: "Closed" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(2);
+  });
+
+  it("find_heading ignores an onMultipleMatches inherited from find_rows", async () => {
+    // Switching a find_rows node to find_heading leaves "each" in its data, and
+    // the heading dialog shows no control to clear it. find_heading never fans
+    // out, so it must not hit the fan-out cap on an unreachable setting.
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleMatches: "each",
+        maxFanOutItems: 1,
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(1);
+  });
+
+  it("find_heading returns ONLY the heading, and reports where it is", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "find_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+    });
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(1);
+    expect(out.headings).toEqual(["Acme"]);
+    expect(out.headingRowIndexes).toEqual([3]);
+    expect(out.firstHeading).toBe("Acme");
+    expect(out.rowIndex).toBe(3);
+    // The real "Acme" data row is not a heading, so it is absent.
+    expect(outputs(outcome)).toContain("found");
+  });
+
+  it("find_heading matches case-insensitively", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "acme" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(1);
+  });
+
+  it("find_heading honours ignoreCase: false in the filter's restraints", async () => {
+    // The default is case-INSENSITIVE, so this only passes if the restraint the
+    // dialog saves actually reaches the comparison (rather than the executor
+    // hard-coding the fold, as it did before Restraints existed here).
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: {
+          operator: "equals",
+          value: "acme",
+          ignoreCase: false,
+        },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matchCount).toBe(0);
+  });
+
+  it("find_heading neglects the characters its restraints list", async () => {
+    // A section title typed with an em dash is the case this exists for: the
+    // user searches "Invoices March 2026" and neglects "— " to find it.
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["Invoices — March 2026"], // data row 0 → sheet row 2 ← the heading
+        ["0001", "Widget", "Open"],
+      ],
+      [
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const filter = {
+      operator: "equals" as const,
+      value: "InvoicesMarch2026",
+    };
+
+    // Without the restraint the em dash and spaces make it a miss…
+    expect(
+      ctx(
+        await run({
+          action: "find_heading",
+          spreadsheetId: "s",
+          sheetName: "Jobs",
+          headingFilter: filter,
+        }),
+      ).GOOGLE_SHEETS_ACTION_1.matchCount,
+    ).toBe(0);
+
+    // …and with it, a hit.
+    expect(
+      ctx(
+        await run({
+          action: "find_heading",
+          spreadsheetId: "s",
+          sheetName: "Jobs",
+          headingFilter: { ...filter, ignoreChars: "— " },
+        }),
+      ).GOOGLE_SHEETS_ACTION_1.matchCount,
+    ).toBe(1);
+  });
+
+  it("find_heading with no value lists every heading on the tab", async () => {
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["March"], // data row 0 → sheet row 2  ← heading
+        ["0001", "Widget", "Open"],
+        ["April"], // data row 2 → sheet row 4  ← heading
+      ],
+      [
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+        {
+          startRowIndex: 3,
+          endRowIndex: 4,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(out.headings).toEqual(["March", "April"]);
+    expect(out.headingRowIndexes).toEqual([2, 4]);
+  });
+
+  it("finds a heading even when its row has stray content in another column", async () => {
+    // The shape heuristic ("first column filled, rest empty") is only an
+    // optimisation for find_rows. If it were allowed to gate find_heading's
+    // merge lookup, this row — a genuine MERGED heading that happens to carry a
+    // leftover value further along — would come back as a silent zero result.
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["0001", "Widget", "Open"],
+        ["Acme", "", "leftover"], // merged heading + stray cell
+      ],
+      [
+        {
+          startRowIndex: 2,
+          endRowIndex: 3,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "Acme" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(1);
+    expect(out.headingRowIndexes).toEqual([3]);
+  });
+
+  it("reports how many headings the tab has, so a zero result is diagnosable", async () => {
+    // No merges at all — the tab has no headings, which is a different problem
+    // from "your search text matched nothing".
+    mockWithMerge(withHeading, []);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "Acme" },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.matchCount).toBe(0);
+    expect(out.headingsOnTab).toBe(0);
+  });
+
+  it("update_heading renames the heading, writing ONE cell not a range", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "update_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+      headingText: "Acme — Q2",
+    });
+
+    // A single-cell range (A3), never A3:ZZ3 — the anchor is the only cell a
+    // merge actually has, so this never writes across the merged band.
+    expect(writtenRange(0).range).toBe("'Jobs'!A3");
+    expect(writtenRange(0).values).toEqual([["Acme — Q2"]]);
+    // RAW: a heading is a label, so Sheets must not re-parse it.
+    expect(postBody(0).valueInputOption).toBe("RAW");
+    // Text only — no restyle was asked for, so no format batchUpdate.
+    expect(kyPostMock).toHaveBeenCalledTimes(1);
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matched).toBe(true);
+    expect(out.previousHeading).toBe("Acme");
+    expect(out.headingText).toBe("Acme — Q2");
+    expect(out.rowIndex).toBe(3);
+    expect(outputs(outcome)).toContain("updated");
+  });
+
+  it("update_heading never touches a DATA row of the same text", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    // Row 5 is real data reading "Acme"; only the heading at row 3 is rewritten.
+    await run({
+      action: "update_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+      headingText: "Renamed",
+    });
+
+    expect(writtenRange(0).range).toBe("'Jobs'!A3");
+  });
+
+  it("update_heading can restyle without changing the text", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const out = ctx(
+      await run({
+        action: "update_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "Acme" },
+        restyleHeading: true,
+        // Required: restyling with no saved style would silently reset the
+        // heading to this app's defaults, so the executor refuses it.
+        headingFormat: { bold: true, fontSize: 14 },
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    // No value write at all — only the format batchUpdate.
+    expect(kyPostMock).toHaveBeenCalledTimes(1);
+    expect(postBody(0).url).toContain(":batchUpdate");
+    expect(postBody(0).url).not.toContain("values:batchUpdate");
+    expect(out.headingText).toBe("Acme");
+    expect(out.previousHeading).toBe("Acme");
+    expect(out.restyled).toBe(true);
+  });
+
+  it("re-merges a restyled heading at ITS width, not today's header count", async () => {
+    // The heading was merged when the tab had 3 columns; a 4th has since been
+    // added. Re-merging over A:D would partially overlap the existing A:C merge
+    // — Sheets rejects that, and it would fail AFTER the text write landed.
+    mockWithMerge(
+      [["Job No.", "Name", "Status", "Added Later"], ["Acme"]],
+      [
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 3, // still only 3 wide
+        },
+      ],
+    );
+
+    await run({
+      action: "update_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingText: "Acme — Q2",
+      restyleHeading: true,
+      headingFormat: { bold: true },
+    });
+
+    const format = (postBody(1).requests ?? []) as Array<{
+      repeatCell?: { range: { endColumnIndex: number } };
+      mergeCells?: { range: { endColumnIndex: number } };
+    }>;
+    // 3, the merge's real width — NOT 4, the tab's current header count.
+    expect(format[0].repeatCell?.range.endColumnIndex).toBe(3);
+    expect(format[1].mergeCells?.range.endColumnIndex).toBe(3);
+  });
+
+  it("refuses to restyle when the node has no saved style", async () => {
+    // Restyling re-applies `headingFormat`; with none it would resolve to the
+    // app defaults and silently overwrite whatever styling the heading had.
+    mockWithMerge(withHeading, headingMerge);
+
+    await expect(
+      run({
+        action: "update_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingFilter: { operator: "equals", value: "Acme" },
+        restyleHeading: true,
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses update_heading on a tab with no header row", async () => {
+    // Otherwise columnCount is 0, styleHeadingRows early-returns, and the run
+    // reports a restyle that never happened.
+    mockWithMerge([], []);
+
+    await expect(
+      run({
+        action: "update_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingText: "Anything",
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+  });
+
+  it("reports merged rows that do NOT qualify, so a dead end is diagnosable", async () => {
+    // Two merges that both look like headings to a human and neither of which
+    // qualifies: one spans two rows, one starts at column B. Without this count
+    // the run can only say "no headings", which reads as a bug to someone
+    // staring at a merged row.
+    mockWithMerge(withHeading, [
+      {
+        startRowIndex: 1,
+        endRowIndex: 3, // two rows tall
+        startColumnIndex: 0,
+        endColumnIndex: 3,
+      },
+      {
+        startRowIndex: 4,
+        endRowIndex: 5,
+        startColumnIndex: 1, // starts at column B
+        endColumnIndex: 3,
+      },
+    ]);
+
+    const out = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.headingsOnTab).toBe(0);
+    expect(out.nearMisses).toBe(2);
+  });
+
+  it("color_heading reads the tab's metadata ONCE, not twice", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingColor: "#fef3c7",
+    });
+
+    // One values read + one metadata read. The metadata response already
+    // carries `sheetId`, so fetching it again just to address the tab would
+    // double the cost of the expensive `includeMerges` call.
+    const metadataReads = kyGetMock.mock.calls.filter(
+      ([url]) => !String(url).includes("/values/"),
+    );
+    expect(metadataReads).toHaveLength(1);
+  });
+
+  it("update_heading routes No-match and reports the tab's heading count", async () => {
+    mockWithMerge(withHeading, []);
+
+    const outcome = await run({
+      action: "update_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+      headingText: "Renamed",
+    });
+
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    expect(kyPostMock).not.toHaveBeenCalled();
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.matched).toBe(false);
+    expect(out.headingsOnTab).toBe(0);
+  });
+
+  it("color_heading paints only the heading, across its merged band", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+      headingColor: "#fef3c7",
+    });
+
+    const requests = (postBody(0).requests ?? []) as Array<{
+      repeatCell: {
+        range: Record<string, number>;
+        cell: { userEnteredFormat: { backgroundColor: unknown } };
+      };
+    }>;
+    // ONE row: data row 1 → grid row 2, across the 3-column header band. The
+    // real "Acme" data row at index 3 is untouched.
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range).toEqual({
+      sheetId: 77,
+      startRowIndex: 2,
+      endRowIndex: 3,
+      startColumnIndex: 0,
+      endColumnIndex: 3,
+    });
+    expect(
+      requests[0].repeatCell.cell.userEnteredFormat.backgroundColor,
+    ).toEqual({ red: 254 / 255, green: 243 / 255, blue: 199 / 255 });
+
+    const out = ctx(outcome).GOOGLE_SHEETS_ACTION_1;
+    expect(out.coloredCount).toBe(1);
+    expect(out.headings).toEqual(["Acme"]);
+    expect(out.headingRowIndexes).toEqual([3]);
+    expect(out.color).toBe("#fef3c7");
+    expect(outputs(outcome)).toContain("colored");
+  });
+
+  it("color_heading paints the heading's OWN merge width, not the tab's wider header", async () => {
+    // The "Acme" heading is merged only 2 columns wide, though the tab now has
+    // 3 columns. The paint band must match the merge (endColumnIndex 2), not the
+    // header count (3): painting to 3 would colour a cell outside the merge and
+    // disagree with update_heading's restyle, which sizes the row by this same
+    // merged width.
+    const narrowMerge = [
+      {
+        startRowIndex: 2,
+        endRowIndex: 3,
+        startColumnIndex: 0,
+        endColumnIndex: 2,
+      },
+    ];
+    mockWithMerge(withHeading, narrowMerge);
+
+    await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Acme" },
+      headingColor: "#fef3c7",
+    });
+
+    const requests = (postBody(0).requests ?? []) as Array<{
+      repeatCell: { range: Record<string, number> };
+    }>;
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range).toEqual({
+      sheetId: 77,
+      startRowIndex: 2,
+      endRowIndex: 3,
+      startColumnIndex: 0,
+      endColumnIndex: 2,
+    });
+  });
+
+  it("color_heading with no filter paints every heading", async () => {
+    mockWithMerge(
+      [
+        ["Job No.", "Name", "Status"],
+        ["March"],
+        ["0001", "Widget", "Open"],
+        ["April"],
+      ],
+      [
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+        {
+          startRowIndex: 3,
+          endRowIndex: 4,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ],
+    );
+
+    const out = ctx(
+      await run({
+        action: "color_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingColor: "#dbeafe",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    expect(out.coloredCount).toBe(2);
+    expect(out.headings).toEqual(["March", "April"]);
+    expect(out.headingRowIndexes).toEqual([2, 4]);
+  });
+
+  it("color_heading routes No-match and writes nothing when none match", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Globex" },
+      headingColor: "#dbeafe",
+    });
+
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    expect(kyPostMock).not.toHaveBeenCalled();
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.coloredCount).toBe(0);
+  });
+
+  const threeHeadings = [
+    ["Job No.", "Name", "Status"],
+    ["March"], // data row 0 → sheet row 2
+    ["0001", "Widget", "Open"],
+    ["April"], // data row 2 → sheet row 4
+    ["May"], //  data row 3 → sheet row 5
+  ];
+  const threeMerges = [0, 2, 3].map((r) => ({
+    startRowIndex: r + 1,
+    endRowIndex: r + 2,
+    startColumnIndex: 0,
+    endColumnIndex: 3,
+  }));
+
+  it("find_heading 'first' returns the topmost; 'last' the bottom-most", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const first = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleHeadings: "first",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(first.headings).toEqual(["March"]);
+    expect(first.matchCount).toBe(3);
+    expect(first.actedCount).toBe(1);
+
+    mockWithMerge(threeHeadings, threeMerges);
+    const last = ctx(
+      await run({
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleHeadings: "last",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+    expect(last.headings).toEqual(["May"]);
+    expect(last.headingRowIndexes).toEqual([5]);
+  });
+
+  it("find_heading 'each' fans out one run per heading", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const outcome = await run({
+      action: "find_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      onMultipleHeadings: "each",
+    });
+
+    expect(isFanOut(outcome)).toBe(true);
+    const fan = outcome as unknown as FanOutOutcome;
+    // Each item carries its heading plus the tab-level facts a child must be
+    // able to report without an API call.
+    expect(fan.items).toEqual([
+      { heading: "March", rowIndex: 2, headingsOnTab: 3, nearMisses: 0 },
+      { heading: "April", rowIndex: 4, headingsOnTab: 3, nearMisses: 0 },
+      { heading: "May", rowIndex: 5, headingsOnTab: 3, nearMisses: 0 },
+    ]);
+    const summary = fan.context.GOOGLE_SHEETS_ACTION_1 as Record<
+      string,
+      unknown
+    >;
+    expect(summary.fannedOut).toBe(3);
+    // The fan-out fuel must not survive into the recorded output.
+    expect(summary.items).toBeUndefined();
+  });
+
+  it("a find_heading 'each' CHILD reshapes its seed and reads nothing", async () => {
+    const result = await run(
+      {
+        action: "find_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        onMultipleHeadings: "each",
+      },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          __fanOut: true,
+          index: 2,
+          total: 3,
+          item: {
+            heading: "April",
+            rowIndex: 4,
+            headingsOnTab: 3,
+            nearMisses: 0,
+          },
+        },
+      },
+    );
+
+    expect(kyGetMock).not.toHaveBeenCalled();
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.firstHeading).toBe("April");
+    expect(out.headings).toEqual(["April"]);
+    expect(out.rowIndex).toBe(4);
+    expect(out.matchCount).toBe(1);
+    // Tab-level facts resolve in the child, so a downstream reference to them
+    // is not silently empty in "each" mode.
+    expect(out.actedCount).toBe(1);
+    expect(out.headingsOnTab).toBe(3);
+  });
+
+  it("color_heading 'first' paints only the topmost of several matches", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const out = ctx(
+      await run({
+        action: "color_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingColor: "#fef3c7",
+        onMultipleHeadings: "first",
+      }),
+    ).GOOGLE_SHEETS_ACTION_1;
+
+    const requests = (postBody(0).requests ?? []) as Array<{
+      repeatCell: { range: { startRowIndex: number } };
+    }>;
+    // Only March's row (data row 0 → grid row 1) is painted.
+    expect(requests).toHaveLength(1);
+    expect(requests[0].repeatCell.range.startRowIndex).toBe(1);
+    expect(out.matchCount).toBe(3);
+    expect(out.coloredCount).toBe(1);
+  });
+
+  it("color_heading 'each' paints all AND fans out one run per heading", async () => {
+    mockWithMerge(threeHeadings, threeMerges);
+    const outcome = await run({
+      action: "color_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingColor: "#fef3c7",
+      onMultipleHeadings: "each",
+    });
+
+    // All three painted in the single batchUpdate…
+    const requests = (postBody(0).requests ?? []) as unknown[];
+    expect(requests).toHaveLength(3);
+    // …and a fan-out afterwards.
+    expect(isFanOut(outcome)).toBe(true);
+    const fan = outcome as unknown as FanOutOutcome;
+    expect(fan.items).toHaveLength(3);
+    expect(
+      (fan.context.GOOGLE_SHEETS_ACTION_1 as Record<string, unknown>).fannedOut,
+    ).toBe(3);
+  });
+
+  it("a color_heading 'each' CHILD reshapes its seed and paints nothing", async () => {
+    const result = await run(
+      {
+        action: "color_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingColor: "#fef3c7",
+        onMultipleHeadings: "each",
+      },
+      {
+        GOOGLE_SHEETS_ACTION_1: {
+          __fanOut: true,
+          index: 1,
+          total: 3,
+          item: { heading: "March", rowIndex: 2 },
+        },
+      },
+    );
+
+    expect(kyPostMock).not.toHaveBeenCalled();
+    const out = ctx(result).GOOGLE_SHEETS_ACTION_1;
+    expect(out.coloredCount).toBe(1);
+    expect(out.headings).toEqual(["March"]);
+    expect(out.color).toBe("#fef3c7");
+  });
+
+  it("color_heading refuses a malformed color before writing", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    await expect(
+      run({
+        action: "color_heading",
+        spreadsheetId: "s",
+        sheetName: "Jobs",
+        headingColor: "not-a-color",
+      }),
+    ).rejects.toBeInstanceOf(NonRetriableError);
+    expect(kyPostMock).not.toHaveBeenCalled();
+  });
+
+  it("find_heading routes Not-found when no heading matches", async () => {
+    mockWithMerge(withHeading, headingMerge);
+
+    const outcome = await run({
+      action: "find_heading",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      headingFilter: { operator: "equals", value: "Globex" },
+    });
+
+    expect(outputs(outcome)).toEqual(["notfound"]);
+    expect(ctx(outcome).GOOGLE_SHEETS_ACTION_1.matchCount).toBe(0);
   });
 });

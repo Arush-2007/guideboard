@@ -5,6 +5,11 @@ import { Plus, Trash2 } from "lucide-react";
 import { useEffect } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import z from "zod";
+import { EditableNodeTitle } from "@/components/editable-node-title";
+import {
+  MatchingOptions,
+  makeMatchingOptionsHandler,
+} from "@/components/matching-options";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -13,7 +18,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import {
   Form,
@@ -36,6 +40,7 @@ import {
 import { VariableInput } from "@/components/variable-input";
 import { useCredentialsByType } from "@/features/credentials/hooks/use-credentials";
 import { CredentialType } from "@/generated/prisma";
+import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
 
 const OPERATORS = [
   "contains",
@@ -55,6 +60,7 @@ const ruleSchema = z.object({
   value: z.string().optional(),
   points: z.number(),
   required: z.boolean().optional(),
+  ...compareOptionsSchemaFields,
 });
 
 const formSchema = z
@@ -107,6 +113,9 @@ const DEFAULT_RULE = {
   value: "",
   points: 10,
   required: false,
+  ignoreCase: false,
+  ignoreChars: "",
+  numeric: false,
 };
 
 function defaults(
@@ -165,9 +174,9 @@ export const CandidateScoringDialog = ({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="max-h-[85vh] sm:max-w-2xl">
         <DialogHeader>
-          <DialogTitle>Candidate Scoring</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Score each applicant and decide SHORTLIST / REVIEW / REJECT. Route
             the result with a Switch on this node's{" "}
@@ -383,6 +392,18 @@ export const CandidateScoringDialog = ({
                         )}
                       />
                     </div>
+
+                    <MatchingOptions
+                      operator={form.watch(`rules.${index}.operator`) ?? ""}
+                      ignoreCase={form.watch(`rules.${index}.ignoreCase`)}
+                      ignoreChars={form.watch(`rules.${index}.ignoreChars`)}
+                      numeric={form.watch(`rules.${index}.numeric`)}
+                      onChange={makeMatchingOptionsHandler(
+                        form,
+                        `rules.${index}.`,
+                      )}
+                      idPrefix={`scoring-rule-${row.id}`}
+                    />
                   </div>
                 ))}
                 {form.formState.errors.rules?.message ? (

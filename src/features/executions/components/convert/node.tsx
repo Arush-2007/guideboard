@@ -1,9 +1,9 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { getNodeOption } from "@/config/node-options";
 import { NodeType } from "@/generated/prisma";
 import {
@@ -15,7 +15,7 @@ import { useNodeStatus } from "../../hooks/use-node-status";
 import { BaseExecutionNode } from "../base-execution-node";
 import type { ConvertFormValues } from "./dialog";
 
-const ConvertDialog = dynamic(() =>
+const ConvertDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.ConvertDialog),
 );
 

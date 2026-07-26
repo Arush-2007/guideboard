@@ -11,6 +11,41 @@ const fromAddress =
 
 const resend = apiKey ? new Resend(apiKey) : null;
 
+/**
+ * The one transactional email layout. Every account email Guideboard sends
+ * (password reset, address verification, email-change approval) is the same
+ * shape — heading, a line of body copy, one button — so the markup lives here
+ * once rather than being re-pasted at each call site.
+ */
+export function emailTemplate({
+  heading,
+  body,
+  cta,
+  url,
+}: {
+  heading: string;
+  /** Rendered as HTML — callers may pass simple inline tags like <strong>. */
+  body: string;
+  cta: string;
+  url: string;
+}): string {
+  return `
+    <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto;">
+      <h2 style="margin-bottom: 8px;">${heading}</h2>
+      <p style="color: #555; line-height: 1.5;">${body}</p>
+      <p style="margin: 24px 0;">
+        <a href="${url}" style="background: #111; color: #fff; padding: 10px 20px; border-radius: 8px; text-decoration: none; display: inline-block;">
+          ${cta}
+        </a>
+      </p>
+      <p style="color: #888; font-size: 13px; line-height: 1.5;">
+        If you didn't request this, you can safely ignore this email.
+        This link expires in 1 hour.
+      </p>
+    </div>
+  `;
+}
+
 interface SendEmailArgs {
   to: string;
   subject: string;

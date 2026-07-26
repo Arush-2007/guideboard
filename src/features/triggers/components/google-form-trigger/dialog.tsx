@@ -5,6 +5,7 @@ import { CopyIcon, ExternalLink } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,7 +13,6 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import {
@@ -48,6 +48,7 @@ export const GoogleFormTriggerDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
 }: Props) => {
   const trpc = useTRPC();
   const params = useParams();
@@ -122,9 +123,9 @@ export const GoogleFormTriggerDialog = ({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-h-[85vh]">
           <DialogHeader>
-            <DialogTitle>Google Form Trigger</DialogTitle>
+            <EditableNodeTitle nodeId={currentNodeId} />
             <DialogDescription>
               Connect a Google Form to start this workflow. The two steps below
               are independent — do them in either order.

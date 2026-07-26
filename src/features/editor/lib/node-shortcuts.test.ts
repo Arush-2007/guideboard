@@ -39,6 +39,72 @@ describe("duplicateSelectedNodes", () => {
     expect(clone.type).toBe(NodeType.MANUAL_TRIGGER);
   });
 
+  it("gives a clone its own ref instead of inheriting the original's", () => {
+    // AI_TEXT is ref-eligible (MANUAL_TRIGGER is not). `data` is deep-copied, so
+    // without a fresh stamp the clone would answer to AI_TEXT_1 too — a
+    // duplicate identity on the canvas and a unique-constraint violation on save.
+    const nodes = [
+      node({
+        id: "n1",
+        type: NodeType.AI_TEXT,
+        selected: true,
+        data: { ref: "AI_TEXT_1", prompt: "summarize" },
+      }),
+    ];
+    const result = duplicateSelectedNodes(nodes, makeSeq());
+
+    expect(result[1].data).toEqual({ ref: "AI_TEXT_2", prompt: "summarize" });
+    expect(result[0].data).toEqual({ ref: "AI_TEXT_1", prompt: "summarize" });
+  });
+
+  it("gives each clone in a multi-selection a distinct ref", () => {
+    const nodes = [
+      node({
+        id: "n1",
+        type: NodeType.AI_TEXT,
+        selected: true,
+        data: { ref: "AI_TEXT_1" },
+      }),
+      node({
+        id: "n2",
+        type: NodeType.AI_TEXT,
+        selected: true,
+        data: { ref: "AI_TEXT_2" },
+      }),
+    ];
+    const result = duplicateSelectedNodes(nodes, makeSeq());
+
+    expect(result[2].data).toEqual({ ref: "AI_TEXT_3" });
+    expect(result[3].data).toEqual({ ref: "AI_TEXT_4" });
+  });
+
+  it("does not collide with an unselected node's ref", () => {
+    const nodes = [
+      node({
+        id: "n1",
+        type: NodeType.AI_TEXT,
+        selected: true,
+        data: { ref: "AI_TEXT_1" },
+      }),
+      node({
+        id: "n2",
+        type: NodeType.AI_TEXT,
+        selected: false,
+        data: { ref: "AI_TEXT_2" },
+      }),
+    ];
+    const result = duplicateSelectedNodes(nodes, makeSeq());
+
+    expect(result[2].data).toEqual({ ref: "AI_TEXT_3" });
+  });
+
+  it("leaves a duplicated trigger ref-less", () => {
+    const nodes = [node({ id: "n1", selected: true })];
+    const result = duplicateSelectedNodes(nodes, makeSeq());
+
+    expect(result[1].data).toEqual({});
+  });
+
   it("deselects the originals so selection follows the copies", () => {
     const nodes = [
       node({ id: "n1", selected: true }),

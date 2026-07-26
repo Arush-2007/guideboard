@@ -1,5 +1,6 @@
 import { type NodeOutputDescriptor, nodeOutputs } from "@/config/node-outputs";
 import type { NodeType } from "@/generated/prisma";
+import { PLACEHOLDER_RE } from "@/lib/template-token";
 
 /**
  * Pure projection behind the execution page's "Friendly" input/output views.
@@ -49,8 +50,8 @@ function humanizeType(type: string): string {
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
-/** Matches `@<path>@` placeholders — the canonical reference syntax (see templating.ts). */
-const REFERENCE_RE = /@<\s*([^>]+?)\s*>@/g;
+/** Matches `@<path>@` placeholders — the canonical reference syntax. */
+const REFERENCE_RE = PLACEHOLDER_RE;
 
 /**
  * Resolves a descriptor's declared fields against an output ROOT object (the

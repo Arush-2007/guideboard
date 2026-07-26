@@ -1,24 +1,29 @@
 "use client";
 
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
   DialogHeader,
-  DialogTitle,
 } from "@/components/ui/dialog";
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  currentNodeId: string;
 }
 
-export const ManualTriggerDialog = ({ open, onOpenChange }: Props) => {
+export const ManualTriggerDialog = ({
+  open,
+  onOpenChange,
+  currentNodeId,
+}: Props) => {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Manual Trigger</DialogTitle>
+          <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
             Configure settings for the manual trigger node.
           </DialogDescription>

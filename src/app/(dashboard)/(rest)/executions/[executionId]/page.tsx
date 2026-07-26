@@ -21,16 +21,16 @@ const Page = async ({ params }: PageProps) => {
   prefetchExecution(executionId);
 
   return (
-    <div className="p-4 md:px-10 md:py-6 h-full">
-      <div className="mx-auto max-w-screen-md w-full flex flex-col gap-y-8 h-full">
-        <HydrateClient>
-          <QueryErrorBoundary message="Error loading execution">
-            <Suspense fallback={<ExecutionDetailLoading />}>
-              <ExecutionView executionId={executionId} />
-            </Suspense>
-          </QueryErrorBoundary>
-        </HydrateClient>
-      </div>
+    // Wide enough for the run summary and the skipped-nodes column beside it.
+    // The gutter comes from the (rest) layout; this only sets the max-width.
+    <div className="mx-auto flex h-full w-full max-w-6xl flex-col gap-y-8">
+      <HydrateClient>
+        <QueryErrorBoundary message="Error loading execution">
+          <Suspense fallback={<ExecutionDetailLoading />}>
+            <ExecutionView executionId={executionId} />
+          </Suspense>
+        </QueryErrorBoundary>
+      </HydrateClient>
     </div>
   );
 };

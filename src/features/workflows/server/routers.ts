@@ -6,13 +6,16 @@ import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
 import { isTimeout, timeoutSignal } from "@/lib/http";
+import { logger } from "@/lib/logger";
 import {
   legacyOutputKey,
-  nextNodeRef,
-  nodeTypeHasRef,
+  resolveNodeRefs,
   rewriteRefsInJson,
+  stripRefFromData,
 } from "@/lib/node-ref";
+import { duplicateWorkflow } from "@/lib/workflow-copy";
 import {
+  assertNoEdgeIntoTrigger,
   generatedWorkflowSchema,
   persistGeneratedWorkflow,
   syncTriggerPollsForWorkflow,
@@ -95,6 +98,11 @@ export const workflowsRouter = createTRPCRouter({
           userId: ctx.auth.user.id,
         },
       });
+    }),
+  duplicate: premiumProcedure
+    .input(z.object({ id: z.string() }))
+    .mutation(({ ctx, input }) => {
+      return duplicateWorkflow(ctx.auth.user.id, input.id);
     }),
   generateFromPrompt: premiumProcedure
     .input(z.object({ prompt: z.string().min(1) }))
@@ -217,7 +225,8 @@ export const workflowsRouter = createTRPCRouter({
           z.object({
             id: z.string(),
             type: z.string().nullish(),
-            ref: z.string().nullish(),
+            // The canvas carries a node's ref inside `data.ref` (see `RefCarrier`
+            // in lib/node-ref.ts); there is no separate top-level ref field.
             position: z.object({ x: z.number(), y: z.number() }),
             data: z.record(z.string(), z.any()).optional(),
           }),
@@ -239,6 +248,11 @@ export const workflowsRouter = createTRPCRouter({
         where: { id, userId: ctx.auth.user.id },
       });
 
+      // The canvas can't draw an edge into a trigger, but that guard is
+      // client-side — this is the server door for the same invariant, so a
+      // scripted client can't persist a graph the engine would mis-run.
+      assertNoEdgeIntoTrigger(nodes, edges);
+
       // Snapshot existing refs by node id BEFORE we replace the rows. The save
       // is a full delete+recreate, so we recover each node's frozen `ref` by its
       // (stable) id; new ref-eligible nodes get the next number. This keeps refs
@@ -249,23 +263,23 @@ export const workflowsRouter = createTRPCRouter({
       });
       const refById = new Map(existingRefs.map((n) => [n.id, n.ref]));
 
-      const usedRefs = new Set<string>();
-      for (const node of nodes) {
-        const known = node.ref ?? refById.get(node.id);
-        if (known) usedRefs.add(known);
+      // First pass: resolve each node's final ref and map its legacy `<type>_<id>`
+      // output key to it. The ref a client claims lives in `data.ref` and wins
+      // over the stored column (that's how a rename lands), but it is NOT
+      // trusted blind: `resolveNodeRefs` guarantees the batch is collision-free,
+      // because a duplicate would otherwise fail the whole save on
+      // `@@unique([workflowId, ref])` with a raw Prisma error.
+      const { refByNodeId, reassigned } = resolveNodeRefs(nodes, refById);
+      if (reassigned.length > 0) {
+        logger.warn("Reassigned duplicate node refs on save", {
+          workflowId: id,
+          reassigned,
+        });
       }
 
-      // First pass: resolve each node's final ref and map its legacy `<type>_<id>`
-      // output key to it.
-      const refByNodeId = new Map<string, string | null>();
       const legacyKeyToRef = new Map<string, string>();
       for (const node of nodes) {
-        let ref = node.ref ?? refById.get(node.id) ?? null;
-        if (!ref && node.type && nodeTypeHasRef(node.type)) {
-          ref = nextNodeRef(node.type, usedRefs);
-          usedRefs.add(ref);
-        }
-        refByNodeId.set(node.id, ref);
+        const ref = refByNodeId.get(node.id);
         if (ref && node.type) {
           legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
         }
@@ -284,8 +298,13 @@ export const workflowsRouter = createTRPCRouter({
         type: node.type as NodeType,
         ref: refByNodeId.get(node.id) ?? null,
         position: node.position,
+        // The ref rides in `data` only as the canvas's carrier; `stripRefFromData`
+        // keeps it out of the persisted blob so it can't drift from the column.
         data: JSON.parse(
-          rewriteRefsInJson(JSON.stringify(node.data ?? {}), legacyKeyToRef),
+          rewriteRefsInJson(
+            JSON.stringify(stripRefFromData(node.data)),
+            legacyKeyToRef,
+          ),
         ),
       }));
 
@@ -312,10 +331,13 @@ export const workflowsRouter = createTRPCRouter({
           })),
         });
 
-        // Update workflow's updatedAt timestamp
+        // Update workflow's updatedAt timestamp. This is also the save that
+        // "activates" a copied workflow — `syncTriggerPollsForWorkflow` below
+        // provisions its poll rows — so `pendingFirstSave` is retired here, in
+        // the same transaction as the graph it refers to.
         await tx.workflow.update({
           where: { id },
-          data: { updatedAt: new Date() },
+          data: { updatedAt: new Date(), pendingFirstSave: false },
         });
       });
 
@@ -340,15 +362,21 @@ export const workflowsRouter = createTRPCRouter({
         include: { nodes: true, connections: true },
       });
 
-      // Transform server nodes to react-flow compatible nodes. `ref` is carried
-      // as a top-level field so the variable picker can show friendly names
-      // (e.g. AI_TEXT_1) for upstream nodes.
+      // Transform server nodes to react-flow compatible nodes. The `ref` is
+      // injected INTO `data` because that is the only field React Flow hands to
+      // a node component and the only one the editor's history preserves — see
+      // `RefCarrier` in lib/node-ref.ts. It is stored in its own `Node.ref`
+      // column (which carries the uniqueness constraint), never in the persisted
+      // `data` blob, so this is the one place the two views are joined; `update`
+      // lifts it back out on the way in.
       const nodes = workflow.nodes.map((node) => ({
         id: node.id,
         type: node.type,
-        ref: node.ref,
         position: node.position as { x: number; y: number },
-        data: (node.data as Record<string, unknown>) || {},
+        data: {
+          ...((node.data as Record<string, unknown>) || {}),
+          ...(node.ref ? { ref: node.ref } : {}),
+        },
       }));
 
       // Transform server connections to react-flow compatible edges
@@ -363,6 +391,9 @@ export const workflowsRouter = createTRPCRouter({
       return {
         id: workflow.id,
         name: workflow.name,
+        // Drives the editor's opening dirty state — a copy has never been saved,
+        // so it must not present as "Saved" while its triggers are still inert.
+        pendingFirstSave: workflow.pendingFirstSave,
         nodes,
         edges,
       };

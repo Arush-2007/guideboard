@@ -1,5 +1,6 @@
 import "server-only";
 import {
+  DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
@@ -180,8 +181,14 @@ export async function getSignedBlobUrl(
   );
 }
 
-/** Downloads a stored object and returns its body as a UTF-8 string. */
-export async function getBlobText(key: string): Promise<string> {
+/**
+ * Downloads a stored object as raw bytes plus the content type it was written
+ * with. Used where the bytes are served back out verbatim (the avatar proxy
+ * route) rather than parsed.
+ */
+export async function getBlobBytes(
+  key: string,
+): Promise<{ bytes: Uint8Array; contentType: string }> {
   const config = readConfig();
   const s3 = getClient(config);
   const result = await s3.send(
@@ -190,7 +197,27 @@ export async function getBlobText(key: string): Promise<string> {
   if (!result.Body) {
     throw new Error(`Blob ${key} has no body`);
   }
-  return result.Body.transformToString();
+  return {
+    bytes: await result.Body.transformToByteArray(),
+    contentType: result.ContentType ?? "application/octet-stream",
+  };
+}
+
+/** Downloads a stored object and returns its body as a UTF-8 string. */
+export async function getBlobText(key: string): Promise<string> {
+  const { bytes } = await getBlobBytes(key);
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Deletes exactly one object. Distinct from `deleteBlobsByPrefix` — replacing
+ * an avatar has to drop the single superseded object, not everything the user
+ * has ever uploaded.
+ */
+export async function deleteBlob(key: string): Promise<void> {
+  const config = readConfig();
+  const s3 = getClient(config);
+  await s3.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
 }
 
 /** Downloads and JSON-parses a stored object (e.g. a replay context snapshot). */

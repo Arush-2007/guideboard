@@ -1,8 +1,8 @@
 "use client";
 
 import { type Node, type NodeProps, useReactFlow } from "@xyflow/react";
-import dynamic from "next/dynamic";
 import { memo, useState } from "react";
+import { lazyNodeDialog } from "@/components/lazy-node-dialog";
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
@@ -10,7 +10,7 @@ import { cronToPreset, describeSchedule } from "@/lib/schedule-presets";
 import { BaseTriggerNode } from "../base-trigger-node";
 import type { ScheduleTriggerFormValues } from "./dialog";
 
-const ScheduleTriggerDialog = dynamic(() =>
+const ScheduleTriggerDialog = lazyNodeDialog(() =>
   import("./dialog").then((mod) => mod.ScheduleTriggerDialog),
 );
 
@@ -53,6 +53,7 @@ export const ScheduleTriggerNode = memo(
           <ScheduleTriggerDialog
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            currentNodeId={props.id}
             onSubmit={handleSubmit}
             defaultValues={props.data}
           />

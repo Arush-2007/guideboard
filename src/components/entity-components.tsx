@@ -16,6 +16,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import {
@@ -315,6 +316,11 @@ interface EntityItemProps {
   subtitle?: React.ReactNode;
   image?: React.ReactNode;
   actions?: React.ReactNode;
+  /**
+   * Extra `<DropdownMenuItem>`s for the row's overflow menu, rendered above the
+   * built-in Delete. Supplying these opens the menu even without `onRemove`.
+   */
+  menuItems?: React.ReactNode;
   onRemove?: () => void | Promise<void>;
   isRemoving?: boolean;
   className?: string;
@@ -327,14 +333,13 @@ export const EntityItem = ({
   subtitle,
   image,
   actions,
+  menuItems,
   onRemove,
   isRemoving,
   className,
 }: EntityItemProps) => {
-  const handleRemove = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-
+  // Navigation is already suppressed for the whole menu by `DropdownMenuContent`.
+  const handleRemove = async () => {
     if (isRemoving) {
       return;
     }
@@ -370,10 +375,10 @@ export const EntityItem = ({
               )}
             </div>
           </div>
-          {(actions || onRemove) && (
+          {(actions || menuItems || onRemove) && (
             <div className="flex gap-x-4 items-center">
               {actions}
-              {onRemove && (
+              {(menuItems || onRemove) && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button
@@ -387,12 +392,24 @@ export const EntityItem = ({
                   </DropdownMenuTrigger>
                   <DropdownMenuContent
                     align="end"
-                    onClick={(e) => e.stopPropagation()}
+                    // The whole row is a <Link>, and Radix portals still bubble
+                    // through the React tree — so a menu click would navigate
+                    // into the entity as well as run its action. Neutralized
+                    // here, for the slot as well as the built-in Delete, rather
+                    // than leaving each `menuItems` consumer to remember it.
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
                   >
-                    <DropdownMenuItem onClick={handleRemove}>
-                      <TrashIcon className="size-4" />
-                      Delete
-                    </DropdownMenuItem>
+                    {menuItems}
+                    {menuItems && onRemove && <DropdownMenuSeparator />}
+                    {onRemove && (
+                      <DropdownMenuItem onClick={handleRemove}>
+                        <TrashIcon className="size-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    )}
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}

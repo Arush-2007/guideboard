@@ -29,6 +29,9 @@ type ScoringRuleConfig = {
   value?: string;
   points: number;
   required?: boolean;
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 type CandidateScoringData = {
@@ -277,6 +280,9 @@ export const candidateScoringExecutor: NodeExecutor<
             value: renderTemplate(rule.value ?? "", context),
             points: Number(rule.points) || 0,
             required: rule.required,
+            ignoreCase: rule.ignoreCase,
+            ignoreChars: rule.ignoreChars,
+            numeric: rule.numeric,
             fieldValue: renderTemplate(rule.field ?? "", context),
           }),
         );

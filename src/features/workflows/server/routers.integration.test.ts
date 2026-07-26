@@ -328,3 +328,158 @@ describe("workflows.update", () => {
     );
   });
 });
+
+describe("workflows.duplicate", () => {
+  /** A trigger -> action workflow whose action references the trigger. */
+  async function seedWorkflow(name: string) {
+    const workflow = await prisma.workflow.create({
+      data: { name, userId: authState.userId },
+    });
+    await caller.workflows.update({
+      id: workflow.id,
+      nodes: [
+        {
+          id: "t1",
+          type: "GOOGLE_SHEETS_TRIGGER",
+          position: { x: 0, y: 0 },
+          data: { spreadsheetId: "ss-1", sheetName: "Data" },
+        },
+        {
+          id: "a1",
+          type: "SLACK",
+          position: { x: 300, y: 0 },
+          data: { message: "New row: @<google_sheets_trigger_t1.row>@" },
+        },
+      ],
+      edges: [{ source: "t1", target: "a1" }],
+    });
+    return workflow;
+  }
+
+  it("copies the graph under a numbered name, re-identifying every node", async () => {
+    const source = await seedWorkflow("Lead capture");
+
+    const copy = await caller.workflows.duplicate({ id: source.id });
+    expect(copy.name).toBe("Lead capture.2");
+
+    const copied = await prisma.workflow.findUniqueOrThrow({
+      where: { id: copy.id },
+      include: { nodes: true, connections: true },
+    });
+
+    // Nodes are re-identified — a shared id would tie the two graphs together.
+    expect(copied.nodes).toHaveLength(2);
+    expect(copied.nodes.map((n) => n.id).sort()).not.toContain("t1");
+    expect(copied.nodes.map((n) => n.type).sort()).toEqual([
+      "GOOGLE_SHEETS_TRIGGER",
+      "SLACK",
+    ]);
+
+    // Refs are per-workflow, so the copy keeps them and its own references
+    // still resolve.
+    const copiedSlack = copied.nodes.find((n) => n.type === "SLACK");
+    const copiedTrigger = copied.nodes.find(
+      (n) => n.type === "GOOGLE_SHEETS_TRIGGER",
+    );
+    expect(copiedSlack?.ref).toBe("SLACK_1");
+
+    // The legacy reference was rewritten to the COPY's trigger id, not left
+    // pointing at the original's node.
+    expect((copiedSlack?.data as { message?: string }).message).toBe(
+      `New row: @<google_sheets_trigger_${copiedTrigger?.id}.row>@`,
+    );
+
+    // The edge is remapped inside the copy.
+    expect(copied.connections).toHaveLength(1);
+    expect(copied.connections[0]).toMatchObject({
+      fromNodeId: copiedTrigger?.id,
+      toNodeId: copiedSlack?.id,
+    });
+
+    // The original is untouched.
+    const original = await prisma.workflow.findUniqueOrThrow({
+      where: { id: source.id },
+      include: { nodes: true, connections: true },
+    });
+    expect(original.name).toBe("Lead capture");
+    expect(original.nodes.map((n) => n.id).sort()).toEqual(["a1", "t1"]);
+    expect(original.connections).toHaveLength(1);
+  });
+
+  it("leaves the copy's triggers dormant, and flags it, until it is saved", async () => {
+    const source = await seedWorkflow("Sheet watcher");
+    expect(
+      await prisma.googleSheetsPoll.count({ where: { workflowId: source.id } }),
+    ).toBe(1);
+
+    const copy = await caller.workflows.duplicate({ id: source.id });
+
+    // No poll row: copying a live automation must not silently double its runs.
+    expect(
+      await prisma.googleSheetsPoll.count({ where: { workflowId: copy.id } }),
+    ).toBe(0);
+    // ...and the original's poll row survives.
+    expect(
+      await prisma.googleSheetsPoll.count({ where: { workflowId: source.id } }),
+    ).toBe(1);
+
+    // The inert state is advertised, so the editor opens dirty instead of
+    // claiming "Saved" for a workflow that isn't running.
+    expect(copy.pendingFirstSave).toBe(true);
+    const loaded = await caller.workflows.getOne({ id: copy.id });
+    expect(loaded.pendingFirstSave).toBe(true);
+  });
+
+  it("activates the copy on its first save and clears the flag", async () => {
+    const source = await seedWorkflow("Sheet watcher");
+    const copy = await caller.workflows.duplicate({ id: source.id });
+
+    const loaded = await caller.workflows.getOne({ id: copy.id });
+    await caller.workflows.update({
+      id: copy.id,
+      nodes: loaded.nodes,
+      edges: loaded.edges.map((edge) => ({
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle,
+        targetHandle: edge.targetHandle,
+      })),
+    });
+
+    // Saving is what makes the copy real: its poll row exists and the flag is
+    // retired, so it stops reading as unsaved everywhere.
+    expect(
+      await prisma.googleSheetsPoll.count({ where: { workflowId: copy.id } }),
+    ).toBe(1);
+    expect(
+      (await caller.workflows.getOne({ id: copy.id })).pendingFirstSave,
+    ).toBe(false);
+  });
+
+  it("numbers successive copies, and copies of copies, in one series", async () => {
+    const source = await seedWorkflow("Lead capture");
+
+    const second = await caller.workflows.duplicate({ id: source.id });
+    const third = await caller.workflows.duplicate({ id: source.id });
+    expect(second.name).toBe("Lead capture.2");
+    expect(third.name).toBe("Lead capture.3");
+
+    // Copying the copy continues the same series rather than nesting.
+    const fourth = await caller.workflows.duplicate({ id: second.id });
+    expect(fourth.name).toBe("Lead capture.4");
+  });
+
+  it("refuses to copy another user's workflow", async () => {
+    const source = await seedWorkflow("Private");
+    const intruder = await createTestUser();
+    authState.userId = intruder.id;
+
+    await expect(caller.workflows.duplicate({ id: source.id })).rejects.toThrow(
+      /not found/i,
+    );
+
+    expect(
+      await prisma.workflow.count({ where: { userId: intruder.id } }),
+    ).toBe(0);
+  });
+});

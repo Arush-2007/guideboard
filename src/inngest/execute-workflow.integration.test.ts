@@ -629,3 +629,68 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
     expect(captured.outputs.f_cond).toBeUndefined();
   });
 });
+
+describe("execution idempotency scoping", () => {
+  /**
+   * The dedup rule lives in the `@@unique([workflowId, idempotencyKey])`
+   * constraint, so it is asserted against a real Postgres rather than against a
+   * key-building helper. `executeWorkflow`'s `check-idempotency` step reads
+   * through this same pair.
+   */
+  const execution = (workflowId: string, idempotencyKey: string) => ({
+    workflowId,
+    idempotencyKey,
+    inngestEventId: `evt_${Math.random().toString(36).slice(2)}`,
+  });
+
+  it("lets two workflows handle the same external event", async () => {
+    // The shape that broke a copied workflow: both poll the same sheet row, so
+    // both mint the SAME event key. Under a global unique the second insert
+    // failed and that workflow silently never ran.
+    const original = await prisma.workflow.create({
+      data: { name: "Original", userId },
+    });
+    const copy = await prisma.workflow.create({
+      data: { name: "Original.2", userId },
+    });
+    const eventKey = "google_sheets:sheet-1:7:added";
+
+    await prisma.execution.create({ data: execution(original.id, eventKey) });
+    await prisma.execution.create({ data: execution(copy.id, eventKey) });
+
+    expect(
+      await prisma.execution.count({ where: { idempotencyKey: eventKey } }),
+    ).toBe(2);
+  });
+
+  it("still rejects a repeat of the same event within one workflow", async () => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Solo", userId },
+    });
+    const eventKey = "gmail:msg_9";
+
+    await prisma.execution.create({ data: execution(workflow.id, eventKey) });
+
+    await expect(
+      prisma.execution.create({ data: execution(workflow.id, eventKey) }),
+    ).rejects.toThrow();
+  });
+
+  it("keeps letting through the many runs that carry no key", async () => {
+    // Postgres treats NULLs as distinct, so an unkeyed run is never a duplicate.
+    const workflow = await prisma.workflow.create({
+      data: { name: "Manual", userId },
+    });
+
+    await prisma.execution.create({
+      data: { workflowId: workflow.id, inngestEventId: "evt_a" },
+    });
+    await prisma.execution.create({
+      data: { workflowId: workflow.id, inngestEventId: "evt_b" },
+    });
+
+    expect(
+      await prisma.execution.count({ where: { workflowId: workflow.id } }),
+    ).toBe(2);
+  });
+});

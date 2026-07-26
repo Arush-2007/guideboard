@@ -90,3 +90,16 @@ const canonical = (value: unknown): string => {
  */
 export const serializeSnapshot = (nodes: Node[], edges: Edge[]): string =>
   canonical(normalizeSnapshot(nodes, edges));
+
+/**
+ * The baseline for a workflow that has never been saved (today: a fresh copy,
+ * flagged `pendingFirstSave`). A real serialization is always a canonical JSON
+ * object and so always starts with `{` — this can never be one, which is
+ * precisely the point: every canvas compares unequal to it, so the editor opens
+ * dirty and stays dirty until a real save replaces the baseline.
+ *
+ * That matters because such a workflow is INERT — its trigger poll rows aren't
+ * provisioned until that first save — so a "Saved" button would be telling the
+ * user the opposite of the truth.
+ */
+export const NEVER_SAVED_BASELINE = "\0never-saved";

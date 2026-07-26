@@ -19,11 +19,15 @@ function onFormSubmit(e) {
   var formResponse = e.response;
   var itemResponses = formResponse.getItemResponses();
 
-  // Build responses object, keyed by question title.
+  // Build responses object, keyed by question title TRIMMED — the reference
+  // paths Guideboard offers are built from the trimmed title, so a question
+  // titled with a stray space would otherwise emit an unreachable key.
+  // (The receiving webhook trims too, so already-connected forms are fine.)
   var responses = {};
   for (var i = 0; i < itemResponses.length; i++) {
     var itemResponse = itemResponses[i];
-    responses[itemResponse.getItem().getTitle()] = itemResponse.getResponse();
+    var title = String(itemResponse.getItem().getTitle()).trim();
+    if (title) responses[title] = itemResponse.getResponse();
   }
 
   var payload = {

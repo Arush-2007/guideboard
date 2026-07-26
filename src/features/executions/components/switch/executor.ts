@@ -3,6 +3,7 @@ import { parseNodeConfig } from "@/config/node-schemas";
 import {
   type CompareOperator,
   evaluateCondition,
+  pickCompareOptions,
 } from "@/features/executions/lib/compare";
 import { type NodeExecutor, routed } from "@/features/executions/types";
 import { NodeType } from "@/generated/prisma";
@@ -15,6 +16,9 @@ type SwitchCase = {
   field?: string;
   operator?: CompareOperator;
   value?: string;
+  ignoreCase?: boolean;
+  ignoreChars?: string;
+  numeric?: boolean;
 };
 
 type SwitchData = {
@@ -65,7 +69,14 @@ export const switchExecutor: NodeExecutor<SwitchData> = async ({
         if (!c.id || !c.field || !c.operator) continue;
         const fieldValue = renderTemplate(c.field, context);
         const compareValue = renderTemplate(c.value ?? "", context);
-        if (evaluateCondition(c.operator, fieldValue, compareValue)) {
+        if (
+          evaluateCondition(
+            c.operator,
+            fieldValue,
+            compareValue,
+            pickCompareOptions(c),
+          )
+        ) {
           return { id: c.id, label: `Case ${i + 1}` };
         }
       }

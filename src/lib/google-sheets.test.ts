@@ -50,6 +50,7 @@ vi.mock("ky", () => {
 
 import {
   getSheetGrid,
+  headingDataRows,
   hexToRgb,
   readSheetTable,
   sheetRange,
@@ -188,8 +189,86 @@ describe("getSheetGrid", () => {
       sheetName: "grouped",
     });
     // rowCount is how many rows the GRID has, not how many hold data — an
-    // insert can only address rows that exist.
-    expect(grid).toEqual({ sheetId: 42, rowCount: 12 });
+    // insert can only address rows that exist. `merges` is empty when the tab
+    // reports none; it is what identifies heading rows (see headingDataRows).
+    expect(grid).toEqual({ sheetId: 42, rowCount: 12, merges: [] });
+  });
+
+  it("omits merges by default, so the write paths stay cheap", async () => {
+    kyGetMock.mockReturnValue(
+      res({ sheets: [{ properties: { sheetId: 1, title: "T" } }] }),
+    );
+    await getSheetGrid({
+      accessToken: "t",
+      spreadsheetId: "s",
+      sheetName: "T",
+    });
+
+    const [, options] = kyGetMock.mock.calls[0] as [
+      string,
+      { searchParams: { fields: string } },
+    ];
+    // Every append/whiten/color call goes through here for `sheetId` alone. A
+    // workbook of report tabs can carry thousands of merge objects, so pulling
+    // them on the write path would be pure cost.
+    expect(options.searchParams.fields).not.toContain("merges");
+    expect(options.searchParams.fields).toContain("sheetId");
+  });
+
+  it("asks for merges when the caller needs them", async () => {
+    kyGetMock.mockReturnValue(
+      res({ sheets: [{ properties: { sheetId: 1, title: "T" } }] }),
+    );
+    await getSheetGrid({
+      accessToken: "t",
+      spreadsheetId: "s",
+      sheetName: "T",
+      includeMerges: true,
+    });
+
+    const [, options] = kyGetMock.mock.calls[0] as [
+      string,
+      { searchParams: { fields: string } },
+    ];
+    // What actually matters is that `merges` is REQUESTED at all — it is the
+    // sole input to heading detection, and a mask that omitted it would make
+    // every heading silently undetectable. The exact grouping is style: the
+    // `sheets.properties(...),sheets.merges` form returns the same payload
+    // (verified live via scripts/dump-sheet-merges.ts).
+    expect(options.searchParams.fields).toContain("merges");
+    expect(options.searchParams.fields).toContain("sheetId");
+    expect(options.searchParams.fields).toContain("rowCount");
+  });
+
+  it("returns the tab's merged ranges", async () => {
+    kyGetMock.mockReturnValue(
+      res({
+        sheets: [
+          {
+            properties: {
+              sheetId: 3,
+              title: "Jobs",
+              gridProperties: { rowCount: 50 },
+            },
+            // Note Google OMITS zero-valued fields, so a merge anchored at
+            // column A carries no `startColumnIndex` at all.
+            merges: [{ startRowIndex: 4, endRowIndex: 5, endColumnIndex: 3 }],
+          },
+        ],
+      }),
+    );
+    const grid = await getSheetGrid({
+      accessToken: "t",
+      spreadsheetId: "s",
+      sheetName: "Jobs",
+      includeMerges: true,
+    });
+
+    expect(grid.merges).toEqual([
+      { startRowIndex: 4, endRowIndex: 5, endColumnIndex: 3 },
+    ]);
+    // …and that omitted zero still reads as column A, so the row IS a heading.
+    expect(headingDataRows(grid.merges)).toEqual(new Map([[3, 3]]));
   });
 
   it("reports rowCount 0 when the tab has no gridProperties", async () => {
@@ -201,7 +280,7 @@ describe("getSheetGrid", () => {
       spreadsheetId: "s",
       sheetName: "Grouped",
     });
-    expect(grid).toEqual({ sheetId: 7, rowCount: 0 });
+    expect(grid).toEqual({ sheetId: 7, rowCount: 0, merges: [] });
   });
 
   it("throws NonRetriableError when the tab is absent", async () => {
@@ -294,5 +373,105 @@ describe("hexToRgb", () => {
     expect(() => hexToRgb("#fff")).toThrow(NonRetriableError);
     expect(() => hexToRgb("red")).toThrow(NonRetriableError);
     expect(() => hexToRgb("#12345g")).toThrow(NonRetriableError);
+  });
+});
+
+describe("headingDataRows", () => {
+  it("maps a single-row merge at column A to its DATA row index", () => {
+    // Grid row 4 → data row 3 (grid row 0 is the header).
+    expect(
+      headingDataRows([
+        {
+          startRowIndex: 4,
+          endRowIndex: 5,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ]),
+    ).toEqual(new Map([[3, 3]]));
+  });
+
+  // Pinning the index base, because the two consumers count from different
+  // places and getting it wrong fails SILENTLY — the trigger would watch the row
+  // under each section title instead of the title itself.
+  //
+  //   headingDataRows  → DATA-row index, header EXCLUDED (readSheetTable.rows)
+  //   the Sheets poll  → row index with the header AT 0 (the raw values array)
+  //
+  // So the poller adds one, and the heading's text is that row's column A.
+  it("is one lower than the poller's row index for the same row", () => {
+    //  grid 0 / poller 0 : Name | City   ← header
+    //  grid 1 / poller 1 : ██ Q1 Sales ██ ← heading, data row 0
+    //  grid 2 / poller 2 : Ada  | Pune
+    const rows = [["Name", "City"], ["Q1 Sales"], ["Ada", "Pune"]];
+    const merges = [
+      {
+        startRowIndex: 1,
+        endRowIndex: 2,
+        startColumnIndex: 0,
+        endColumnIndex: 2,
+      },
+    ];
+
+    const dataRows = [...headingDataRows(merges).keys()];
+    expect(dataRows).toEqual([0]);
+
+    const pollerRows = dataRows.map((i) => i + 1);
+    expect(pollerRows).toEqual([1]);
+    // The conversion lands on the merged band, not the row beneath it.
+    expect(rows[pollerRows[0]][0]).toBe("Q1 Sales");
+  });
+
+  it("ignores merges that are not heading-shaped", () => {
+    expect(
+      headingDataRows([
+        // Not anchored at column A — a mid-row merge in someone's data.
+        {
+          startRowIndex: 4,
+          endRowIndex: 5,
+          startColumnIndex: 1,
+          endColumnIndex: 3,
+        },
+        // Taller than one row — a vertically merged label, not a heading.
+        {
+          startRowIndex: 6,
+          endRowIndex: 9,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+        // The HEADER row itself, merged. A merged header is not a heading.
+        {
+          startRowIndex: 0,
+          endRowIndex: 1,
+          startColumnIndex: 0,
+          endColumnIndex: 3,
+        },
+      ]),
+    ).toEqual(new Map());
+  });
+
+  it("collects several headings, and is empty when the tab has no merges", () => {
+    expect(
+      headingDataRows([
+        {
+          startRowIndex: 1,
+          endRowIndex: 2,
+          startColumnIndex: 0,
+          endColumnIndex: 2,
+        },
+        {
+          startRowIndex: 7,
+          endRowIndex: 8,
+          startColumnIndex: 0,
+          endColumnIndex: 2,
+        },
+      ]),
+    ).toEqual(
+      new Map([
+        [0, 2],
+        [6, 2],
+      ]),
+    );
+    expect(headingDataRows([])).toEqual(new Map());
   });
 });

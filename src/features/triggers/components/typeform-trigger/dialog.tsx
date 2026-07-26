@@ -5,6 +5,7 @@ import { CheckCircle2 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -49,6 +50,7 @@ export const TypeformTriggerDialog = ({
   onOpenChange,
   onSubmit,
   defaultValues = {},
+  currentNodeId,
 }: Props) => {
   const trpc = useTRPC();
   const params = useParams();
@@ -157,9 +159,9 @@ export const TypeformTriggerDialog = ({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-h-[85vh] overflow-y-auto">
+        <DialogContent className="max-h-[85vh]">
           <DialogHeader>
-            <DialogTitle>Typeform Trigger</DialogTitle>
+            <EditableNodeTitle nodeId={currentNodeId} />
             <DialogDescription>
               Connect a Typeform, pick a form, then activate the webhook — no
               manual setup in Typeform.
@@ -302,7 +304,7 @@ export const TypeformTriggerDialog = ({
       {/* Fields open in their own wider window so long questions get a roomy,
           comfortable line. Closed via the built-in top-right X. */}
       <Dialog open={tableOpen} onOpenChange={setTableOpen}>
-        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-3xl">
+        <DialogContent className="max-h-[80vh] sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Fields in {formTitle || "this form"}</DialogTitle>
             <DialogDescription>

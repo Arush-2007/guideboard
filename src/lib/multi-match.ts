@@ -18,22 +18,47 @@ import { type FanOutItemSeed, isFanOutItem } from "@/inngest/fan-out";
  *     outputKey)` returns a seed, this run is one child of a fan-out — reshape
  *     the seed into the node's OWN single-match output shape (keeping the
  *     `__fanOut: true` marker) and return, without re-doing the node's work.
- *  3. End the list-producing path with `applyMultiMatchPolicy(...)` instead of
- *     returning the output directly.
+ *  3. Pick the single result it acts on with `selectSingleMatch(...)` (that is
+ *     what makes "last" differ from "first"), then end the list-producing path
+ *     with `applyMultiMatchPolicy(...)` instead of returning the output
+ *     directly.
  *  4. Drop `<MultiMatchSelect>` into its dialog.
  */
 
-export const MULTI_MATCH_MODES = ["first", "each", "error"] as const;
+export const MULTI_MATCH_MODES = ["first", "last", "each", "error"] as const;
 
 /**
  * - "first" (default): continue this run; downstream picks single values off
  *   the node's normal output (e.g. `firstRow.<col>`). Matches the pre-policy
  *   behavior exactly, including zero matches continuing downstream.
+ * - "last": identical to "first" in every way except WHICH match the run acts
+ *   on — the bottom-most instead of the topmost. It reads and writes the same
+ *   output fields (`firstRow`, `rowIndex`, …), so switching a saved node
+ *   between the two never breaks a downstream reference.
  * - "each": fan out — one child sub-execution per item; nothing downstream
  *   runs in this (the parent) run.
  * - "error": fail the run when more than one item matched.
  */
 export type MultiMatchMode = (typeof MULTI_MATCH_MODES)[number];
+
+/**
+ * The ONE match a single-match mode acts on: the bottom-most in "last", the
+ * topmost in every other mode ("first", "error", and an unset/legacy value).
+ * `undefined` when nothing matched.
+ *
+ * Every place a node collapses a match list down to a single result goes
+ * through this, so "last" selects the same item whichever action asks — the
+ * row `find_rows` continues with, and the row `update_row` writes.
+ *
+ * "each" acts on ALL items, so a caller in that mode must not call this; it
+ * hands the full list to `applyMultiMatchPolicy` instead.
+ */
+export function selectSingleMatch<T>(
+  matches: readonly T[],
+  mode: MultiMatchMode | undefined,
+): T | undefined {
+  return mode === "last" ? matches[matches.length - 1] : matches[0];
+}
 
 export const DEFAULT_MAX_FAN_OUT_ITEMS = 100;
 /** Hard upper bound on the "each" cap — shared by server schema, form, UI. */

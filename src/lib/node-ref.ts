@@ -8,6 +8,8 @@
  * picker, the editor, and the conversational builder all share one definition.
  */
 
+import { PLACEHOLDER_RE } from "@/lib/template-token";
+
 /**
  * Trigger (and placeholder) node types that DON'T get a ref. Triggers seed
  * fixed context keys (e.g. `telegram`, `webhook`) — renaming those is a separate
@@ -33,6 +35,50 @@ export const NON_REF_NODE_TYPES: ReadonlySet<string> = new Set([
 /** Whether a node of this type is assigned a `ref` — everything but triggers. */
 export function nodeTypeHasRef(type: string): boolean {
   return !NON_REF_NODE_TYPES.has(type);
+}
+
+/** `GOOGLE_SHEETS_ACTION` → `google sheets action`, the last-resort name. */
+export function humanizeNodeType(type: string): string {
+  return type.replace(/_/g, " ").toLowerCase();
+}
+
+/**
+ * The one name a node goes by in the UI — its settings-dialog title, and its
+ * heading in the variable picker.
+ *
+ * The ref (`AI_TEXT_1`) wins, because it is both the node's identity and the
+ * exact token its `@<AI_TEXT_1.output>@` references name. Ref-less nodes
+ * (triggers) fall back to the registry label ("Telegram Trigger"), then to the
+ * humanized type for a node type the registry doesn't know.
+ *
+ * `labelForType` is injected rather than imported: the registry that holds those
+ * labels (`config/node-options.ts`) pulls in lucide, and this module is shared
+ * with the engine and must stay out of the server bundle.
+ */
+export function nodeDisplayName(
+  node: RefCarrier | null | undefined,
+  labelForType: (type: string) => string | undefined,
+): string {
+  return displayNameFor(readNodeRef(node?.data), node?.type, labelForType);
+}
+
+/**
+ * The naming rule itself, over parts already pulled apart.
+ *
+ * Callers that hold a node object want `nodeDisplayName`. This overload exists
+ * for the ones that hold only a ref and a type — the picker's field rows, which
+ * carry those flattened out — so the rule is applied, not re-spelled. Two
+ * spellings that agree today drift the moment the rule changes, which is the
+ * whole reason this lives in one place.
+ */
+export function displayNameFor(
+  ref: string | null | undefined,
+  type: string | null | undefined,
+  labelForType: (type: string) => string | undefined,
+): string {
+  if (ref) return ref;
+  if (!type) return "Unnamed";
+  return labelForType(type) || humanizeNodeType(type);
 }
 
 /** The legacy per-node context key (`<type>_<id>`) a ref replaces. */
@@ -91,4 +137,341 @@ export function nextNodeRef(
     if (Number.isInteger(n) && n > max) max = n;
   }
   return `${type}_${max + 1}`;
+}
+
+/**
+ * Resolves the final, collision-free ref for every node in a save payload.
+ *
+ * `Node.ref` carries `@@unique([workflowId, ref])`, so two nodes claiming the
+ * same ref don't produce a warning — they abort the whole save with a raw
+ * Prisma constraint error the user can do nothing about. Ref assignment happens
+ * on the canvas (so a node renders as `AI_TEXT_1` the moment it's dropped),
+ * which means the server is receiving refs it did not mint and must not trust:
+ * any client bug, stale tab, or hand-rolled request turns into a dead
+ * "Failed to save workflow". This is the server-side door for that invariant.
+ *
+ * Resolution runs in three passes, and the ORDER is the whole correctness
+ * argument — every claim must be placed before any ref is minted:
+ *   1. A node whose claim matches what the database already has for it keeps
+ *      it. That ref is its frozen identity and existing `@<REF.path>@`
+ *      references point at it — moving it would silently re-aim them.
+ *   2. Remaining claims, in payload order, first come first served.
+ *   3. Only now are refs minted, for nodes that claimed nothing and for nodes
+ *      whose claim was already taken. Minting last is what stops a node with no
+ *      ref (a legacy row from before refs existed) from being handed a number
+ *      that a later node in the payload explicitly claims — which would move
+ *      that ref onto the wrong node and re-aim every reference to it.
+ *
+ * References are deliberately NOT rewritten for a bumped node: a reference
+ * written against the duplicated ref is already ambiguous (it could have meant
+ * either node), and guessing would silently re-point data flow. Bumping keeps
+ * the save working and leaves the ambiguity visible in the editor, which is the
+ * honest failure mode.
+ *
+ * `storedRefById` is the DB's current ref per node id — empty for a brand-new
+ * workflow. Returns the ref per node id (null for ref-less types) plus the
+ * nodes that had to be bumped, so callers can log or surface it.
+ */
+export function resolveNodeRefs<T extends { id: string } & RefCarrier>(
+  nodes: readonly T[],
+  storedRefById: ReadonlyMap<string, string | null> = new Map(),
+): {
+  refByNodeId: Map<string, string | null>;
+  reassigned: { nodeId: string; from: string; to: string }[];
+} {
+  const claimOf = (node: T): string | null =>
+    readNodeRef(node.data) ?? storedRefById.get(node.id) ?? null;
+
+  const refByNodeId = new Map<string, string | null>();
+  const reassigned: { nodeId: string; from: string; to: string }[] = [];
+  const used = new Set<string>();
+
+  // Ref-less types (triggers, INITIAL) resolve to null and are set aside here.
+  // They must not reserve a string even if a stale row still carries one — the
+  // ref-less list is a denylist that grows, so a type added to it later can
+  // leave old rows holding a ref that no longer means anything.
+  const eligible: { node: T; type: string }[] = [];
+  for (const node of nodes) {
+    if (node.type && nodeTypeHasRef(node.type)) {
+      eligible.push({ node, type: node.type });
+    } else {
+      refByNodeId.set(node.id, null);
+    }
+  }
+
+  // Pass 1: owners. A claim is "owned" when the database already agrees it
+  // belongs to this node, which is what makes it survive a clash.
+  const unowned: { node: T; type: string }[] = [];
+  for (const entry of eligible) {
+    const claim = claimOf(entry.node);
+    if (claim && storedRefById.get(entry.node.id) === claim) {
+      refByNodeId.set(entry.node.id, claim);
+      used.add(claim);
+    } else {
+      unowned.push(entry);
+    }
+  }
+
+  // Pass 2: everyone else's claim, payload order, first come first served.
+  const needsMint: { node: T; type: string }[] = [];
+  for (const entry of unowned) {
+    const claim = claimOf(entry.node);
+    if (claim && !used.has(claim)) {
+      refByNodeId.set(entry.node.id, claim);
+      used.add(claim);
+    } else {
+      needsMint.push(entry);
+    }
+  }
+
+  // Pass 3: mint, now that every claim in the payload is accounted for.
+  for (const { node, type } of needsMint) {
+    const next = nextNodeRef(type, used);
+    used.add(next);
+    refByNodeId.set(node.id, next);
+
+    const claim = claimOf(node);
+    if (claim) reassigned.push({ nodeId: node.id, from: claim, to: next });
+  }
+
+  return { refByNodeId, reassigned };
+}
+
+/**
+ * The canvas-side carrier of a ref.
+ *
+ * On a React Flow node the ref lives at `data.ref`, NOT as a top-level field.
+ * Three constraints force this and none of them are negotiable:
+ *   - React Flow only hands `data` (plus id/type/selected) to a node component,
+ *     so a top-level field is unreadable from the node that has to render it.
+ *   - `toSnapshot` (editor/lib/history.ts) rebuilds nodes from id/type/position/
+ *     data alone, so a top-level ref would be erased by the first undo.
+ *   - `serializeSnapshot` hashes `data`, so a ref change correctly marks the
+ *     editor dirty — which is what makes a rename (part 2) savable.
+ *
+ * The DB keeps `Node.ref` as its own column (it carries the
+ * `@@unique([workflowId, ref])` constraint); `workflows.getOne` injects it into
+ * `data` on read and `workflows.update` lifts it back out on write, so the
+ * persisted `data` blob never stores a duplicate copy that could drift.
+ */
+export type RefCarrier = {
+  type?: string | null;
+  data?: Record<string, unknown> | null;
+};
+
+/** Safely reads a node's ref out of its untyped React Flow `data` blob. */
+export function readNodeRef(data: RefCarrier["data"]): string | null {
+  const ref = (data as { ref?: unknown } | null | undefined)?.ref;
+  return typeof ref === "string" && ref.length > 0 ? ref : null;
+}
+
+/** Every ref currently in use on the canvas — the input to `nextNodeRef`. */
+export function collectNodeRefs(nodes: RefCarrier[]): Set<string> {
+  const refs = new Set<string>();
+  for (const node of nodes) {
+    const ref = readNodeRef(node.data);
+    if (ref) refs.add(ref);
+  }
+  return refs;
+}
+
+/**
+ * Stamps a freshly-created node with its ref, so it renders as `AI_TEXT_1` the
+ * instant it lands on the canvas rather than only after a save round-trip.
+ *
+ * Mutates nothing: returns a new node. `usedRefs` is READ AND WRITTEN — pass the
+ * same set across a batch (e.g. duplicating a multi-selection) so two nodes
+ * created in one tick can't be handed the same ref. Ref-less types (triggers,
+ * INITIAL) are returned untouched.
+ */
+export function withAssignedRef<T extends RefCarrier>(
+  node: T,
+  usedRefs: Set<string>,
+): T {
+  if (!node.type || !nodeTypeHasRef(node.type)) {
+    return node;
+  }
+  const ref = nextNodeRef(node.type, usedRefs);
+  usedRefs.add(ref);
+  return { ...node, data: { ...(node.data ?? {}), ref } };
+}
+
+/**
+ * Returns a node's `data` blob with any canvas-carried `ref` key removed, ready
+ * to persist. The ref belongs to the `Node.ref` column (which owns the
+ * `@@unique([workflowId, ref])` constraint), never the stored blob — so every
+ * write path strips it here rather than each one inlining the same destructure,
+ * and no blob can hold a second copy that drifts from the column.
+ */
+export function stripRefFromData(
+  data: Record<string, unknown> | null | undefined,
+): Record<string, unknown> {
+  const { ref: _canvasRef, ...rest } = data ?? {};
+  return rest;
+}
+
+/**
+ * Maximum length of a ref, so a runaway rename can't produce a caption that
+ * blows out the canvas or an unwieldy context key.
+ */
+export const MAX_REF_LENGTH = 48;
+
+/**
+ * Turns a user-typed node name into a token-safe ref slug.
+ *
+ * The ref is embedded literally inside `@<REF.path>@` context-key tokens, so it
+ * must contain only `[A-Za-z0-9_]` — a space, dot, `>` or `@` would break the
+ * placeholder grammar or the dot-path split. Runs of any other character
+ * collapse to a single `_` ("Summarize resume!" -> "Summarize_resume"), edge
+ * underscores are trimmed, and the result is capped. Returns `""` for input
+ * that has no usable characters (e.g. all punctuation) — callers treat an empty
+ * slug as an invalid name.
+ */
+export function toRefSlug(input: string): string {
+  return input
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+/, "")
+    .slice(0, MAX_REF_LENGTH)
+    .replace(/_+$/, "");
+}
+
+/**
+ * The shared token walk behind every ref-aware rewrite. Visits each `@<path>@`
+ * placeholder and calls `transform` with the path's FIRST dot-segment (the
+ * producing node's ref) and the remaining segments. `transform` returns the
+ * replacement token text, or `null` to leave the token untouched.
+ *
+ * Matching on the first segment — never a raw substring — is what lets a rename
+ * of `AI_TEXT_1` leave `AI_TEXT_10` (and an unrelated `SLACK_1`) alone, unlike
+ * the blind `.split().join()` `rewriteRefsInJson` can use only because cuids are
+ * globally unique.
+ */
+function mapRefTokens(
+  text: string,
+  transform: (firstSegment: string, restSegments: string[]) => string | null,
+): string {
+  return text.replace(PLACEHOLDER_RE, (match, path: string) => {
+    const segments = path.split(".");
+    const first = segments[0]?.trim() ?? "";
+    const replaced = transform(first, segments.slice(1));
+    return replaced ?? match;
+  });
+}
+
+/**
+ * Rewrites `@<oldRef>@` / `@<oldRef.path>@` placeholders in a single template
+ * string to use `newRef`, preserving the rest of the path verbatim.
+ */
+export function renameRefInTemplate(
+  template: string,
+  oldRef: string,
+  newRef: string,
+): string {
+  return mapRefTokens(template, (first, rest) =>
+    first === oldRef ? `@<${[newRef, ...rest].join(".")}>@` : null,
+  );
+}
+
+/**
+ * Removes every `@<ref…>@` placeholder whose ref is in `refs` (replacing the
+ * whole token with the empty string). Used when the producing nodes are deleted:
+ * the reference is already dead, and blanking it stops a later node that reclaims
+ * the same ref number from silently inheriting the dangling reference.
+ */
+export function removeRefsInTemplate(
+  template: string,
+  refs: ReadonlySet<string>,
+): string {
+  return mapRefTokens(template, (first) => (refs.has(first) ? "" : null));
+}
+
+/**
+ * JSON-blob wrappers around the template rewriters: serialize the blob so a
+ * reference is caught wherever it sits — a top-level field, a mapping value, a
+ * nested array — then reparse. Both return a new object; the input is untouched.
+ */
+export function renameRefInData(
+  data: Record<string, unknown> | null | undefined,
+  oldRef: string,
+  newRef: string,
+): Record<string, unknown> {
+  return JSON.parse(
+    renameRefInTemplate(JSON.stringify(data ?? {}), oldRef, newRef),
+  );
+}
+
+export function removeRefsInData(
+  data: Record<string, unknown> | null | undefined,
+  refs: ReadonlySet<string>,
+): Record<string, unknown> {
+  return JSON.parse(removeRefsInTemplate(JSON.stringify(data ?? {}), refs));
+}
+
+/**
+ * Strips references to just-removed nodes out of the surviving nodes' data.
+ *
+ * Called from the editor's `onNodesChange` — the single choke point both delete
+ * paths (the node's trash button via `deleteElements`, and the Delete key) flow
+ * through — so a dangling `@<deletedRef…>@` can never outlive its producer and
+ * later re-point at a new node that reclaims the same ref. Pure: returns a new
+ * array, or the same `survivors` reference when nothing needs changing.
+ */
+export function clearRefsForRemovedNodes<T extends RefCarrier>(
+  removed: RefCarrier[],
+  survivors: T[],
+): T[] {
+  const refs = collectNodeRefs(removed);
+  if (refs.size === 0) return survivors;
+  return survivors.map((node) => ({
+    ...node,
+    data: removeRefsInData(node.data, refs),
+  }));
+}
+
+/** The outcome of validating a rename before it is applied. */
+export type RenameCheck =
+  | { ok: true; slug: string }
+  | { ok: false; reason: "empty" | "unchanged" | "duplicate" };
+
+/**
+ * Validates a typed node name against the rest of the graph and, if valid,
+ * applies the rename across a node array: the target node's `data.ref` becomes
+ * the sanitized slug, and every OTHER node's `data` has its `@<oldRef…>@`
+ * references rewritten to the slug (token-aware). Pure — returns a new array —
+ * so the editor's `setNodes` and unit tests share one definition of what a
+ * rename does.
+ *
+ * `check` reports why a rename was rejected (empty/all-punctuation, unchanged,
+ * or a duplicate of another node's ref) so the caller can surface the right
+ * message; `nodes` is the unchanged input when `check.ok` is false.
+ */
+export function applyNodeRename<T extends { id: string } & RefCarrier>(
+  nodes: T[],
+  targetId: string,
+  typed: string,
+): { nodes: T[]; check: RenameCheck } {
+  const slug = toRefSlug(typed);
+  if (!slug) return { nodes, check: { ok: false, reason: "empty" } };
+
+  const target = nodes.find((node) => node.id === targetId);
+  const oldRef = readNodeRef(target?.data);
+  if (slug === oldRef) {
+    return { nodes, check: { ok: false, reason: "unchanged" } };
+  }
+
+  const taken = collectNodeRefs(
+    nodes.filter((node) => node.id !== targetId),
+  ).has(slug);
+  if (taken) return { nodes, check: { ok: false, reason: "duplicate" } };
+
+  const next = nodes.map((node) => {
+    if (node.id === targetId) {
+      return { ...node, data: { ...(node.data ?? {}), ref: slug } };
+    }
+    // Nothing to rewrite until the target has had a ref to be referenced by.
+    if (!oldRef) return node;
+    return { ...node, data: renameRefInData(node.data, oldRef, slug) };
+  });
+
+  return { nodes: next, check: { ok: true, slug } };
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { evaluateCondition } from "./compare";
+import {
+  describeCompareOptions,
+  evaluateCondition,
+  supportsNumericOption,
+  supportsTextOptions,
+} from "./compare";
 
 describe("evaluateCondition", () => {
   describe("numeric operators", () => {
@@ -55,6 +60,112 @@ describe("evaluateCondition", () => {
       expect(evaluateCondition("is_empty", [], "")).toBe(true);
       expect(evaluateCondition("is_not_empty", "x", "")).toBe(true);
       expect(evaluateCondition("is_empty", 0, "")).toBe(false);
+    });
+  });
+
+  describe("matching options", () => {
+    it("no options preserves exact, case-sensitive behavior", () => {
+      expect(evaluateCondition("equals", "RJ", "rj")).toBe(false);
+      expect(evaluateCondition("equals", "0001", "1")).toBe(false);
+      expect(evaluateCondition("equals", "RJ-09 AB", "RJ09AB")).toBe(false);
+    });
+
+    it("ignoreCase folds case for equals and contains", () => {
+      const opts = { ignoreCase: true };
+      expect(evaluateCondition("equals", "RJ", "rj", opts)).toBe(true);
+      expect(evaluateCondition("not_equals", "RJ", "rj", opts)).toBe(false);
+      expect(evaluateCondition("contains", "Hello World", "world", opts)).toBe(
+        true,
+      );
+    });
+
+    it("ignoreChars strips the listed characters (a space included)", () => {
+      // Neglect hyphen and space, fold case → the messy vehicle number matches.
+      const opts = { ignoreChars: "- ", ignoreCase: true };
+      expect(
+        evaluateCondition("equals", "RJ-09 AB 1234", "rj09ab1234", opts),
+      ).toBe(true);
+      expect(evaluateCondition("contains", "a - b - c", "abc", opts)).toBe(true);
+    });
+
+    it("a needle that strips to empty is a no-match, not a tautology", () => {
+      const opts = { ignoreChars: "-" };
+      expect(evaluateCondition("contains", "a-b", "-", opts)).toBe(false);
+      expect(evaluateCondition("not_contains", "a-b", "-", opts)).toBe(true);
+    });
+
+    it("numeric equates leading zeros / decimals when both parse", () => {
+      const opts = { numeric: true };
+      expect(evaluateCondition("equals", "0001", "1", opts)).toBe(true);
+      expect(evaluateCondition("equals", "1.0", "1", opts)).toBe(true);
+      expect(evaluateCondition("not_equals", "0001", "2", opts)).toBe(true);
+    });
+
+    it("numeric stays EXACT for long integers (no float rounding)", () => {
+      const opts = { numeric: true };
+      // These differ only past 2^53 — Number() would collapse them to equal.
+      expect(
+        evaluateCondition(
+          "equals",
+          "12345678901234567",
+          "12345678901234568",
+          opts,
+        ),
+      ).toBe(false);
+      // Leading zeros on a long integer still normalize to equal.
+      expect(
+        evaluateCondition(
+          "equals",
+          "0012345678901234567",
+          "12345678901234567",
+          opts,
+        ),
+      ).toBe(true);
+    });
+
+    it("numeric falls back to (normalized) string compare when not both numeric", () => {
+      const opts = { numeric: true, ignoreCase: true };
+      expect(evaluateCondition("equals", "RJ", "rj", opts)).toBe(true);
+      expect(evaluateCondition("equals", "abc", "1", opts)).toBe(false);
+    });
+  });
+
+  describe("option gating + description helpers", () => {
+    it("gates options to the operators where they apply", () => {
+      expect(supportsTextOptions("equals")).toBe(true);
+      expect(supportsTextOptions("contains")).toBe(true);
+      expect(supportsTextOptions("greater_than")).toBe(false);
+      expect(supportsTextOptions("is_empty")).toBe(false);
+      expect(supportsNumericOption("equals")).toBe(true);
+      expect(supportsNumericOption("contains")).toBe(false);
+    });
+
+    it("describes only the active options, empty when none", () => {
+      expect(describeCompareOptions(undefined)).toBe("");
+      expect(describeCompareOptions({})).toBe("");
+      expect(
+        describeCompareOptions({
+          ignoreCase: true,
+          ignoreChars: "- ",
+          numeric: true,
+        }),
+      ).toBe('case-insensitive · ignoring "- " · as number');
+    });
+
+    it("gates the description by operator so inert options aren't shown", () => {
+      const all = { ignoreCase: true, ignoreChars: "- ", numeric: true };
+      // equals uses all three.
+      expect(describeCompareOptions(all, "equals")).toBe(
+        'case-insensitive · ignoring "- " · as number',
+      );
+      // contains ignores numeric.
+      expect(describeCompareOptions(all, "contains")).toBe(
+        'case-insensitive · ignoring "- "',
+      );
+      // ordering / emptiness / row-selection operators apply none of them.
+      expect(describeCompareOptions(all, "greater_than")).toBe("");
+      expect(describeCompareOptions(all, "is_empty")).toBe("");
+      expect(describeCompareOptions(all, "in_list")).toBe("");
     });
   });
 });
