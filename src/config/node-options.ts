@@ -260,6 +260,15 @@ export const nodeOptionByType: Partial<Record<NodeType, NodeOption>> =
     ]),
   );
 
+// Loose label lookup, for callers holding a node type as a plain string (the
+// picker, `nodeDisplayName`) that must tolerate a type with no registration
+// rather than throw. Passed as the `labelForType` resolver into `node-ref.ts`,
+// which can't import this module — it reaches the engine, and this one pulls in
+// lucide.
+export function nodeTypeLabel(type: string): string | undefined {
+  return nodeOptionByType[type as NodeType]?.label;
+}
+
 // Strict lookup for the canvas node components, which are only ever rendered
 // for registered node types. Mirrors getExecutor in the executor registry.
 export function getNodeOption(type: NodeType): NodeOption {

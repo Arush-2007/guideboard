@@ -5,9 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { nodeOptionByType } from "@/config/node-options";
-import type { NodeType } from "@/generated/prisma";
-import { applyNodeRename, readNodeRef } from "@/lib/node-ref";
+import { nodeTypeLabel } from "@/config/node-options";
+import { applyNodeRename, nodeDisplayName } from "@/lib/node-ref";
 
 /**
  * The node settings dialog's title, which doubles as its rename control.
@@ -36,13 +35,11 @@ export function EditableNodeTitle({ nodeId }: { nodeId: string }) {
   const { getNodes, setNodes } = useReactFlow();
 
   const node = getNodes().find((n) => n.id === nodeId);
-  const currentName = readNodeRef(node?.data) ?? "";
-  // Unrenamed triggers have no name yet, so fall back to the type label
-  // ("Telegram Trigger") rather than a bare "Unnamed". Action nodes always carry
-  // an auto-assigned ref, so they show that.
-  const fallbackLabel =
-    (node?.type && nodeOptionByType[node.type as NodeType]?.label) || "Unnamed";
-  const displayLabel = currentName || fallbackLabel;
+  // Action nodes always carry an auto-assigned ref and show that; unrenamed
+  // triggers have no name yet and fall back to their type label ("Telegram
+  // Trigger"). `nodeDisplayName` owns that rule, shared with the variable
+  // picker's node list so a node reads the same in both places.
+  const displayLabel = nodeDisplayName(node, nodeTypeLabel);
 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");

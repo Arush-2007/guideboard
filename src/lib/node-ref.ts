@@ -37,6 +37,50 @@ export function nodeTypeHasRef(type: string): boolean {
   return !NON_REF_NODE_TYPES.has(type);
 }
 
+/** `GOOGLE_SHEETS_ACTION` → `google sheets action`, the last-resort name. */
+export function humanizeNodeType(type: string): string {
+  return type.replace(/_/g, " ").toLowerCase();
+}
+
+/**
+ * The one name a node goes by in the UI — its settings-dialog title, and its
+ * heading in the variable picker.
+ *
+ * The ref (`AI_TEXT_1`) wins, because it is both the node's identity and the
+ * exact token its `@<AI_TEXT_1.output>@` references name. Ref-less nodes
+ * (triggers) fall back to the registry label ("Telegram Trigger"), then to the
+ * humanized type for a node type the registry doesn't know.
+ *
+ * `labelForType` is injected rather than imported: the registry that holds those
+ * labels (`config/node-options.ts`) pulls in lucide, and this module is shared
+ * with the engine and must stay out of the server bundle.
+ */
+export function nodeDisplayName(
+  node: RefCarrier | null | undefined,
+  labelForType: (type: string) => string | undefined,
+): string {
+  return displayNameFor(readNodeRef(node?.data), node?.type, labelForType);
+}
+
+/**
+ * The naming rule itself, over parts already pulled apart.
+ *
+ * Callers that hold a node object want `nodeDisplayName`. This overload exists
+ * for the ones that hold only a ref and a type — the picker's field rows, which
+ * carry those flattened out — so the rule is applied, not re-spelled. Two
+ * spellings that agree today drift the moment the rule changes, which is the
+ * whole reason this lives in one place.
+ */
+export function displayNameFor(
+  ref: string | null | undefined,
+  type: string | null | undefined,
+  labelForType: (type: string) => string | undefined,
+): string {
+  if (ref) return ref;
+  if (!type) return "Unnamed";
+  return labelForType(type) || humanizeNodeType(type);
+}
+
 /** The legacy per-node context key (`<type>_<id>`) a ref replaces. */
 export function legacyOutputKey(type: string, nodeId: string): string {
   return `${type.toLowerCase()}_${nodeId}`;
