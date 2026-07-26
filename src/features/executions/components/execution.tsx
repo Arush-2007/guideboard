@@ -14,6 +14,7 @@ import {
 import Link from "next/link";
 import { type ReactNode, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { NodeTypeIcon } from "@/components/node-type-icon";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,6 +29,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Skeleton } from "@/components/ui/skeleton";
+import { nodeOptionByType, nodeTypeLabel } from "@/config/node-options";
 import { useSuspenseExecution } from "@/features/executions/hooks/use-executions";
 import {
   COMPARE_OPERATOR_LABELS,
@@ -51,7 +53,11 @@ import {
   resolveReferencedInput,
 } from "@/lib/friendly-output";
 import { nodeSummaries } from "@/lib/node-output-summary";
-import { NON_REF_NODE_TYPES } from "@/lib/node-ref";
+import {
+  displayNameFor,
+  humanizeNodeType,
+  NON_REF_NODE_TYPES,
+} from "@/lib/node-ref";
 import {
   ROW_MATCH_OPERATOR_LABELS,
   type RowMatchOperator,
@@ -760,10 +766,11 @@ const DataSection = ({
   );
 };
 
+// Deliberately no `nodeName`: it holds the node TYPE string, never the name the
+// user gave the node. Rows take a resolved `name` instead — see `NodeRow`.
 type NodeExecutionRow = {
   id: string;
   nodeId: string;
-  nodeName: string;
   nodeType: string;
   status: string;
   durationMs: number | null;
@@ -772,14 +779,19 @@ type NodeExecutionRow = {
   error: string | null;
 };
 
+// Only ever rendered for a node that actually ran — skipped ones are listed on
+// their own in `SkippedNodes`, so nothing here handles the SKIPPED status.
 const NodeRow = ({
   node,
+  name,
   executionId,
   producers,
   runNodeTypes,
   config,
 }: {
   node: NodeExecutionRow;
+  /** The name the user gave this node, resolved by `nodeDisplayNames`. */
+  name: string;
   executionId: string;
   producers: Producer[];
   runNodeTypes: string[];
@@ -787,8 +799,16 @@ const NodeRow = ({
   config: Record<string, unknown> | undefined;
 }) => {
   const [open, setOpen] = useState(false);
-  const isSkipped = node.status === NodeExecutionStatus.SKIPPED;
   const isTrigger = NON_REF_NODE_TYPES.has(node.nodeType);
+  // What kind of node this is, beside the name the user gave it. Falls back the
+  // same way `displayNameFor` does, because `nodeOptionByType` is a partial
+  // registry: an unregistered type has no label and no icon, and a row reading
+  // only "AI_TEXT_1" would say the least exactly when the type matters most.
+  // Dropped when it repeats the name — a ref-less node's name already IS its
+  // label, and printing both says "Telegram Trigger  Telegram Trigger".
+  const typeLabel =
+    nodeTypeLabel(node.nodeType) ?? humanizeNodeType(node.nodeType);
+  const subtitle = typeLabel === name ? null : typeLabel;
 
   // Input. A trigger has no upstream, so it shows its own payload (user-relevant
   // fields only). A middle node shows ONLY the upstream fields it references in
@@ -825,16 +845,9 @@ const NodeRow = ({
     return <SourceTables sources={sources} />;
   }, [isTrigger, node.nodeType, config, node.input, producers, runNodeTypes]);
 
-  // Output. Status first (failed/skipped get a note), then a per-node "what
+  // Output. Status first (a failure gets a note), then a per-node "what
   // happened" summary line plus the details table. Triggers just announce the run.
   const outputFriendly = useMemo<ReactNode | null>(() => {
-    if (node.status === NodeExecutionStatus.SKIPPED) {
-      return (
-        <StatusNote>
-          Skipped — an earlier branch didn't reach this node, so it never ran.
-        </StatusNote>
-      );
-    }
     if (node.status === NodeExecutionStatus.FAILED) {
       return (
         <StatusNote variant="error">
@@ -1447,20 +1460,23 @@ const NodeRow = ({
     <div className="rounded-md border p-3">
       <div className="flex items-center gap-2">
         {getStatusIcon(node.status)}
-        <span className="text-sm font-medium">{node.nodeName}</span>
-        <span className="text-xs text-muted-foreground">{node.nodeType}</span>
+        <NodeTypeIcon
+          icon={nodeOptionByType[node.nodeType as NodeType]?.icon}
+        />
+        <span className="text-sm font-medium">{name}</span>
+        {subtitle ? (
+          <span className="text-xs text-muted-foreground">{subtitle}</span>
+        ) : null}
         <div className="ml-auto flex items-center gap-2">
           {node.durationMs != null ? (
             <span className="text-xs text-muted-foreground">
               {formatDuration(node.durationMs)}
             </span>
           ) : null}
-          {!isSkipped ? (
-            <ReplayFromNodeButton
-              executionId={executionId}
-              nodeId={node.nodeId}
-            />
-          ) : null}
+          <ReplayFromNodeButton
+            executionId={executionId}
+            nodeId={node.nodeId}
+          />
         </div>
       </div>
 
@@ -1491,12 +1507,64 @@ const NodeRow = ({
   );
 };
 
+/**
+ * The nodes that never ran, listed on their own beside the run.
+ *
+ * A run that finishes records a `NodeExecution` row for every node in the
+ * topological order, skipped ones included, so without this split a five-node
+ * run of a twenty-node workflow reads as twenty results. Name and logo only: a
+ * skipped node has no output and its input is just the context that passed it
+ * by, so there is nothing here worth expanding.
+ *
+ * Not a complete accounting of what didn't run: a failed run rethrows at the
+ * failing node (`runWorkflowNodes`), so nodes past it are never recorded at all
+ * and appear in neither column.
+ */
+const SkippedNodes = ({
+  nodes,
+  isReplay,
+}: {
+  nodes: { id: string; nodeType: string; name: string }[];
+  isReplay: boolean;
+}) => {
+  return (
+    <Card className="rounded-md shadow-none">
+      <CardHeader>
+        <CardTitle className="text-sm">Skipped ({nodes.length})</CardTitle>
+        <CardDescription>
+          {/* Two causes, one panel: a replay runs only the slice forward of the
+              replayed node, everything else is a branch that wasn't taken. */}
+          {isReplay
+            ? "Not part of this replay."
+            : "These nodes weren't reached in this run."}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {nodes.map((node) => (
+          <div
+            key={node.id}
+            className="flex items-center gap-2 rounded-md border border-dashed p-2"
+          >
+            <NodeTypeIcon
+              icon={nodeOptionByType[node.nodeType as NodeType]?.icon}
+              className="opacity-60"
+            />
+            <span className="truncate text-sm text-muted-foreground">
+              {node.name}
+            </span>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
+  );
+};
+
 // Suspense fallback for the execution detail route. Mirrors `ExecutionView`'s
 // card — status-icon header, the 2-col metadata grid, and a short stack of
 // node-row placeholders — so the real detail lands without a layout jump.
 export const ExecutionDetailLoading = () => {
   return (
-    <Card className="shadow-none">
+    <Card className="rounded-md shadow-none">
       <CardHeader>
         <div className="flex items-center gap-3">
           <Skeleton className="size-5 rounded-full" />
@@ -1526,7 +1594,7 @@ export const ExecutionDetailLoading = () => {
             <Skeleton
               // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length static placeholder list
               key={index}
-              className="h-14 w-full rounded-xl"
+              className="h-14 w-full rounded-md"
             />
           ))}
         </div>
@@ -1545,6 +1613,46 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
       new Date(execution.startedAt).getTime()
     : null;
 
+  // The name each node goes by, by node id. `NodeExecution.nodeName` is a
+  // snapshot of `Node.name`, which is only ever the node TYPE string — the name
+  // the user gave the node is its `ref`, which lives on the workflow's nodes.
+  // Resolved through the same rule the editor and the variable picker use, so a
+  // node reads the same everywhere. A node deleted from the workflow since the
+  // run has no ref left to find and falls back to its registry label.
+  const nodeDisplayNames = useMemo(() => {
+    const refByNodeId = new Map(
+      execution.workflow.nodes.map((n) => [n.id, n.ref]),
+    );
+    return new Map(
+      execution.nodeExecutions.map((n) => [
+        n.nodeId,
+        displayNameFor(refByNodeId.get(n.nodeId), n.nodeType, nodeTypeLabel),
+      ]),
+    );
+  }, [execution.workflow.nodes, execution.nodeExecutions]);
+
+  // Only the nodes that actually ran belong in the run summary; the rest are
+  // listed separately (see `SkippedNodes`).
+  const ranNodes = useMemo(
+    () =>
+      execution.nodeExecutions.filter(
+        (n) => n.status !== NodeExecutionStatus.SKIPPED,
+      ),
+    [execution.nodeExecutions],
+  );
+
+  const skippedNodes = useMemo(
+    () =>
+      execution.nodeExecutions
+        .filter((n) => n.status === NodeExecutionStatus.SKIPPED)
+        .map((n) => ({
+          id: n.id,
+          nodeType: n.nodeType,
+          name: nodeDisplayNames.get(n.nodeId) ?? n.nodeType,
+        })),
+    [execution.nodeExecutions, nodeDisplayNames],
+  );
+
   // Map each context key to the node that wrote it, so a downstream node's input
   // can be labeled with its source node's name. A node's output diff is a single
   // namespaced key, so its first key is the context key it contributes.
@@ -1554,9 +1662,15 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
         if (!n.output || typeof n.output !== "object") return [];
         const contextKey = Object.keys(n.output)[0];
         if (!contextKey) return [];
-        return [{ contextKey, nodeType: n.nodeType, label: n.nodeName }];
+        return [
+          {
+            contextKey,
+            nodeType: n.nodeType,
+            label: nodeDisplayNames.get(n.nodeId) ?? n.nodeType,
+          },
+        ];
       }),
-    [execution.nodeExecutions],
+    [execution.nodeExecutions, nodeDisplayNames],
   );
 
   // Node types present in this run — lets the input view group "topLevel"
@@ -1577,153 +1691,179 @@ export const ExecutionView = ({ executionId }: { executionId: string }) => {
   }, [execution.workflow.nodes]);
 
   return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <div className="flex items-center gap-3">
-          {getStatusIcon(execution.status)}
-          <div>
-            <CardTitle>{formatStatus(execution.status)}</CardTitle>
-            <CardDescription>
-              Execution for {execution.workflow.name}
-            </CardDescription>
-          </div>
-          <div className="ml-auto">
-            <RerunButton executionId={execution.id} />
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">
-              Workflow
-            </p>
-            <Link
-              prefetch
-              className="text-sm hover:underline text-primary"
-              href={`/workflows/${execution.workflowId}`}
-            >
-              {execution.workflow.name}
-            </Link>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Status</p>
-            <p className="text-sm">{formatStatus(execution.status)}</p>
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Started</p>
-            <p className="text-sm">
-              {formatDistanceToNow(execution.startedAt, { addSuffix: true })}
-            </p>
-          </div>
-
-          {execution.completedAt ? (
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">
-                Completed
-              </p>
-              <p className="text-sm">
-                {formatDistanceToNow(execution.completedAt, {
-                  addSuffix: true,
-                })}
-              </p>
-            </div>
-          ) : null}
-
-          {totalDurationMs !== null ? (
-            <div>
-              <p className="text-sm font-medium text-muted-foreground">
-                Duration
-              </p>
-              <p className="text-sm">{formatDuration(totalDurationMs)}</p>
-            </div>
-          ) : null}
-
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">
-              Event ID
-            </p>
-            <p className="text-sm">{execution.inngestEventId}</p>
-          </div>
-        </div>
-
-        {execution.nodeExecutions.length > 0 && (
-          <div className="mt-6 space-y-2">
-            <p className="text-sm font-medium">Nodes</p>
-            {execution.nodeExecutions.map((node) => (
-              <NodeRow
-                key={node.id}
-                node={node}
-                executionId={execution.id}
-                producers={producers}
-                runNodeTypes={runNodeTypes}
-                config={configByNodeId.get(node.nodeId)}
-              />
-            ))}
-          </div>
-        )}
-
-        {execution.error && (
-          <div className="mt-6 p-4 bg-red-50 rounded-md space-y-3">
-            <div>
-              <p className="text-sm font-medium text-red-900 mb-2">Error</p>
-              <p className="text-sm text-red-800 font-mono">
-                {execution.error}
-              </p>
-            </div>
-
-            {execution.errorStack && (
-              <Collapsible
-                open={showStackTrace}
-                onOpenChange={setShowStackTrace}
-              >
-                <CollapsibleTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="text-red-900 hover:bg-red-100"
-                  >
-                    {showStackTrace ? "Hide stack trace" : "Show stack trace"}
-                  </Button>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <pre className="text-xs font-mono text-red-800 overflow-auto mt-2 p-2 bg-red-100">
-                    {execution.errorStack}
-                  </pre>
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-          </div>
-        )}
-
-        {execution.output != null && (
-          <div className="mt-6 p-4 bg-muted rounded-md">
-            <Collapsible
-              open={showFinalOutput}
-              onOpenChange={setShowFinalOutput}
-            >
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-medium">Final output</p>
-                <div className="flex items-center gap-1">
-                  <CopyJsonButton value={execution.output} />
-                  <CollapsibleTrigger asChild>
-                    <Button variant="ghost" size="sm" className="h-7 px-2">
-                      {showFinalOutput ? "Hide data" : "Show data"}
-                    </Button>
-                  </CollapsibleTrigger>
-                </div>
+    // The run summary takes the page's width, the skipped list the gutter beside
+    // it; below lg the aside stacks under the summary.
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-start">
+      <div className="min-w-0 flex-1">
+        {/* `rounded-md` over the Card default, so the summary box and the node
+            rows inside it share one corner radius. */}
+        <Card className="rounded-md shadow-none">
+          <CardHeader>
+            <div className="flex items-center gap-3">
+              {getStatusIcon(execution.status)}
+              <div>
+                <CardTitle>{formatStatus(execution.status)}</CardTitle>
+                <CardDescription>
+                  Execution for {execution.workflow.name}
+                </CardDescription>
               </div>
-              <CollapsibleContent className="mt-2">
-                <pre className="text-xs font-mono overflow-auto">
-                  {JSON.stringify(execution.output, null, 2)}
-                </pre>
-              </CollapsibleContent>
-            </Collapsible>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+              <div className="ml-auto">
+                <RerunButton executionId={execution.id} />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Workflow
+                </p>
+                <Link
+                  prefetch
+                  className="text-sm hover:underline text-primary"
+                  href={`/workflows/${execution.workflowId}`}
+                >
+                  {execution.workflow.name}
+                </Link>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Status
+                </p>
+                <p className="text-sm">{formatStatus(execution.status)}</p>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Started
+                </p>
+                <p className="text-sm">
+                  {formatDistanceToNow(execution.startedAt, {
+                    addSuffix: true,
+                  })}
+                </p>
+              </div>
+
+              {execution.completedAt ? (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Completed
+                  </p>
+                  <p className="text-sm">
+                    {formatDistanceToNow(execution.completedAt, {
+                      addSuffix: true,
+                    })}
+                  </p>
+                </div>
+              ) : null}
+
+              {totalDurationMs !== null ? (
+                <div>
+                  <p className="text-sm font-medium text-muted-foreground">
+                    Duration
+                  </p>
+                  <p className="text-sm">{formatDuration(totalDurationMs)}</p>
+                </div>
+              ) : null}
+
+              <div>
+                <p className="text-sm font-medium text-muted-foreground">
+                  Event ID
+                </p>
+                <p className="text-sm">{execution.inngestEventId}</p>
+              </div>
+            </div>
+
+            {ranNodes.length > 0 && (
+              <div className="mt-6 space-y-2">
+                <p className="text-sm font-medium">Nodes</p>
+                {ranNodes.map((node) => (
+                  <NodeRow
+                    key={node.id}
+                    node={node}
+                    name={nodeDisplayNames.get(node.nodeId) ?? node.nodeType}
+                    executionId={execution.id}
+                    producers={producers}
+                    runNodeTypes={runNodeTypes}
+                    config={configByNodeId.get(node.nodeId)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {execution.error && (
+              <div className="mt-6 p-4 bg-red-50 rounded-md space-y-3">
+                <div>
+                  <p className="text-sm font-medium text-red-900 mb-2">Error</p>
+                  <p className="text-sm text-red-800 font-mono">
+                    {execution.error}
+                  </p>
+                </div>
+
+                {execution.errorStack && (
+                  <Collapsible
+                    open={showStackTrace}
+                    onOpenChange={setShowStackTrace}
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-900 hover:bg-red-100"
+                      >
+                        {showStackTrace
+                          ? "Hide stack trace"
+                          : "Show stack trace"}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <pre className="text-xs font-mono text-red-800 overflow-auto mt-2 p-2 bg-red-100">
+                        {execution.errorStack}
+                      </pre>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+              </div>
+            )}
+
+            {execution.output != null && (
+              <div className="mt-6 p-4 bg-muted rounded-md">
+                <Collapsible
+                  open={showFinalOutput}
+                  onOpenChange={setShowFinalOutput}
+                >
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-medium">Final output</p>
+                    <div className="flex items-center gap-1">
+                      <CopyJsonButton value={execution.output} />
+                      <CollapsibleTrigger asChild>
+                        <Button variant="ghost" size="sm" className="h-7 px-2">
+                          {showFinalOutput ? "Hide data" : "Show data"}
+                        </Button>
+                      </CollapsibleTrigger>
+                    </div>
+                  </div>
+                  <CollapsibleContent className="mt-2">
+                    <pre className="text-xs font-mono overflow-auto">
+                      {JSON.stringify(execution.output, null, 2)}
+                    </pre>
+                  </CollapsibleContent>
+                </Collapsible>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {skippedNodes.length > 0 ? (
+        <aside className="lg:sticky lg:top-6 lg:w-72 lg:shrink-0">
+          <SkippedNodes
+            nodes={skippedNodes}
+            isReplay={execution.replayOfId != null}
+          />
+        </aside>
+      ) : null}
+    </div>
   );
 };

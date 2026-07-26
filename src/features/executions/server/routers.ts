@@ -99,9 +99,11 @@ export const executionsRouter = createTRPCRouter({
               name: true,
               // Node configs power the Friendly *input* view: we read each node's
               // `@<…>@` references to show only the upstream fields it actually
-              // uses (not the whole accumulated context).
+              // uses (not the whole accumulated context). `ref` is the name the
+              // user gave the node — NodeExecution.nodeName is a snapshot of
+              // Node.name, which is only ever the node type string.
               nodes: {
-                select: { id: true, data: true },
+                select: { id: true, data: true, ref: true },
               },
             },
           },
