@@ -9,9 +9,10 @@
  * duplicate. Dedup itself is enforced downstream by `executeWorkflow`'s
  * `check-idempotency` step against `Execution.idempotencyKey`.
  *
- * Deliberately NOT scoped to a workflow here: `sendWorkflowExecution` prefixes
- * every key with `wf:<workflowId>:`, so a key that named the workflow again
- * would be stating the same fact twice, in two places that could drift.
+ * Deliberately NOT scoped to a workflow here: that scoping is held by the
+ * `@@unique([workflowId, idempotencyKey])` constraint on `Execution`, so a key
+ * that named the workflow again would be stating the same fact twice, in two
+ * places that could drift.
  */
 export function googleFormIdempotencyKey(responseId?: string | null): string {
   const id =

@@ -61,8 +61,9 @@ export type FanOutDispatchPlan = {
  *   sees `{ item, index, total, __fanOut }` where the parent saw its summary.
  * - `idempotencyKey` includes `nodeId` so two fan-out nodes in the same
  *   execution can't collide, and `i` so items within a node stay distinct.
- *   `sendWorkflowExecution` additionally prefixes it with the workflow scope,
- *   so the stored key is `wf:<workflowId>:fanout:…`. Format consumer:
+ *   The key is stored verbatim — `sendWorkflowExecution` adds no prefix, since
+ *   workflow scoping is held by the `@@unique([workflowId, idempotencyKey])`
+ *   constraint rather than by the key's text. Format consumer:
  *   `fanOutItemNumber` in src/features/executions/components/executions.tsx
  *   parses this key for the lineage badge — change the shape there too.
  * - `blobKey` sits under the existing `replay-contexts/${executionId}/` prefix
