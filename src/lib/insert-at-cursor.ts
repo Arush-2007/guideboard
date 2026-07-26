@@ -1,22 +1,31 @@
 /**
- * Inserts text at the current selection in an input/textarea, or appends if
- * there is no selection info.
+ * Where an insert should land in a control: its selection, or the end of the
+ * value when the control isn't the one being typed in.
+ *
+ * The focus check is the whole point. A control the user has never clicked into
+ * reports `selectionStart` of 0 — not `null` — so trusting it blindly puts every
+ * inserted token at the START of an existing value: opening a saved node whose
+ * message reads `Order shipped` and picking a field gives
+ * `@<AI_TEXT_1.output>@Order shipped`. That is invisible on a new node, where 0
+ * IS the end. Unless the control actually holds focus, an insert belongs at the
+ * end.
  */
-export function insertAtCursor(
+export function caretRangeIn(
   element: HTMLInputElement | HTMLTextAreaElement | null,
   currentValue: string,
-  insert: string,
-): string {
+): { start: number; end: number } {
+  const focused =
+    element !== null &&
+    typeof document !== "undefined" &&
+    document.activeElement === element;
   if (
-    !element ||
+    !focused ||
     element.selectionStart == null ||
     element.selectionEnd == null
   ) {
-    return currentValue + insert;
+    return { start: currentValue.length, end: currentValue.length };
   }
-  const start = element.selectionStart;
-  const end = element.selectionEnd;
-  return currentValue.slice(0, start) + insert + currentValue.slice(end);
+  return { start: element.selectionStart, end: element.selectionEnd };
 }
 
 export function focusAfterInsert(

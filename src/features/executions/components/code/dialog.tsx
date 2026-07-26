@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/form";
 import { Textarea } from "@/components/ui/textarea";
 import { VariablePicker } from "@/components/variable-picker";
-import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
+import { caretRangeIn, focusAfterInsert } from "@/lib/insert-at-cursor";
 import { cn } from "@/lib/utils";
 
 // Mirrors `codeSchema` in node-schemas.ts. Both are required: the dialog strips
@@ -91,19 +91,14 @@ export const CodeDialog = ({
    * `input`, so prefixing `input.` yields a valid expression.
    */
   const insertVariable = (barePath: string) => {
-    const el = textareaRef.current;
-    // Reads the live caret from the element (an unfocused textarea reports 0,
-    // which would prepend); fall back to appending at the end in that case.
-    const focused =
-      el !== null &&
-      typeof document !== "undefined" &&
-      document.activeElement === el;
-    const caret =
-      focused && el.selectionStart !== null ? el.selectionStart : code.length;
-
+    // `caretRangeIn` owns the unfocused-control rule (an untouched textarea
+    // reports a caret of 0, which would prepend rather than append).
+    const { start, end } = caretRangeIn(textareaRef.current, code);
     const snippet = `input.${barePath}`;
-    const next = insertAtCursor(focused ? el : null, code, snippet);
-    setCode(next, caret + snippet.length);
+    setCode(
+      code.slice(0, start) + snippet + code.slice(end),
+      start + snippet.length,
+    );
   };
 
   const handleSubmit = (values: CodeFormValues) => {

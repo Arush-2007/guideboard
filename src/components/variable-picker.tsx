@@ -42,6 +42,13 @@ export type VariablePickerProps = {
    * than a rendered template — e.g. the Condition node's "Field path".
    */
   bare?: boolean;
+  /**
+   * Controls the popover from outside — how the fields' typed `@<` shortcut
+   * opens it. Left undefined, the picker owns its own open state and only the
+   * braces button opens it.
+   */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 };
 
 /**
@@ -208,11 +215,35 @@ export function VariablePicker({
   bare,
   currentValue,
   extraGroups = [],
+  open: controlledOpen,
+  onOpenChange,
 }: VariablePickerProps) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
   const triggerRef = useRef<HTMLButtonElement>(null);
-  /** The dialog to open beside, resolved from the DOM when the picker opens. */
-  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
+  /**
+   * Whether this opening came from the braces button. A picker summoned by
+   * typing `@<` must NOT pull focus out of the field mid-sentence — see the
+   * PopoverContent below — while one opened by clicking the button should
+   * behave like any other popover and take focus.
+   */
+  const openedByTrigger = useRef(false);
+  /**
+   * The dialog to open beside, resolved from the DOM the first render the
+   * picker is open — a ref rather than state because the popover positions
+   * itself in that same render, and a state update landing an effect later
+   * would paint one frame at the wrong place.
+   */
+  const anchorRef = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) {
+    // Resolved on each open rather than on mount: a dialog renders its content
+    // only while it is open, and a picker inside a WideOverlayPanel layered over
+    // another dialog has to find the one it is in NOW. The last anchor is kept
+    // once closed so the exit animation doesn't jump to the trigger.
+    anchorRef.current = enclosingDialog(triggerRef.current);
+  }
+  wasOpen.current = open;
   /** Which source's fields are showing, i.e. whether panel 2 is up. */
   const [openSourceKey, setOpenSourceKey] = useState<string | null>(null);
 
@@ -262,8 +293,14 @@ export function VariablePicker({
     if (sourceIsGone) setOpenSourceKey(null);
   }, [sourceIsGone]);
 
+  const setOpen = (next: boolean) => {
+    if (controlledOpen === undefined) setUncontrolledOpen(next);
+    onOpenChange?.(next);
+  };
+
   const close = () => {
     setOpen(false);
+    openedByTrigger.current = false;
     // Reopening always starts on the node list, so the picker reads the same way
     // every time rather than resuming wherever the last insert left it.
     setOpenSourceKey(null);
@@ -279,10 +316,8 @@ export function VariablePicker({
       close();
       return;
     }
-    // Resolved on open rather than on mount: a dialog renders its content only
-    // while it is open, and a picker inside a WideOverlayPanel layered over
-    // another dialog has to find the one it is in NOW.
-    setAnchorEl(enclosingDialog(triggerRef.current));
+    // Radix only asks to open from an interaction with the trigger.
+    openedByTrigger.current = true;
     setOpen(true);
   };
 
@@ -306,13 +341,21 @@ export function VariablePicker({
           centered, in the SAME place every time regardless of which field's
           button was clicked. With no dialog to anchor to, Radix falls back to
           the trigger, which is the sane place for a picker outside one. */}
-      {anchorEl ? <PopoverAnchor virtualRef={{ current: anchorEl }} /> : null}
+      {anchorRef.current ? (
+        <PopoverAnchor virtualRef={{ current: anchorRef.current }} />
+      ) : null}
       <PopoverContent
         side="right"
         align="center"
         sideOffset={16}
         collisionPadding={16}
         className="w-80 overflow-hidden border-primary/60 p-0"
+        // Typing `@<` opens the picker without interrupting the sentence: focus
+        // stays in the field, so the next keystroke still lands there and the
+        // panel simply waits beside it.
+        onOpenAutoFocus={(event) => {
+          if (!openedByTrigger.current) event.preventDefault();
+        }}
         // Escape mirrors the two crosses rather than always dismissing: from a
         // fields panel it steps back to the node list, and only from the node
         // list does it close the picker. Otherwise the keyboard has no

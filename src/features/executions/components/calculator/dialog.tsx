@@ -22,11 +22,22 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { usePickerTrigger } from "@/components/use-variable-field";
+import {
+  HIGHLIGHTABLE_CONTROL_CLASS,
+  HIGHLIGHTED_CONTROL_CLASS,
+  VariableHighlight,
+} from "@/components/variable-highlight";
 import { VariablePicker } from "@/components/variable-picker";
 import { toPlainDecimal, tryEvaluateExpression } from "@/lib/expression";
-import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
+import { caretRangeIn, focusAfterInsert } from "@/lib/insert-at-cursor";
 import { PLACEHOLDER_RE } from "@/lib/template-token";
 import { cn } from "@/lib/utils";
+import {
+  applyPickedToken,
+  hasPlaceholder,
+  type TriggerRange,
+} from "@/lib/variable-field";
 import { applyBackspace, nextBracket, toReadableExpression } from "./keypad";
 
 // Mirrors `calculatorSchema` in node-schemas.ts. Both are required: the dialog
@@ -102,6 +113,19 @@ type Preview =
   | { kind: "deferred"; note: string }
   | { kind: "value"; readable: string; note: string };
 
+/**
+ * The display's own look, shared with its highlight layer so the two copies of
+ * the expression land on the same pixel — see `VariableHighlight`.
+ *
+ * No text-size override: the base Input's `text-base md:text-sm` is what every
+ * other field in the app renders at, and a one-off `text-lg` here made the
+ * display the only oversized control in any dialog. `font-mono` stays — an
+ * expression should be monospaced — and the box keeps a little extra height so
+ * it still reads as a display rather than a plain text field. `text-right`
+ * keeps the tail of a long expression in view while typing.
+ */
+const DISPLAY_CLASS = "h-12 text-right font-mono";
+
 export const CalculatorDialog = ({
   open,
   onOpenChange,
@@ -116,6 +140,7 @@ export const CalculatorDialog = ({
   });
 
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const trigger = usePickerTrigger();
 
   useEffect(() => {
     if (open) {
@@ -124,6 +149,8 @@ export const CalculatorDialog = ({
   }, [open, defaultValues, form]);
 
   const expression = form.watch("expression") ?? "";
+  /** Only an expression holding references needs the highlight layer at all. */
+  const highlighted = hasPlaceholder(expression);
 
   const setExpression = (next: string, caret?: number) => {
     form.setValue("expression", next, {
@@ -135,33 +162,28 @@ export const CalculatorDialog = ({
   };
 
   /**
-   * Where a keypad press should act.
-   *
-   * An input the user has never clicked into reports `selectionStart` of 0 —
-   * not `null` — so trusting it blindly made every key insert at the START of
-   * an existing expression: opening a node holding `2 + 3` and pressing `5`
-   * gave `52 + 3`. That is invisible on a new node, where 0 IS the end. Unless
-   * the display actually holds focus, a keypress belongs at the end.
+   * Where a keypad press should act. The unfocused-display rule this depends on
+   * — a keypress on a node you haven't clicked into appends rather than
+   * prepending — lives in `caretRangeIn`, shared with the variable fields.
    */
-  const caretRange = () => {
-    const el = inputRef.current;
-    const focused =
-      el !== null &&
-      typeof document !== "undefined" &&
-      document.activeElement === el;
+  const caretRange = () => caretRangeIn(inputRef.current, expression);
 
-    if (!focused || el.selectionStart === null || el.selectionEnd === null) {
-      return { el: null, start: expression.length, end: expression.length };
-    }
-    return { el, start: el.selectionStart, end: el.selectionEnd };
-  };
-
-  /** Types `text` at the caret, exactly as `VariableInput` does for its picker. */
-  const insert = (text: string) => {
-    const { el, start } = caretRange();
-    // A null element makes `insertAtCursor` append, which is what an unfocused
-    // display should do.
-    setExpression(insertAtCursor(el, expression, text), start + text.length);
+  /**
+   * Types `text` at the caret, exactly as `VariableInput` does for its picker.
+   * A pick carries the `@<` that summoned the picker, if that is how it was
+   * opened, so the two characters are consumed rather than left behind.
+   */
+  const insert = (text: string, pickTrigger: TriggerRange | null = null) => {
+    // An unfocused display reports the end of the expression, so this appends —
+    // which is what a keypad press on an untouched node should do.
+    const { start, end } = caretRange();
+    const result = applyPickedToken(
+      expression,
+      text,
+      { start, end },
+      pickTrigger,
+    );
+    setExpression(result.value, result.caret);
   };
 
   const backspace = () => {
@@ -261,34 +283,47 @@ export const CalculatorDialog = ({
               name="expression"
               render={({ field }) => (
                 <FormItem className="min-w-0">
-                  <FormControl>
-                    {/* A real input, not rendered chips: the caret, keyboard
-                        entry, selection and paste all have to work, and every
-                        key inserts at the caret position.
-                        This is the ONLY element allowed to scroll sideways: an
-                        <input> already scrolls its own text natively, and the
-                        base Input carries `w-full min-w-0`, so a long
-                        expression stays inside the box instead of widening the
-                        dialog. `text-right` keeps the tail in view while typing. */}
-                    <Input
-                      {...field}
-                      ref={(el) => {
-                        field.ref(el);
-                        inputRef.current = el;
-                      }}
-                      placeholder="e.g. 1200 * 1.18"
-                      autoComplete="off"
-                      spellCheck={false}
-                      /* No text-size override: the base Input's
-                         `text-base md:text-sm` is what every other field in the
-                         app renders at, and a one-off `text-lg` here made the
-                         display the only oversized control in any dialog.
-                         `font-mono` stays — an expression should be monospaced —
-                         and the box keeps a little extra height so it still
-                         reads as a display rather than a plain text field. */
-                      className="h-12 text-right font-mono"
-                    />
-                  </FormControl>
+                  {/* One cell holding the input and the layer that paints its
+                      references blue — see VariableHighlight. */}
+                  <div className="grid grid-cols-1">
+                    <FormControl>
+                      {/* A real input, not rendered chips: the caret, keyboard
+                          entry, selection and paste all have to work, and every
+                          key inserts at the caret position.
+                          This is the ONLY element allowed to scroll sideways: an
+                          <input> already scrolls its own text natively, and the
+                          base Input carries `w-full min-w-0`, so a long
+                          expression stays inside the box instead of widening the
+                          dialog. */}
+                      <Input
+                        {...field}
+                        ref={(el) => {
+                          field.ref(el);
+                          inputRef.current = el;
+                        }}
+                        onChange={(event) => {
+                          field.onChange(event);
+                          trigger.noteEdit(event.currentTarget);
+                        }}
+                        placeholder="e.g. 1200 * 1.18"
+                        autoComplete="off"
+                        spellCheck={false}
+                        className={cn(
+                          "col-start-1 row-start-1",
+                          HIGHLIGHTABLE_CONTROL_CLASS,
+                          DISPLAY_CLASS,
+                          highlighted && HIGHLIGHTED_CONTROL_CLASS,
+                        )}
+                      />
+                    </FormControl>
+                    {highlighted ? (
+                      <VariableHighlight
+                        value={expression}
+                        controlRef={inputRef}
+                        className={DISPLAY_CLASS}
+                      />
+                    ) : null}
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
@@ -421,7 +456,9 @@ export const CalculatorDialog = ({
                 currentNodeId={currentNodeId}
                 workflowId={workflowId}
                 currentValue={expression}
-                onSelect={insert}
+                onSelect={(token) => insert(token, trigger.takeTrigger())}
+                open={trigger.pickerOpen}
+                onOpenChange={trigger.handlePickerOpenChange}
                 className={cn(keyClass, "size-full")}
               />
               <Button

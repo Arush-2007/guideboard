@@ -2,9 +2,14 @@
 
 import * as React from "react";
 import { Input } from "@/components/ui/input";
+import { useVariableField } from "@/components/use-variable-field";
+import {
+  HIGHLIGHTABLE_CONTROL_CLASS,
+  HIGHLIGHTED_CONTROL_CLASS,
+  VariableHighlight,
+} from "@/components/variable-highlight";
 import { VariablePicker } from "@/components/variable-picker";
 import { parseCustomFeatureToken } from "@/lib/custom-feature-token";
-import { focusAfterInsert, insertAtCursor } from "@/lib/insert-at-cursor";
 import type { PickerExtraGroup } from "@/lib/upstream-fields";
 import { cn } from "@/lib/utils";
 
@@ -35,58 +40,67 @@ export const VariableInput = React.forwardRef<
     },
     ref,
   ) => {
-    const innerRef = React.useRef<HTMLInputElement | null>(null);
-
-    const setRefs = (node: HTMLInputElement | null) => {
-      innerRef.current = node;
-      if (typeof ref === "function") ref(node);
-      else if (ref) ref.current = node;
-    };
-
-    const strValue = value === undefined || value === null ? "" : String(value);
+    const field = useVariableField<HTMLInputElement>({
+      value,
+      onChange,
+      name: rest.name,
+      forwardedRef: ref,
+      disabled,
+    });
 
     const handleVariableSelect = (variablePath: string) => {
-      const el = innerRef.current;
       // A custom-feature token owns the whole field (it must be its sole value),
       // so selecting one REPLACES the field instead of inserting at the cursor.
       // Otherwise re-configuring it (e.g. changing the padding) would append a
       // second token, and the anchored parser would then ignore both — leaving
       // the cell blank.
       if (parseCustomFeatureToken(variablePath)) {
-        onChange?.({
-          target: { value: variablePath, name: rest.name },
-        } as React.ChangeEvent<HTMLInputElement>);
+        field.replaceAll(variablePath);
         return;
       }
-      const start = el?.selectionStart ?? strValue.length;
-      const newVal = insertAtCursor(el, strValue, variablePath);
-      const synthetic = {
-        target: { value: newVal, name: rest.name },
-      } as React.ChangeEvent<HTMLInputElement>;
-      onChange?.(synthetic);
-      if (el && el.selectionStart != null) {
-        focusAfterInsert(el, start + variablePath.length);
-      }
+      field.insert(variablePath);
     };
 
+    // `bare` fields hold a raw dotted path, not `@<path>@` tokens, so there is
+    // never anything for the highlight layer to pick out.
+    const highlighted = field.highlighted && !bare;
+    // The one className both copies share, so they stay glyph-aligned.
+    const sharedClassName = cn("pr-10", className);
+
     return (
-      <div className="relative w-full">
+      // `grid-cols-1` is Tailwind's `minmax(0, 1fr)`: the control and its
+      // highlight layer share one cell that can't be widened by a long value.
+      <div className="relative grid w-full grid-cols-1">
         <Input
-          ref={setRefs}
-          className={cn("pr-10", className)}
+          ref={field.setRefs}
+          className={cn(
+            "col-start-1 row-start-1",
+            HIGHLIGHTABLE_CONTROL_CLASS,
+            sharedClassName,
+            highlighted && HIGHLIGHTED_CONTROL_CLASS,
+          )}
           value={value}
-          onChange={onChange}
+          onChange={field.handleChange}
           disabled={disabled}
           {...rest}
         />
+        {highlighted ? (
+          <VariableHighlight
+            value={field.strValue}
+            controlRef={field.innerRef}
+            className={sharedClassName}
+          />
+        ) : null}
         <div className="absolute bottom-1 right-1 z-10">
           <VariablePicker
             currentNodeId={currentNodeId}
             workflowId={workflowId}
             onSelect={handleVariableSelect}
+            open={field.pickerOpen}
+            onOpenChange={field.handlePickerOpenChange}
             disabled={disabled}
             bare={bare}
-            currentValue={strValue}
+            currentValue={field.strValue}
             extraGroups={extraGroups}
           />
         </div>
