@@ -2,7 +2,7 @@
 
 import { useEdges, useNodes } from "@xyflow/react";
 import { Braces, ChevronRight } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { CustomFeatureEntry } from "@/components/custom-feature-entry";
 import { NodeTypeIcon } from "@/components/node-type-icon";
 import { Button } from "@/components/ui/button";
@@ -42,13 +42,26 @@ export type VariablePickerProps = {
    * than a rendered template — e.g. the Condition node's "Field path".
    */
   bare?: boolean;
-  /**
-   * Horizontal offset for the fixed popover anchor. Defaults to `ml-72` (≈ half
-   * the standard `sm:max-w-xl` dialog). Pass `ml-96` when the picker lives in a
-   * wider `WideOverlayPanel` (`sm:max-w-3xl`) so the popover clears its edge.
-   */
-  anchorClassName?: string;
 };
+
+/**
+ * The surface the popover opens beside: the innermost dialog the picker is
+ * rendered inside, found from the trigger.
+ *
+ * This used to be a Tailwind offset each call site passed in by hand (`ml-72`
+ * for a standard dialog, `ml-96` for the 1.6×-wide `WideOverlayPanel`) — a
+ * measurement of the dialog, guessed by the caller, restated in four prop
+ * doc-comments. Three of eight call sites had it wrong, and a `VariableTextarea`
+ * had no way to pass it at all. The dialog knows its own width, so ask it:
+ * `closest` naturally finds the INNERMOST dialog, which is exactly the nested
+ * `WideOverlayPanel` case the constants were hand-encoding.
+ *
+ * Returns null when the picker isn't inside a dialog, and the popover falls back
+ * to Radix's default of anchoring to the trigger.
+ */
+function enclosingDialog(el: HTMLElement | null): HTMLElement | null {
+  return el?.closest<HTMLElement>('[data-slot="dialog-content"]') ?? null;
+}
 
 /** Strips the `@<path>@` template wrapper down to the bare dotted path. */
 function toBarePath(insertText: string): string {
@@ -195,9 +208,11 @@ export function VariablePicker({
   bare,
   currentValue,
   extraGroups = [],
-  anchorClassName = "ml-72",
 }: VariablePickerProps) {
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  /** The dialog to open beside, resolved from the DOM when the picker opens. */
+  const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   /** Which source's fields are showing, i.e. whether panel 2 is up. */
   const [openSourceKey, setOpenSourceKey] = useState<string | null>(null);
 
@@ -259,13 +274,23 @@ export function VariablePicker({
     close();
   };
 
+  const handleOpenChange = (next: boolean) => {
+    if (!next) {
+      close();
+      return;
+    }
+    // Resolved on open rather than on mount: a dialog renders its content only
+    // while it is open, and a picker inside a WideOverlayPanel layered over
+    // another dialog has to find the one it is in NOW.
+    setAnchorEl(enclosingDialog(triggerRef.current));
+    setOpen(true);
+  };
+
   return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => (next ? setOpen(true) : close())}
-    >
+    <Popover open={open} onOpenChange={handleOpenChange}>
       <PopoverTrigger asChild>
         <Button
+          ref={triggerRef}
           type="button"
           variant="outline"
           size="icon"
@@ -276,18 +301,12 @@ export function VariablePicker({
           <Braces className="size-4" />
         </Button>
       </PopoverTrigger>
-      {/* Anchor the panel to a fixed point at the right edge of the centered
-          config dialog, so it opens in the SAME place every time — independent
-          of which field's button was clicked. anchorClassName sets the offset:
-          ml-72 (18rem) ≈ half the dialog's sm:max-w-xl width; a WideOverlayPanel
-          passes ml-96. top-1/2 + align="center" keeps it vertically centered
-          next to the dialog. */}
-      <PopoverAnchor
-        className={cn(
-          "pointer-events-none fixed top-1/2 left-1/2 h-0 w-0",
-          anchorClassName,
-        )}
-      />
+      {/* Anchoring to the whole dialog — with side="right" align="center" — is
+          what puts the panel just off the dialog's right edge, vertically
+          centered, in the SAME place every time regardless of which field's
+          button was clicked. With no dialog to anchor to, Radix falls back to
+          the trigger, which is the sane place for a picker outside one. */}
+      {anchorEl ? <PopoverAnchor virtualRef={{ current: anchorEl }} /> : null}
       <PopoverContent
         side="right"
         align="center"

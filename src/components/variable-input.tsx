@@ -15,8 +15,6 @@ export type VariableInputProps = React.ComponentProps<typeof Input> & {
   bare?: boolean;
   /** Fields the current node offers about itself (forwarded to VariablePicker). */
   extraGroups?: PickerExtraGroup[];
-  /** Override for the picker popover anchor (forwarded to VariablePicker). */
-  anchorClassName?: string;
 };
 
 export const VariableInput = React.forwardRef<
@@ -33,7 +31,6 @@ export const VariableInput = React.forwardRef<
       disabled,
       bare,
       extraGroups,
-      anchorClassName,
       ...rest
     },
     ref,
@@ -91,7 +88,6 @@ export const VariableInput = React.forwardRef<
             bare={bare}
             currentValue={strValue}
             extraGroups={extraGroups}
-            anchorClassName={anchorClassName}
           />
         </div>
       </div>

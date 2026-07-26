@@ -36,12 +36,6 @@ export type FieldMappingProps = {
    * every column from the anchor row would silently duplicate it.
    */
   extraGroups?: PickerExtraGroup[];
-  /**
-   * Override for the variable picker's popover anchor. Defaults to `ml-72`
-   * (half the standard config dialog); pass `ml-96` when rendered inside a
-   * `WideOverlayPanel` so the popover clears the wider overlay's right edge.
-   */
-  anchorClassName?: string;
 };
 
 /**
@@ -58,7 +52,6 @@ export function FieldMapping({
   workflowId,
   renderAccessory,
   extraGroups,
-  anchorClassName,
 }: FieldMappingProps) {
   const nodes = useNodes();
   const edges = useEdges();
@@ -121,7 +114,6 @@ export function FieldMapping({
               currentNodeId={currentNodeId}
               workflowId={workflowId}
               extraGroups={extraGroups}
-              anchorClassName={anchorClassName}
             />
             {renderAccessory ? renderAccessory(target) : null}
           </div>

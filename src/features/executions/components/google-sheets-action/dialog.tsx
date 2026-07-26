@@ -392,7 +392,6 @@ function ColumnMappingPanel({
         currentNodeId={currentNodeId}
         workflowId={workflowId}
         extraGroups={extraGroups}
-        anchorClassName="ml-96"
         renderAccessory={
           creatingRow
             ? (target) => (
@@ -475,9 +474,6 @@ function HeadingFilterInput({
             ))}
           </SelectContent>
         </Select>
-        {/* No anchorClassName: every heading filter is rendered straight into
-            the node's standard-width config dialog, not a WideOverlayPanel, so
-            the picker takes the default ml-72 offset. */}
         <VariableInput
           placeholder="Invoices — March 2026"
           value={value?.value ?? ""}
@@ -815,7 +811,6 @@ function ColorRulesEditor({
                 currentNodeId={currentNodeId}
                 workflowId={workflowId}
                 columnOptions={columnOptions}
-                anchorClassName="ml-96"
               />
               {ruleError?.conditions?.message ? (
                 <p className="text-sm text-destructive">
@@ -1428,7 +1423,6 @@ export const GoogleSheetsActionDialog = ({
                               currentNodeId={currentNodeId}
                               workflowId={workflowId}
                               columnOptions={headers}
-                              anchorClassName="ml-96"
                             />
                             <p className="text-xs text-muted-foreground">
                               At least one condition is required — it is what
@@ -1797,7 +1791,6 @@ export const GoogleSheetsActionDialog = ({
                         currentNodeId={currentNodeId}
                         workflowId={workflowId}
                         columnOptions={headers}
-                        anchorClassName="ml-96"
                       />
                     </div>
                     <MultiMatchSelect
@@ -2004,7 +1997,6 @@ export const GoogleSheetsActionDialog = ({
                         currentNodeId={currentNodeId}
                         workflowId={workflowId}
                         columnOptions={headers}
-                        anchorClassName="ml-96"
                       />
                       <p className="text-xs text-muted-foreground">
                         At least one condition is required — an empty filter
