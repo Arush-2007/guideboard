@@ -517,38 +517,65 @@ export const executeWorkflow = inngest.createFunction(
 // billed steps a month against 9k — for byte-identical behaviour. The three
 // queries share a single `step.run` for that same reason; splitting them into a
 // step apiece would hand the saving straight back.
+//
+// Each provider's event name is welded to the query that feeds it, so the two
+// can't drift out of step the way a pair of parallel literals would.
+const TRIGGER_POLL_SOURCES = [
+  {
+    event: "polls/gmail.check",
+    list: () => prisma.gmailPoll.findMany({ select: { id: true } }),
+  },
+  {
+    event: "polls/google-sheets.check",
+    list: () => prisma.googleSheetsPoll.findMany({ select: { id: true } }),
+  },
+  {
+    event: "polls/youtube.check",
+    list: () => prisma.youtubeCommentPoll.findMany({ select: { id: true } }),
+  },
+] as const;
+
 export const pollTriggers = inngest.createFunction(
   { id: "poll-triggers", retries: 1 },
   { cron: "*/5 * * * *" },
   async ({ step }) => {
-    const events = await step.run("fetch-poll-ids", async () => {
-      const [gmail, sheets, youtube] = await Promise.all([
-        prisma.gmailPoll.findMany({ select: { id: true } }),
-        prisma.googleSheetsPoll.findMany({ select: { id: true } }),
-        prisma.youtubeCommentPoll.findMany({ select: { id: true } }),
-      ]);
+    const { events, failed } = await step.run("fetch-poll-ids", async () => {
+      // `allSettled`, not `all`: sharing one step means one rejection would
+      // otherwise take the other two providers' dispatch down with it, which is
+      // the isolation the three separate functions used to give for free. A
+      // provider that fails is skipped for this tick alone and recovers on the
+      // next one five minutes later — cheaper than losing all three. Retrying
+      // instead wouldn't buy that back: with `retries: 1` a persistent fault
+      // still ends with every provider dropped.
+      const settled = await Promise.allSettled(
+        TRIGGER_POLL_SOURCES.map((source) => source.list()),
+      );
 
-      return [
-        ...gmail.map((poll) => ({
-          name: "polls/gmail.check",
-          data: { pollId: poll.id },
-        })),
-        ...sheets.map((poll) => ({
-          name: "polls/google-sheets.check",
-          data: { pollId: poll.id },
-        })),
-        ...youtube.map((poll) => ({
-          name: "polls/youtube.check",
-          data: { pollId: poll.id },
-        })),
-      ];
+      const events: { name: string; data: { pollId: string } }[] = [];
+      const failed: string[] = [];
+
+      settled.forEach((result, index) => {
+        const { event } = TRIGGER_POLL_SOURCES[index];
+        if (result.status === "rejected") {
+          failed.push(event);
+          logger.error("Trigger poll lookup failed", result.reason, { event });
+          return;
+        }
+        for (const poll of result.value) {
+          events.push({ name: event, data: { pollId: poll.id } });
+        }
+      });
+
+      return { events, failed };
     });
 
-    if (events.length === 0) return { dispatched: 0 };
+    // `failed` rides along on both returns so a degraded tick is visible in the
+    // run output, not only in the logs.
+    if (events.length === 0) return { dispatched: 0, failed };
 
     await step.sendEvent("dispatch-trigger-polls", events);
 
-    return { dispatched: events.length };
+    return { dispatched: events.length, failed };
   },
 );
 
