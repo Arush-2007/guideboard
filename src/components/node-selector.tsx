@@ -6,6 +6,7 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { MinusIcon, PlusIcon, SearchIcon } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { NodeTypeIcon } from "@/components/node-type-icon";
 import { OverlayCloseButton } from "@/components/ui/close-button";
 import {
   Sheet,
@@ -125,15 +126,7 @@ function NodeOptionRow({
       onClick={() => onSelect(nodeType)}
     >
       <div className="flex items-center gap-6 w-full overflow-hidden">
-        {typeof Icon === "string" ? (
-          <img
-            src={Icon}
-            alt={nodeType.label}
-            className="size-5 shrink-0 object-contain rounded-sm"
-          />
-        ) : (
-          <Icon className="size-5 shrink-0" />
-        )}
+        <NodeTypeIcon icon={Icon} alt={nodeType.label} className="size-5" />
         <div className="flex flex-col items-start text-left">
           <span className="font-medium text-sm">{nodeType.label}</span>
           <span className="text-xs text-muted-foreground">
