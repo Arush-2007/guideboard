@@ -53,6 +53,18 @@ import {
 } from "./sheets-poll-diff";
 import { sendWorkflowExecution, topologicalSort } from "./utils";
 
+// How many polls of one provider may run at once. Inngest checks this against
+// the account's plan ceiling at SYNC time and refuses to register a function
+// that declares more — it does not silently clamp — so a value above the plan
+// limit fails the whole deploy, not just that function.
+//
+// Defaults to 5, the Hobby ceiling, so a free-tier install syncs out of the box;
+// a paid deployment raises it with POLL_CONCURRENCY. The cap exists to stop one
+// slow or failing poll starving the others, not because any particular number is
+// meaningful — lowering it costs parallelism, never correctness.
+const POLL_CONCURRENCY =
+  Number.parseInt(process.env.POLL_CONCURRENCY ?? "", 10) || 5;
+
 /** The Gmail poller's reads — listing and fetching messages changes nothing. */
 const GMAIL_READ = {
   integration: "Gmail",
@@ -585,7 +597,11 @@ export const pollTriggers = inngest.createFunction(
 // rest. Duplicate workflow runs are prevented by the `youtube:<commentId>`
 // idempotency key on each execution.
 export const handleYoutubePoll = inngest.createFunction(
-  { id: "handle-youtube-poll", retries: 1, concurrency: { limit: 20 } },
+  {
+    id: "handle-youtube-poll",
+    retries: 1,
+    concurrency: { limit: POLL_CONCURRENCY },
+  },
   { event: "polls/youtube.check" },
   async ({ event, step }) => {
     const { pollId } = event.data as { pollId: string };
@@ -678,7 +694,11 @@ function getHeaderValue(
 // metadata fetches). Isolated retries + concurrency cap; duplicate runs are
 // prevented by the `gmail:<messageId>` idempotency key and the mark-as-read.
 export const handleGmailPoll = inngest.createFunction(
-  { id: "handle-gmail-poll", retries: 1, concurrency: { limit: 20 } },
+  {
+    id: "handle-gmail-poll",
+    retries: 1,
+    concurrency: { limit: POLL_CONCURRENCY },
+  },
   { event: "polls/gmail.check" },
   async ({ event, step }) => {
     const { pollId } = event.data as { pollId: string };
@@ -824,7 +844,11 @@ async function persistHealedIgnoreColumns(
 // concurrency cap; duplicate runs are prevented by the
 // `google_sheets:<spreadsheetId>:<rowIndex>[:<hash>]` idempotency key.
 export const handleGoogleSheetsPoll = inngest.createFunction(
-  { id: "handle-google-sheets-poll", retries: 1, concurrency: { limit: 20 } },
+  {
+    id: "handle-google-sheets-poll",
+    retries: 1,
+    concurrency: { limit: POLL_CONCURRENCY },
+  },
   { event: "polls/google-sheets.check" },
   async ({ event, step }) => {
     const { pollId } = event.data as { pollId: string };
@@ -1095,7 +1119,11 @@ export const pollSchedules = inngest.createFunction(
 // across overlapping ticks. Logic lives in `processSchedulePoll` so it's
 // testable without an Inngest runtime.
 export const handleSchedulePoll = inngest.createFunction(
-  { id: "handle-schedule-poll", retries: 1, concurrency: { limit: 20 } },
+  {
+    id: "handle-schedule-poll",
+    retries: 1,
+    concurrency: { limit: POLL_CONCURRENCY },
+  },
   { event: "polls/schedule.check" },
   async ({ event, step }) => {
     const { pollId } = event.data as { pollId: string };
