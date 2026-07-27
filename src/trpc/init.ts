@@ -24,19 +24,36 @@ const t = initTRPC.create({
 export const createTRPCRouter = t.router;
 export const createCallerFactory = t.createCallerFactory;
 export const baseProcedure = t.procedure;
-export const protectedProcedure = baseProcedure.use(async ({ ctx, next }) => {
-  const session = await auth.api.getSession({
-    headers: await headers(),
-  });
+// TEMPORARY instrumentation — remove once the numbers are read. Splits the two
+// costs every protected call pays: the Better Auth session lookup (a DB round
+// trip on EVERY procedure, before any real work) and the handler itself. Logging
+// them separately is the point; a single total can't tell you which to fix.
+export const protectedProcedure = baseProcedure.use(
+  async ({ ctx, next, path }) => {
+    const t0 = performance.now();
 
-  if (!session) {
-    throw new TRPCError({
-      code: "UNAUTHORIZED",
-      message: "Unauthorized",
+    const session = await auth.api.getSession({
+      headers: await headers(),
     });
-  }
 
-  return next({ ctx: { ...ctx, auth: session } });
-});
+    const t1 = performance.now();
+
+    if (!session) {
+      throw new TRPCError({
+        code: "UNAUTHORIZED",
+        message: "Unauthorized",
+      });
+    }
+
+    const result = await next({ ctx: { ...ctx, auth: session } });
+
+    const t2 = performance.now();
+    console.log(
+      `[trpc] ${path} session=${(t1 - t0).toFixed(0)}ms handler=${(t2 - t1).toFixed(0)}ms total=${(t2 - t0).toFixed(0)}ms`,
+    );
+
+    return result;
+  },
+);
 // Polar billing is disabled; premium routes now require authentication only.
 export const premiumProcedure = protectedProcedure;
