@@ -40,7 +40,12 @@ import {
   readFanOutSeed,
   selectSingleMatch,
 } from "@/lib/multi-match";
-import { getRowCell, matchRows, type RowMatchCondition } from "@/lib/row-match";
+import {
+  getRowCell,
+  matchRows,
+  type RowMatch,
+  type RowMatchCondition,
+} from "@/lib/row-match";
 import {
   hasActiveRowCondition,
   usesMergedColumn,
@@ -55,8 +60,11 @@ import {
 import {
   type CellFormat,
   DEFAULT_MERGE_MODE,
-  hasAnyCellFormat,
+  DEFAULT_STYLE_MATCH_MODE,
+  isNoOpStyle,
   type MergeMode,
+  resolveColumnBand,
+  type StyleMatchMode,
 } from "@/lib/sheet-style";
 import { renderTemplate } from "@/lib/templating";
 import {
@@ -122,10 +130,14 @@ type GoogleSheetsActionData = {
   styleColumns?: string[];
   // append_row only: whether the inline style block applies at all.
   styleAppendedRow?: boolean;
+  // append_row + mergeMode "merge" ONLY: the single value the merged row holds.
+  // A merged row is one cell, so it takes text rather than a column mapping —
+  // see `renderMergedText`.
+  mergedText?: string;
   // style_cells only: restyle just the topmost matched row ("first"), just the
   // bottom-most ("last"), or every matched row ("all", the default). Its own key
   // — styling does not use the shared `onMultipleMatches` fan-out policy.
-  onMultipleStyleMatches?: "first" | "last" | "all";
+  onMultipleStyleMatches?: StyleMatchMode;
 };
 
 const ERROR_PREFIX = "Google Sheets Action";
@@ -249,8 +261,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
   const stylingAppendedRow =
     isAppending &&
     config.styleAppendedRow === true &&
-    (hasAnyCellFormat(config.cellFormat) ||
-      (config.mergeMode ?? DEFAULT_MERGE_MODE) !== "none");
+    !isNoOpStyle(config.cellFormat, config.mergeMode);
   // An appended row that gets MERGED is a label, not data, so its value must be
   // written RAW — see MERGE_SAFE_VALUE_INPUT.
   const mergingAppendedRow = stylingAppendedRow && config.mergeMode === "merge";
@@ -268,6 +279,52 @@ export const googleSheetsActionExecutor: NodeExecutor<
    * it needs no escape at all.
    */
   const forceTextIds = !mergingAppendedRow;
+
+  /**
+   * The single cell a MERGED appended row holds, rendered against `rowContext`
+   * (which carries the anchor row for a non-bottom placement, so the text can
+   * name the group it sits under).
+   *
+   * ⚠️ A merged row is ONE cell, not a mapped row. Sheets' MERGE_ALL keeps only
+   * the top-left value and DISCARDS the rest, so building this row from
+   * `columnMappings` would throw away every column but the first — and if the
+   * user mapped anything OTHER than the first column, the merged cell would come
+   * out EMPTY and the row would render blank. So a merging append takes one
+   * `mergedText` and writes a one-cell row.
+   *
+   * Rejects an empty result loudly rather than merging a blank band: the config
+   * schema already requires the text, so an empty render means the template's
+   * upstream value was missing, and silently writing an unlabelled merged row
+   * would hide that.
+   */
+  /**
+   * Refuse to merge on a tab too narrow for it.
+   *
+   * Sheets rejects a single-cell merge, so on a one-column tab the row would be
+   * written, no merge emitted, and the run would still report `merged: true` —
+   * leaving a row indistinguishable from ordinary data that no merged-row filter
+   * could ever find again. Both append plan steps call this; it was previously
+   * the same four-line message written out twice.
+   */
+  const assertMergeable = (headers: string[]): void => {
+    if (!mergingAppendedRow || headers.length >= 2) return;
+    throw new NonRetriableError(
+      `${ERROR_PREFIX}: "${sheetName}" has only one column, so this row ` +
+        `cannot be merged — and an unmerged row is indistinguishable from ` +
+        `an ordinary one, so nothing would be able to find it later. ` +
+        `Add a second column, or turn merging off.`,
+    );
+  };
+
+  const renderMergedText = (rowContext: WorkflowContext): string => {
+    const text = renderTemplate(config.mergedText ?? "", rowContext).trim();
+    if (!text) {
+      throw new NonRetriableError(
+        `${ERROR_PREFIX}: the merged row's text is empty — check the value it is built from`,
+      );
+    }
+    return text;
+  };
   const spreadsheetId = decode(
     renderTemplate(config.spreadsheetId ?? "", context),
   ).trim();
@@ -349,7 +406,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
           matchCount: 1,
           insertedUnderGroup: true,
           rowIndex: item.rowIndex,
+          // A merged row carries its TEXT where a mapped row carries its
+          // header-keyed columns — the same pair the parent emitted, so a
+          // downstream reference resolves identically in every mode.
           rowByHeader: item.row ?? {},
+          ...(typeof item.mergedText === "string"
+            ? { mergedText: item.mergedText, merged: true }
+            : {}),
           anchorRow: item.anchorRow ?? {},
           ...lineage,
         },
@@ -407,9 +470,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
    * THE single place a merge lookup happens, memoised for the run because it is
    * the expensive read (`includeMerges`) and every caller wants the same answer.
    *
-   * Only fetched when something actually asks: a filter using
-   * `MERGED_ROW_COLUMN`. A workbook of report tabs can carry thousands of merge
-   * objects, so an ordinary filter must not pay for them.
+   * ⚠️ Two things need it, not one. A filter using `MERGED_ROW_COLUMN` obviously
+   * does — but so does the EXCLUSION rule that keeps an ordinary filter off
+   * section titles (`matchRowsScoped`), which is the common case. So a run that
+   * matches at least one row generally pays for this, and only a zero-match run
+   * — the steady state of a polling workflow — avoids it entirely. A workbook of
+   * report tabs can carry thousands of merge objects, which is why it is still
+   * lazy rather than fetched up front.
    */
   let mergesCache: Promise<{
     /** data row → the width it is actually merged across. */
@@ -455,7 +522,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
    * that forgot to await the merge read would quietly match nothing rather than
    * erroring, and the bug would look like "my filter stopped working".
    *
-   * The read is skipped entirely when no active condition asks about merging.
+   * Returns an empty bag when no active condition asks about merging — the
+   * EXCLUSION half of the rule still needs the merge map, but it applies after
+   * the match, so `matchRowsScoped` fetches it there instead.
    */
   const rowMatchOptionsFor = async (
     conditions: RowMatchCondition[] | undefined,
@@ -464,6 +533,44 @@ export const googleSheetsActionExecutor: NodeExecutor<
     if (!usesMergedColumn(conditions)) return {};
     const { mergedRows } = await readMergedRows();
     return { mergedRows, firstColumn: firstColumnKey(table.headers) };
+  };
+
+  /**
+   * Run this node's filter — THE one entry point every filtering branch uses.
+   *
+   * A filter is one of exactly two things, decided by whether any active
+   * condition names `MERGED_ROW_COLUMN`:
+   *
+   *   names it     ⇒ matches ONLY merged rows (`evaluateRowCondition` rejects a
+   *                  non-merged row before the operator is even consulted).
+   *   doesn't      ⇒ matches only ORDINARY rows; merged ones are excluded here.
+   *
+   * That second half is a SAFETY rule, and it is why this function exists rather
+   * than callers using `matchRows` directly. A section title is structurally an
+   * ordinary row — its text sits in column A and its other cells read as empty —
+   * so a filter written against your data columns hits it by accident. `Status
+   * is_empty` would match every section title on the tab, and on `update_row`
+   * that overwrites them. Asking for a merged row is deliberate; getting one is
+   * never an accident.
+   *
+   * The merge lookup is paid for only when it can change the answer: never on a
+   * zero-match run (the steady state of a polling workflow), and never twice
+   * (`readMergedRows` is memoised for the run).
+   */
+  const matchRowsScoped = async (
+    conditions: RowMatchCondition[] | undefined,
+    table: Awaited<ReturnType<typeof readSheetTable>>,
+  ): Promise<RowMatch[]> => {
+    const matches = matchRows(
+      table.rowsByHeader,
+      conditions ?? [],
+      context,
+      await rowMatchOptionsFor(conditions, table),
+    );
+    // Already narrowed to merged rows by the matcher itself.
+    if (matches.length === 0 || usesMergedColumn(conditions)) return matches;
+    const { mergedRows } = await readMergedRows();
+    return matches.filter((m) => !mergedRows.has(m.index));
   };
 
   /**
@@ -602,7 +709,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // write nothing. Every style property starts out as "leave as is", so this
       // is easy to reach by accident — fail loudly rather than reporting a
       // successful style that did nothing.
-      if (!hasAnyCellFormat(config.cellFormat) && mergeMode === "none") {
+      if (isNoOpStyle(config.cellFormat, mergeMode)) {
         throw new NonRetriableError(
           `${ERROR_PREFIX}: this step sets no style property and no merge ` +
             `option, so it would change nothing`,
@@ -632,32 +739,33 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // Which COLUMNS the band spans. Absent/empty ⇒ the tab's full used
           // width, which is what colouring a row has always meant.
           //
-          // A subset is resolved to the min..max span of the chosen headers, so
-          // the band is always contiguous — Sheets ranges cannot express a gap,
-          // and a merge over a non-contiguous selection has no meaning. Unknown
-          // names are rejected rather than ignored: silently styling a wider
-          // band than asked for is exactly the kind of "it did something else"
-          // failure a user cannot debug from the sheet.
-          const wanted = (config.styleColumns ?? [])
-            .map((c) => c.trim())
-            .filter(Boolean);
-          let startColumnIndex = 0;
-          let endColumnIndex = table.headers.length;
-          if (wanted.length > 0) {
-            const indexes = wanted.map((name) => {
-              const i = table.headers.findIndex(
-                (h) => h.trim().toLowerCase() === name.toLowerCase(),
-              );
-              if (i === -1) {
-                throw new NonRetriableError(
-                  `${ERROR_PREFIX}: column "${name}" is not on "${sheetName}" — ` +
-                    `its columns are ${table.headers.filter(Boolean).join(", ")}`,
-                );
-              }
-              return i;
-            });
-            startColumnIndex = Math.min(...indexes);
-            endColumnIndex = Math.max(...indexes) + 1;
+          // `resolveColumnBand` is shared with the dialog, which warns about the
+          // same two problems live. Both were previously derived separately and
+          // had already diverged on whether header names matched
+          // case-insensitively — so the dialog could pass a selection the
+          // executor then rejected mid-run.
+          const band = resolveColumnBand(
+            table.headers,
+            config.styleColumns ?? [],
+          );
+          const { startColumnIndex, endColumnIndex } = band;
+          // Rejected rather than ignored: silently styling a wider band than
+          // asked for is the kind of "it did something else" failure a user
+          // cannot debug from the sheet.
+          if (band.unknown.length > 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: column "${band.unknown[0]}" is not on ` +
+                `"${sheetName}" — its columns are ` +
+                `${table.headers.filter(Boolean).join(", ")}`,
+            );
+          }
+          if (band.gap.length > 0) {
+            throw new NonRetriableError(
+              `${ERROR_PREFIX}: the chosen columns aren't next to each other — ` +
+                `styling them would also cover ${band.gap.join(", ")}, because ` +
+                `a sheet range can't skip a column. Either include those, or ` +
+                `narrow the selection.`,
+            );
           }
 
           // Same header-keying as find_rows, so the execution grid renders these
@@ -668,14 +776,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
             .map((col) => [col, sanitizeHeaderKey(col)] as const);
 
           // A MERGED_ROW_COLUMN condition needs the tab's merge ranges; without
-          // them it fails closed and matches nothing. `rowMatchOptionsFor` is
-          // the one place that decision is made.
-          const matched = matchRows(
-            table.rowsByHeader,
-            config.conditions ?? [],
-            context,
-            await rowMatchOptionsFor(config.conditions, table),
-          );
+          // them it fails closed and matches nothing. Without one, section
+          // titles are EXCLUDED — see `matchRowsScoped`.
+          const matched = await matchRowsScoped(config.conditions, table);
 
           // "first" styles only the topmost matched row and "last" only the
           // bottom-most (matches are already in sheet order); "all" (the
@@ -683,7 +786,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // below — the summary, the cap check, and the write — sees exactly the
           // rows this run will touch. `.slice` is empty-safe, so a zero-match
           // run stays a clean no-op in every mode.
-          const mode = config.onMultipleStyleMatches ?? "all";
+          const mode =
+            config.onMultipleStyleMatches ?? DEFAULT_STYLE_MATCH_MODE;
           const entries =
             mode === "first"
               ? matched.slice(0, 1)
@@ -700,10 +804,11 @@ export const googleSheetsActionExecutor: NodeExecutor<
             // How many this run actually styled: every match in "all", exactly
             // one in "first"/"last". `rows`/`rowIndexes` below describe THESE.
             styledCount: entries.length,
-            // Whether the band was merged / unmerged, so a downstream step can
-            // branch on "did this make a section title?".
-            merged: mergeMode === "merge",
             mergeMode,
+            // The format this run applied, echoed so the run view can show the
+            // colour it painted rather than only naming it — the one thing a
+            // plain text grid cannot say about a styling run.
+            cellFormat: config.cellFormat ?? {},
             // Stored even when nothing matched, so the grid can still render
             // column headers.
             columns: keyed.map(([, key]) => key),
@@ -725,7 +830,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
           // workflow — costs one read instead of two.
           if (entries.length === 0) {
             return {
-              summary,
+              summary: { ...summary, merged: false },
               sheetId: 0,
               targets: [] as StyleTarget[],
               startColumnIndex,
@@ -781,8 +886,22 @@ export const googleSheetsActionExecutor: NodeExecutor<
 
           // The span rides on the plan so the write step uses the columns this
           // plan resolved against the live header row, not a re-derivation.
+          //
+          // `merged` reports what the run WILL actually do, not what was asked:
+          // `cellFormatRequests` drops a merge over a band under 2 columns wide,
+          // so a single-column selection would otherwise claim a merge that was
+          // never sent. Derived from the spans settled just above.
           return {
-            summary,
+            summary: {
+              ...summary,
+              merged:
+                mergeMode === "merge" &&
+                targets.some(
+                  (t) =>
+                    t.mergeSpan.endColumnIndex - t.mergeSpan.startColumnIndex >
+                    1,
+                ),
+            },
             sheetId,
             targets,
             startColumnIndex,
@@ -910,13 +1029,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
               );
             }
 
-            // The filter picks the GROUP the new row joins.
-            const matches = matchRows(
-              table.rowsByHeader,
-              config.conditions ?? [],
-              context,
-              await rowMatchOptionsFor(config.conditions, table),
-            );
+            assertMergeable(table.headers);
+
+            // The filter picks the GROUP the new row joins. Section titles are
+            // excluded unless asked for, so one is never mistaken for the
+            // group's last row — which would drop the new row directly under a
+            // title instead of under its data.
+            const matches = await matchRowsScoped(config.conditions, table);
             // "each_row" starts one child run per inserted row. Enforce the cap
             // HERE, before the write — failing after N rows have landed would
             // leave the sheet changed by a run the user asked to be capped.
@@ -951,6 +1070,23 @@ export const googleSheetsActionExecutor: NodeExecutor<
                   ? {}
                   : buildRowByHeader(table.headers, table.rows[anchorIdx]);
 
+              // A merged row is ONE cell — no mapping, no serial, no required
+              // columns. `@<anchorRow.…>@` still resolves, so the text can name
+              // the group it is placed under. See `renderMergedText`.
+              if (mergingAppendedRow) {
+                const mergedText = renderMergedText({
+                  ...context,
+                  [ANCHOR_ROW_KEY]: anchorRow,
+                });
+                return {
+                  anchorIdx,
+                  row: [mergedText],
+                  anchorRow,
+                  mergedText,
+                  rowByHeader: {} as Record<string, string>,
+                };
+              }
+
               const row = buildSheetRow({
                 headers: table.headers,
                 mappings: columnMappings,
@@ -979,6 +1115,9 @@ export const googleSheetsActionExecutor: NodeExecutor<
                 anchorIdx,
                 row,
                 anchorRow,
+                // Kept on both shapes so `built` stays ONE type; only a merged
+                // row ever carries a value here.
+                mergedText: "",
                 rowByHeader: buildRowByHeader(table.headers, row),
               };
             });
@@ -1138,6 +1277,8 @@ export const googleSheetsActionExecutor: NodeExecutor<
         row: r.rowByHeader,
         rowIndex: r.rowIndex,
         anchorRow: r.anchorRow,
+        // A merged row carries its TEXT where a mapped row carries its columns.
+        ...(mergingAppendedRow ? { mergedText: r.mergedText } : {}),
       }));
       const output: Record<string, unknown> = {
         action,
@@ -1156,6 +1297,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         ...(stylingAppendedRow
           ? { styledColumns: placed.columnCount, merged: mergingAppendedRow }
           : {}),
+        ...(mergingAppendedRow ? { mergedText: first.mergedText } : {}),
       };
       // Only "each_row" writes more than one row, and only then is the list
       // worth recording (in "group" mode `rowByHeader` already IS the one row).
@@ -1164,9 +1306,14 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // The row numbers ride alongside so the run view can say WHERE each added
       // row landed, which is the whole question this action answers.
       if (insertUnder === "each_row") {
+        // A merged row has no columns to grid, so it is recorded under a single
+        // "text" key — the run view then renders one readable cell per inserted
+        // row instead of an empty one.
         output.insertedRows = placed.rows
           .slice(0, 100)
-          .map((r) => r.rowByHeader);
+          .map((r) =>
+            mergingAppendedRow ? { text: r.mergedText } : r.rowByHeader,
+          );
         output.insertedRowIndexes = placed.rows
           .slice(0, 100)
           .map((r) => r.rowIndex);
@@ -1217,42 +1364,36 @@ export const googleSheetsActionExecutor: NodeExecutor<
               `${ERROR_PREFIX}: the sheet has no header row (row 1) to map columns to`,
             );
           }
-          // Merging IS what makes a row read as a section title. Sheets rejects
-          // a single-cell merge, so on a one-column tab this would write text
-          // that no merged-row filter could ever find again, and that find_rows
-          // would return as data. Fail loudly now rather than leave an invisible
-          // section title behind.
-          if (mergingAppendedRow && table.headers.length < 2) {
-            throw new NonRetriableError(
-              `${ERROR_PREFIX}: "${sheetName}" has only one column, so this row ` +
-                `cannot be merged — and an unmerged row is indistinguishable from ` +
-                `an ordinary one, so nothing would be able to find it later. ` +
-                `Add a second column, or turn merging off.`,
-            );
-          }
+          assertMergeable(table.headers);
 
-          const newRow = buildSheetRow({
-            headers: table.headers,
-            mappings: columnMappings,
-            context,
-            // Data rows (header-aligned) so a Serial Number custom-feature
-            // column autofills to max(existing)+1.
-            rows: table.rows,
-            // Keep every padded id (0006) as text — generated serial or a
-            // value referenced in from another sheet alike. USER_ENTERED
-            // would otherwise store it as a number and drop the leading
-            // zeros. OFF when the row is being merged, which writes RAW and
-            // therefore needs no escape (see `forceTextIds`).
-            forceTextIds,
-          });
+          // A merged row is ONE cell of text, so it uses neither the column
+          // mapping, the serial feature, nor the required-column rule — see
+          // `renderMergedText`.
+          const mergedText = mergingAppendedRow
+            ? renderMergedText(context)
+            : "";
+          const newRow = mergingAppendedRow
+            ? [mergedText]
+            : buildSheetRow({
+                headers: table.headers,
+                mappings: columnMappings,
+                context,
+                // Data rows (header-aligned) so a Serial Number custom-feature
+                // column autofills to max(existing)+1.
+                rows: table.rows,
+                // Keep every padded id (0006) as text — generated serial or a
+                // value referenced in from another sheet alike. USER_ENTERED
+                // would otherwise store it as a number and drop the leading
+                // zeros. OFF when the row is being merged, which writes RAW and
+                // therefore needs no escape (see `forceTextIds`).
+                forceTextIds,
+              });
 
           // Enforce required columns after the row is built (a serial cell is
           // always populated, so it never trips this).
-          const blankRequired = findBlankRequired(
-            table.headers,
-            newRow,
-            config.requiredColumns,
-          );
+          const blankRequired = mergingAppendedRow
+            ? []
+            : findBlankRequired(table.headers, newRow, config.requiredColumns);
           if (blankRequired.length > 0) {
             throw new NonRetriableError(
               `${ERROR_PREFIX}: required column(s) may not be blank: ${blankRequired.join(", ")}`,
@@ -1274,7 +1415,12 @@ export const googleSheetsActionExecutor: NodeExecutor<
           return {
             rowIndex,
             row: newRow,
-            rowByHeader: buildRowByHeader(table.headers, newRow),
+            mergedText,
+            // A merged row has no columns to key, so it reports its TEXT
+            // instead — see the output shape below.
+            rowByHeader: mergingAppendedRow
+              ? {}
+              : buildRowByHeader(table.headers, newRow),
             columnCount: table.headers.length,
           };
         } catch (error) {
@@ -1347,13 +1493,15 @@ export const googleSheetsActionExecutor: NodeExecutor<
           rowIndex: planned.rowIndex,
           row: planned.row,
           // The header-keyed columns, so downstream nodes can pick them
-          // (force-text apostrophe + header dots stripped).
+          // (force-text apostrophe + header dots stripped). A merged row has no
+          // columns — it reports `mergedText` instead.
           rowByHeader: planned.rowByHeader,
           // How wide the styled band ended up, when this append styled the row
           // it wrote.
           ...(stylingAppendedRow
             ? { styledColumns: planned.columnCount, merged: mergingAppendedRow }
             : {}),
+          ...(mergingAppendedRow ? { mergedText: planned.mergedText } : {}),
         },
       };
     }
@@ -1395,13 +1543,13 @@ export const googleSheetsActionExecutor: NodeExecutor<
           }
 
           // Same row-matching as find_rows: one editor, one matcher. A merged
-          // condition reaches section titles deliberately; without one they are
-          // ordinary rows to this filter, exactly as any other row is.
-          const matchedIndexes = matchRows(
-            table.rowsByHeader,
-            config.conditions ?? [],
-            context,
-            await rowMatchOptionsFor(config.conditions, table),
+          // condition reaches section titles deliberately; WITHOUT one they are
+          // excluded, so a filter written against your data columns can never
+          // overwrite a title by accident (`Status is_empty` matches every one
+          // of them — their non-first cells read as empty). See
+          // `matchRowsScoped`.
+          const matchedIndexes = (
+            await matchRowsScoped(config.conditions, table)
           ).map((m) => m.index);
 
           // The policy decides WHICH rows the write lands on, and it must be
@@ -1523,7 +1671,16 @@ export const googleSheetsActionExecutor: NodeExecutor<
             {
               headers: sheetsAuthHeaders(accessToken),
               json: {
-                valueInputOption: "USER_ENTERED",
+                // A filter that targets MERGED rows is renaming section titles,
+                // which are labels rather than values — so they get the same RAW
+                // treatment an appended merged row does. Under USER_ENTERED a
+                // title of "March 2026" would be stored as a date and one
+                // starting "=" evaluated as a formula. An ordinary data update
+                // keeps USER_ENTERED so numbers and dates parse as a user typing
+                // them would expect.
+                valueInputOption: MERGE_SAFE_VALUE_INPUT(
+                  usesMergedColumn(config.conditions),
+                ),
                 data: planned.writes.map((w) => w.valueRange),
               },
             },
@@ -1620,20 +1777,22 @@ export const googleSheetsActionExecutor: NodeExecutor<
             .map((col) => [col, sanitizeHeaderKey(col)] as const);
 
           // A merged row is an ordinary row to this filter unless the filter
-          // says otherwise — a MERGED_ROW_COLUMN condition is how you reach one
-          // (or, with `not_contains`, how you exclude them). Membership is
-          // decided by the tab's real MERGE ranges and only by them, so a data
-          // row that merely looks like a section title is never wrongly hidden,
-          // and a real one carrying a stray cell is never wrongly returned.
+          // says otherwise — a MERGED_ROW_COLUMN condition is how you reach one.
+          // Membership is decided by the tab's real MERGE ranges and only by
+          // them, so a data row that merely looks like a section title is never
+          // wrongly hidden, and a real one carrying a stray cell is never
+          // wrongly returned.
           //
-          // The merge metadata is fetched ONLY when a condition asks for it —
-          // see `rowMatchOptionsFor`.
-          const matches = matchRows(
-            table.rowsByHeader,
-            config.conditions ?? [],
-            context,
-            await rowMatchOptionsFor(config.conditions, table),
-          );
+          // ⚠️ A merged condition can NARROW to merged rows but can never
+          // EXCLUDE them: the check fails closed, so a non-merged row is
+          // rejected before the operator is even consulted. `__merged_row__
+          // not_contains X` therefore returns merged rows whose text lacks X —
+          // never a data row. There is deliberately no "not merged" filter;
+          // ordinary column conditions already ignore the distinction.
+          //
+          // The merge metadata is fetched ONLY when it can change the answer —
+          // see `matchRowsScoped`.
+          const matches = await matchRowsScoped(config.conditions, table);
 
           // Multi-match policy is applied OUTSIDE this step (see below) — but
           // "each" needs every match as a fan-out item, so its cap is enforced

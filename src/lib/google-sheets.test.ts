@@ -57,8 +57,8 @@ import {
   sheetRange,
   sheetsWrite,
   toSheetsError,
-  unqualifiedMerges,
 } from "./google-sheets";
+import { CELL_FORMAT_FIELDS } from "./sheet-style";
 
 const res = (value: unknown) =>
   Object.assign(Promise.resolve(value), { json: () => Promise.resolve(value) });
@@ -478,23 +478,6 @@ describe("mergedDataRows", () => {
   });
 });
 
-describe("unqualifiedMerges", () => {
-  it("counts merges below the header that are not merged rows", () => {
-    expect(
-      unqualifiedMerges([
-        // Qualifies — not a near miss.
-        { startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0 },
-        // Not anchored at column A.
-        { startRowIndex: 3, endRowIndex: 4, startColumnIndex: 2 },
-        // Taller than one row.
-        { startRowIndex: 5, endRowIndex: 8, startColumnIndex: 0 },
-        // The header row — not a candidate at all, so not a near miss either.
-        { startRowIndex: 0, endRowIndex: 1, startColumnIndex: 3 },
-      ]),
-    ).toBe(2);
-  });
-});
-
 /**
  * The `fields` mask is the whole contract of "unset means leave it alone".
  *
@@ -538,6 +521,11 @@ describe("cellFormatRequests", () => {
     });
   });
 
+  // Every property in CELL_FORMAT_FIELDS must reach the mask — that table is the
+  // single source the schema, the dialog and this builder all walk, so a
+  // property added there and missed here would be accepted, offered, and never
+  // sent. Compared as a SET: Sheets does not care about mask order, so asserting
+  // the order would just break on a harmless reshuffle of the table.
   it("masks every property when a full format is given", () => {
     const [first] = req({
       format: {
@@ -552,11 +540,25 @@ describe("cellFormatRequests", () => {
         verticalAlign: "MIDDLE",
       },
     });
-    expect(first.repeatCell.fields).toBe(
-      "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment," +
-        "textFormat.bold,textFormat.italic,textFormat.underline," +
-        "textFormat.strikethrough,textFormat.fontSize,textFormat.foregroundColor)",
+    const masked = (first.repeatCell.fields ?? "")
+      .replace(/^userEnteredFormat\(|\)$/g, "")
+      .split(",")
+      .sort();
+    expect(masked).toEqual(
+      [
+        "backgroundColor",
+        "horizontalAlignment",
+        "verticalAlignment",
+        "textFormat.bold",
+        "textFormat.italic",
+        "textFormat.underline",
+        "textFormat.strikethrough",
+        "textFormat.fontSize",
+        "textFormat.foregroundColor",
+      ].sort(),
     );
+    // One entry per declared style property, so nothing is silently dropped.
+    expect(masked).toHaveLength(CELL_FORMAT_FIELDS.length);
   });
 
   it("emits nothing at all when the format sets nothing and merge is off", () => {

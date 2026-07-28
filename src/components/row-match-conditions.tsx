@@ -39,6 +39,11 @@ export type RowMatchConditionsProps = {
    * Offer "Merged row" above the headers — a pseudo-column matching rows whose
    * cells are joined (section titles), comparing against the merged cell's text.
    *
+   * Picking it also flips what the WHOLE filter means: a filter that names it
+   * matches only merged rows, and one that doesn't excludes them. So it is the
+   * one way to reach a section title, and an ordinary filter can never hit one
+   * by accident.
+   *
    * Opt-in so this stays a generic conditions editor: only a caller whose
    * matcher is given the tab's merge ranges can honour it, and a condition the
    * matcher can't answer would silently match nothing (it fails closed). It also

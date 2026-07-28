@@ -13,7 +13,7 @@ const GoogleSheetsTriggerDialog = lazyNodeDialog(() =>
 import { getNodeOption } from "@/config/node-options";
 import { useNodeStatus } from "@/features/executions/hooks/use-node-status";
 import { NodeType } from "@/generated/prisma";
-import type { RowScope } from "@/lib/sheet-style";
+import type { RowScope } from "@/lib/sheets-trigger-options";
 
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_TRIGGER);
 

@@ -7,15 +7,15 @@ import { SOURCE_FORMATS, TARGET_FORMATS } from "@/lib/conversions";
 import { MAX_USER_TIMEOUT_SECONDS } from "@/lib/http-budget";
 import { multiMatchConfigFields } from "@/lib/multi-match";
 import {
-  hasActiveRowCondition,
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import {
   cellFormatSchema,
-  hasAnyCellFormat,
   MERGE_MODES,
+  STYLE_MATCH_MODES,
 } from "@/lib/sheet-style";
+import { refineGoogleSheetsAction } from "@/lib/sheets-action-refine";
 import { sheetsTriggerOptionsSchemaFields } from "@/lib/sheets-trigger-options";
 
 type AnyZodSchema = z.ZodTypeAny;
@@ -520,11 +520,21 @@ const googleSheetsActionSchema = z.preprocess(
       // separate from `cellFormat` so turning the section off preserves the
       // choices inside it.
       styleAppendedRow: z.boolean().optional(),
+      // append_row + mergeMode "merge" ONLY: the single piece of text the merged
+      // row holds, templated like any other user-authored field.
+      //
+      // ⚠️ A merged row has exactly ONE cell. Sheets' MERGE_ALL keeps only the
+      // top-left value and DISCARDS the rest, so a column mapping is not just
+      // unnecessary here — it is actively wrong: mapping 16 columns silently
+      // throws 15 away, and mapping anything other than the FIRST column leaves
+      // the merged cell empty, so the row renders blank. The mapping is replaced
+      // by this one field whenever the row is being merged.
+      mergedText: z.string().optional(),
       // style_cells only: restyle just the topmost matched row ("first"), just
       // the bottom-most ("last"), or every matched row ("all", the default).
       // Its OWN key, not the shared `onMultipleMatches` below, whose enum has no
       // "all" and whose fan-out semantics styling deliberately does not use.
-      onMultipleStyleMatches: z.enum(["first", "last", "all"]).optional(),
+      onMultipleStyleMatches: z.enum(STYLE_MATCH_MODES).optional(),
       // Legacy field, superseded by `position` (coerced above). Kept optional so
       // inbound saved data validates; the executor reads `position` now.
       insertUnder: z.enum(["group", "each_row"]).optional(),
@@ -536,78 +546,7 @@ const googleSheetsActionSchema = z.preprocess(
       // update_row: which matched row(s) the write lands on.
       ...multiMatchConfigFields,
     })
-    .superRefine((data, ctx) => {
-      // The READ action needs only spreadsheet + tab (already required above).
-      if (data.action === "find_rows") return;
-
-      // style_cells uses no columnMappings, so it validates here and returns
-      // before the mapping checks below.
-      if (data.action === "style_cells") {
-        // An empty filter makes matchRows vacuously true, so it would restyle
-        // every row on the tab. Re-checked in the executor, which is what
-        // actually writes.
-        if (!hasActiveRowCondition(data.conditions)) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message:
-              "Add at least one condition — an empty filter would restyle every row",
-            path: ["conditions"],
-          });
-        }
-        // A step that sets no property and changes no merge would read the tab
-        // and write nothing. That is a misconfiguration, not a no-op worth
-        // running — and it is easy to reach, since every style property starts
-        // out as "leave as is".
-        const merging = (data.mergeMode ?? "none") !== "none";
-        if (!hasAnyCellFormat(data.cellFormat) && !merging) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message:
-              "Set at least one style property, or choose a merge option — otherwise this step would change nothing",
-            path: ["cellFormat"],
-          });
-        }
-        return;
-      }
-
-      const hasMappings = data.columnMappings
-        ? Object.values(data.columnMappings).some((v) => v.trim())
-        : false;
-      const isUnderAppend =
-        data.action === "append_row" &&
-        (data.position ?? "bottom") !== "bottom";
-
-      // update_row must map at least one column — with none it writes nothing.
-      // append_row needs NO mapping in any position: a row with every column
-      // unmapped is a blank row, which is a legitimate thing to append.
-      if (data.action === "update_row" && !hasMappings) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Map at least one column to update",
-          path: ["columnMappings"],
-        });
-      }
-
-      // An empty filter matches EVERY row (matchRows is vacuously true with no
-      // conditions). Harmless for find_rows — it just reads the tab — but both
-      // write cases need a real filter: update_row would overwrite the entire
-      // sheet, and a non-bottom append would "join" a group spanning every row,
-      // which is just a bottom append wearing a filter's clothes. Enforced in
-      // the executor too — that is what actually writes.
-      if (
-        (data.action === "update_row" || isUnderAppend) &&
-        !hasActiveRowCondition(data.conditions)
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            data.action === "update_row"
-              ? "Add at least one condition — an empty filter would overwrite every row"
-              : "Add at least one condition — it picks the group the new row joins",
-          path: ["conditions"],
-        });
-      }
-    })
+    .superRefine(refineGoogleSheetsAction)
     .passthrough(),
 );
 

@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import {
-  DEFAULT_ROW_SCOPE,
   type RowScope,
   rowPassesScope,
-} from "@/lib/sheet-style";
+  SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
+} from "@/lib/sheets-trigger-options";
 
 export type SheetsTriggerOn = "added" | "updated" | "added_or_updated";
 
@@ -656,7 +656,15 @@ export function planSheetsPollChanges(params: {
   oldProjection?: StoredProjection | null;
   /** Projection for this poll; null skips the check (e.g. in tests). */
   newProjection?: SheetsProjection | null;
-  /** Which kind of row may fire. Absent ⇒ the shared default ("data"). */
+  /**
+   * Which kind of row may fire.
+   *
+   * Defaults to `SHEETS_TRIGGER_DEFAULT_ROW_SCOPE` — the codebase's ONE
+   * row-scope default, which every caller also resolves an absent stored value
+   * through. It used to default to a separate `DEFAULT_ROW_SCOPE` ("data") left
+   * over from the deleted heading actions, so the same absent value meant "skip
+   * merged rows" here and "all rows" at the call site.
+   */
   rowScope?: RowScope;
   /** POLLER row indices (not data-row indices) that are headings. */
   headingRows?: Set<number>;
@@ -669,7 +677,7 @@ export function planSheetsPollChanges(params: {
     watchColumns,
     oldProjection = null,
     newProjection = null,
-    rowScope = DEFAULT_ROW_SCOPE,
+    rowScope = SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
     headingRows,
   } = params;
   const newCellHashes = rows.map((row) => hashCells(row, watchColumns));

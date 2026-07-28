@@ -212,6 +212,17 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         example: "true",
         pickIf: (data) => isSheetsStyle(data) || isSheetsStyledAppend(data),
       },
+      // A merging append only: the text the merged row was given, AFTER its
+      // template was rendered — so a downstream step can repeat the section
+      // title it just wrote. A merged row has no columns, so this is what it
+      // reports where a mapped row reports `rowByHeader`.
+      {
+        path: "mergedText",
+        label: "The text the merged row was given",
+        example: "Invoices — March 2026",
+        pickIf: (data) =>
+          isSheetsStyledAppend(data) && data?.mergeMode === "merge",
+      },
       // style_cells only: which of merge / unmerge / none was applied.
       {
         path: "mergeMode",

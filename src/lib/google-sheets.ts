@@ -1,7 +1,11 @@
 import { NonRetriableError, RetryAfterError } from "inngest";
 import { HTTPError, type Options as KyOptions } from "ky";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "./http";
-import type { CellFormat, MergeMode } from "./sheet-style";
+import {
+  CELL_FORMAT_FIELDS,
+  type CellFormat,
+  type MergeMode,
+} from "./sheet-style";
 
 /**
  * Shared Google Sheets v4 REST plumbing — the Sheets counterpart of
@@ -221,31 +225,6 @@ export type SheetGrid = {
    */
   merges: SheetMergeRange[];
 };
-
-/**
- * How many merged ranges on the tab sit below the header but do NOT qualify as
- * merged ROWS — because they span more than one row, or start somewhere other
- * than column A.
- *
- * Purely diagnostic, and it exists because "no merged rows found" is otherwise a
- * dead end: the user is looking at something plainly merged, so being told the
- * tab has none reads as a bug rather than as a rule they tripped. This number
- * turns that into "2 merged rows here don't qualify, and here is why", which is
- * the difference between a fixable sheet and a support conversation.
- */
-export function unqualifiedMerges(merges: SheetMergeRange[]): number {
-  let count = 0;
-  for (const m of merges) {
-    const start = m.startRowIndex ?? 0;
-    const end = m.endRowIndex ?? start + 1;
-    // The header row is not a candidate at all, so a merged header is not a
-    // near miss — it is simply not in scope.
-    if (start < 1) continue;
-    const qualifies = (m.startColumnIndex ?? 0) === 0 && end - start === 1;
-    if (!qualifies) count++;
-  }
-  return count;
-}
 
 /**
  * The MERGED rows of a tab: DATA-row index (0-based, as in `SheetTable.rows`)
@@ -618,41 +597,16 @@ export function cellFormatRequests({
   const fields: string[] = [];
   const f = format ?? {};
 
-  if (f.backgroundColor !== undefined) {
-    cellFormat.backgroundColor = hexToRgb(f.backgroundColor);
-    fields.push("backgroundColor");
-  }
-  if (f.align !== undefined) {
-    cellFormat.horizontalAlignment = f.align;
-    fields.push("horizontalAlignment");
-  }
-  if (f.verticalAlign !== undefined) {
-    cellFormat.verticalAlignment = f.verticalAlign;
-    fields.push("verticalAlignment");
-  }
-  if (f.bold !== undefined) {
-    textFormat.bold = f.bold;
-    fields.push("textFormat.bold");
-  }
-  if (f.italic !== undefined) {
-    textFormat.italic = f.italic;
-    fields.push("textFormat.italic");
-  }
-  if (f.underline !== undefined) {
-    textFormat.underline = f.underline;
-    fields.push("textFormat.underline");
-  }
-  if (f.strikethrough !== undefined) {
-    textFormat.strikethrough = f.strikethrough;
-    fields.push("textFormat.strikethrough");
-  }
-  if (f.fontSize !== undefined) {
-    textFormat.fontSize = f.fontSize;
-    fields.push("textFormat.fontSize");
-  }
-  if (f.textColor !== undefined) {
-    textFormat.foregroundColor = hexToRgb(f.textColor);
-    fields.push("textFormat.foregroundColor");
+  // Driven by the ONE field table in `sheet-style.ts`, not a hand-written chain
+  // per property. That is what makes `CELL_FORMAT_FIELDS`' promise true: adding
+  // a style property there is enough, and it cannot be accepted by the schema
+  // and offered by the dialog while the writer silently never sends it.
+  for (const spec of CELL_FORMAT_FIELDS) {
+    const value = f[spec.key];
+    if (value === undefined) continue;
+    const target = spec.group === "text" ? textFormat : cellFormat;
+    target[spec.api] = "color" in spec ? hexToRgb(value as string) : value;
+    fields.push(spec.group === "text" ? `textFormat.${spec.api}` : spec.api);
   }
 
   if (fields.length > 0) {

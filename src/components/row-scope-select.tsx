@@ -9,11 +9,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
-  DEFAULT_ROW_SCOPE,
   ROW_SCOPE_LABELS,
   ROW_SCOPES,
   type RowScope,
-} from "@/lib/sheet-style";
+  SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
+} from "@/lib/sheets-trigger-options";
 
 /**
  * "Which kind of row does this apply to?" — the picker for the
@@ -33,23 +33,18 @@ import {
 export function RowScopeSelect({
   value,
   onChange,
-  itemNoun,
   label,
   describe,
 }: {
   value: RowScope | undefined;
   onChange: (next: RowScope) => void;
-  /** What happens to the rows selected, e.g. "watched". */
-  itemNoun: string;
-  /** Overrides the "Which rows can be {itemNoun}" label. */
-  label?: string;
-  /** Overrides the caption under the select. */
-  describe?: (scope: RowScope) => string;
+  label: string;
+  describe: (scope: RowScope) => string;
 }) {
-  const scope = value ?? DEFAULT_ROW_SCOPE;
+  const scope = value ?? SHEETS_TRIGGER_DEFAULT_ROW_SCOPE;
   return (
     <div className="space-y-2">
-      <Label>{label ?? `Which rows can be ${itemNoun}`}</Label>
+      <Label>{label}</Label>
       <Select value={scope} onValueChange={(v) => onChange(v as RowScope)}>
         <SelectTrigger className="w-full">
           <SelectValue />
@@ -62,15 +57,7 @@ export function RowScopeSelect({
           ))}
         </SelectContent>
       </Select>
-      <p className="text-xs text-muted-foreground">
-        {describe
-          ? describe(scope)
-          : scope === "headings"
-            ? `Only merged rows are ${itemNoun} — the section titles, never your data.`
-            : scope === "all"
-              ? `Both normal and merged rows are ${itemNoun}.`
-              : `Merged rows are skipped, so only your data is ${itemNoun}.`}
-      </p>
+      <p className="text-xs text-muted-foreground">{describe(scope)}</p>
     </div>
   );
 }

@@ -187,6 +187,7 @@ type SheetsResult = Record<
     mergeMode?: string;
     // append_row with an inline style
     styledColumns?: number;
+    mergedText?: string;
   }
 >;
 
@@ -1998,7 +1999,14 @@ describe("googleSheetsActionExecutor — style_cells", () => {
       },
     ]);
     const result = ctx(
-      await run(styleData({ mergeMode: "unmerge", cellFormat: {} })),
+      await run(
+        styleData({
+          mergeMode: "unmerge",
+          cellFormat: {},
+          // Merged rows are only reachable through a merged condition.
+          conditions: [{ column: "__merged_row__", operator: "is_not_empty" }],
+        }),
+      ),
     );
     expect(result.GOOGLE_SHEETS_ACTION_1.merged).toBe(false);
     const requests = (postBody(0).requests ?? []) as Record<string, unknown>[];
@@ -2033,7 +2041,13 @@ describe("googleSheetsActionExecutor — style_cells", () => {
         endColumnIndex: 2,
       },
     ]);
-    await run(styleData({ mergeMode: "merge" }));
+    await run(
+      styleData({
+        mergeMode: "merge",
+        // An already-merged row is only reachable through a merged condition.
+        conditions: [{ column: "__merged_row__", operator: "is_not_empty" }],
+      }),
+    );
 
     const requests = (postBody(0).requests ?? []) as Array<{
       repeatCell?: { range: Record<string, number> };
@@ -2272,22 +2286,22 @@ describe("googleSheetsActionExecutor — the merged-row condition", () => {
     expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(1);
   });
 
-  // The merge metadata is an extra API read, so an ordinary filter must not pay
-  // for it. `mockRead` answers both URLs, so this asserts on the REQUEST.
-  it("only asks for merges when a condition needs them", async () => {
+  // An ORDINARY filter still excludes merged rows, so it needs the merge map
+  // too — but only when there is something to exclude FROM. A zero-match run is
+  // the steady state of a polling workflow and must stay a single read.
+  it("skips the merge read entirely when nothing matched", async () => {
     mockRead(sectioned, merges);
     await run({
       action: "find_rows",
       spreadsheetId: "sheet-1",
       sheetName: "Ledger",
-      conditions: [{ column: "Status", operator: "equals", value: "Done" }],
+      conditions: [{ column: "Status", operator: "equals", value: "Nope" }],
     });
-    // One read: the tab's values. No metadata call at all.
     expect(kyGetMock).toHaveBeenCalledTimes(1);
     expect(kyGetMock.mock.calls[0][0]).toContain("/values/");
+  });
 
-    vi.clearAllMocks();
-    kyPostMock.mockResolvedValue({});
+  it("reads merges once per run, however many times they're needed", async () => {
     mockRead(sectioned, merges);
     await run({
       action: "find_rows",
@@ -2295,19 +2309,55 @@ describe("googleSheetsActionExecutor — the merged-row condition", () => {
       sheetName: "Ledger",
       conditions: [mergedCondition()],
     });
+    // The values read + ONE metadata read, memoised for the run.
     expect(kyGetMock).toHaveBeenCalledTimes(2);
   });
 
-  // A disabled condition filters nothing, so it must not trigger the read.
-  it("ignores a DISABLED merged condition", async () => {
+  // A disabled condition filters nothing, so the filter reads as ORDINARY —
+  // which now means merged rows are excluded rather than selected.
+  it("treats a DISABLED merged condition as no filter at all", async () => {
     mockRead(sectioned, merges);
-    await run({
-      action: "find_rows",
+    const result = ctx(
+      await run({
+        action: "find_rows",
+        spreadsheetId: "sheet-1",
+        sheetName: "Ledger",
+        conditions: [{ ...mergedCondition(), enabled: false }],
+      }),
+    );
+    // Every row EXCEPT the merged one (data rows 0 and 2 of 3).
+    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(2);
+  });
+
+  // THE safety rule. A section title's non-first cells read as empty, so a
+  // filter written against your data columns hits every one of them — and on
+  // update_row that overwrites them. Asking for a merged row is deliberate;
+  // getting one is never an accident.
+  it("excludes merged rows from an ordinary filter", async () => {
+    mockRead(sectioned, merges);
+    const result = ctx(
+      await run({
+        action: "find_rows",
+        spreadsheetId: "sheet-1",
+        sheetName: "Ledger",
+        conditions: [{ column: "Status", operator: "is_empty" }],
+      }),
+    );
+    // Data row 1 is the merged title and its Status IS empty — excluded anyway.
+    expect(result.GOOGLE_SHEETS_ACTION_1.matchCount).toBe(0);
+  });
+
+  it("does NOT overwrite a section title on an ordinary update_row filter", async () => {
+    mockRead(sectioned, merges);
+    const outcome = await run({
+      action: "update_row",
       spreadsheetId: "sheet-1",
       sheetName: "Ledger",
-      conditions: [{ ...mergedCondition(), enabled: false }],
+      conditions: [{ column: "Status", operator: "is_empty" }],
+      columnMappings: { Status: "Touched" },
     });
-    expect(kyGetMock).toHaveBeenCalledTimes(1);
+    expect(outputs(outcome)).toEqual(["no_match"]);
+    expect(kyPostMock).not.toHaveBeenCalled();
   });
 });
 
@@ -2340,15 +2390,23 @@ describe("googleSheetsActionExecutor — append_row with an inline style", () =>
     const requests = (postBody(1).requests ?? []) as Array<{
       repeatCell?: { fields: string };
     }>;
-    expect(requests[0].repeatCell?.fields).toBe(
-      "userEnteredFormat(horizontalAlignment,textFormat.bold)",
-    );
+    // Set, not order — Sheets ignores mask order, so asserting it would break
+    // on a harmless reshuffle of CELL_FORMAT_FIELDS.
+    expect(
+      (requests[0].repeatCell?.fields ?? "")
+        .replace(/^userEnteredFormat\(|\)$/g, "")
+        .split(",")
+        .sort(),
+    ).toEqual(["horizontalAlignment", "textFormat.bold"]);
   });
 
   it("merging makes a section title, and writes its value RAW", async () => {
     mockRead(ledger);
-    const result = ctx(await run(appendData({ mergeMode: "merge" })));
+    const result = ctx(
+      await run(appendData({ mergeMode: "merge", mergedText: "Q1 Sales" })),
+    );
     expect(result.GOOGLE_SHEETS_ACTION_1.merged).toBe(true);
+    expect(result.GOOGLE_SHEETS_ACTION_1.mergedText).toBe("Q1 Sales");
 
     // RAW, not USER_ENTERED: a title like "0009" or "March 2026" must land in
     // the cell exactly as written rather than becoming a number or a date.
@@ -2356,6 +2414,37 @@ describe("googleSheetsActionExecutor — append_row with an inline style", () =>
 
     const requests = (postBody(1).requests ?? []) as Record<string, unknown>[];
     expect(Object.keys(requests[1])).toEqual(["mergeCells"]);
+  });
+
+  // REGRESSION (found in real use). A merged row is ONE cell — Sheets' MERGE_ALL
+  // keeps only the top-left value. Building it from `columnMappings` wrote 16
+  // values and discarded 15; worse, mapping any column OTHER than the first left
+  // the merged cell EMPTY, so the row rendered blank and looked like nothing had
+  // been added. A merging append takes `mergedText` instead of a mapping.
+  it("writes ONE cell from mergedText, ignoring any column mapping", async () => {
+    mockRead(ledger);
+    const result = ctx(
+      await run(
+        appendData({
+          mergeMode: "merge",
+          mergedText: "Q1 Sales",
+          // Deliberately mapping a NON-first column: under the old behaviour
+          // this produced ["", "Blocked"], whose merge kept the empty column A.
+          columnMappings: { Status: "Blocked" },
+        }),
+      ),
+    );
+    expect(writtenRange(0).values).toEqual([["Q1 Sales"]]);
+    // No columns to key, so it reports its text instead.
+    expect(result.GOOGLE_SHEETS_ACTION_1.rowByHeader).toEqual({});
+    expect(result.GOOGLE_SHEETS_ACTION_1.mergedText).toBe("Q1 Sales");
+  });
+
+  it("rejects a merged append whose text renders empty", async () => {
+    mockRead(ledger);
+    await expect(
+      run(appendData({ mergeMode: "merge", mergedText: "@<missing.value>@" })),
+    ).rejects.toThrow(/text is empty/);
   });
 
   it("writes USER_ENTERED when it is not merging", async () => {
@@ -2372,16 +2461,12 @@ describe("googleSheetsActionExecutor — append_row with an inline style", () =>
   it("does NOT force-text a padded id when merging (RAW would keep the ')", async () => {
     mockRead(ledger);
     const result = ctx(
-      await run(
-        appendData({ mergeMode: "merge", columnMappings: { Job: "0009" } }),
-      ),
+      await run(appendData({ mergeMode: "merge", mergedText: "0009" })),
     );
     expect(postBody(0).valueInputOption).toBe("RAW");
-    expect(writtenRange(0).values).toEqual([["0009", ""]]);
-    expect(result.GOOGLE_SHEETS_ACTION_1.rowByHeader).toEqual({
-      Job: "0009",
-      Status: "",
-    });
+    // The literal string, with NO leading apostrophe.
+    expect(writtenRange(0).values).toEqual([["0009"]]);
+    expect(result.GOOGLE_SHEETS_ACTION_1.mergedText).toBe("0009");
   });
 
   // The other half of the pair: an UNMERGED append still needs the escape,
@@ -2398,7 +2483,7 @@ describe("googleSheetsActionExecutor — append_row with an inline style", () =>
   it("refuses to merge on a one-column tab", async () => {
     mockRead([["Job"], ["A-1"]]);
     await expect(
-      run(appendData({ mergeMode: "merge", columnMappings: { Job: "Q1" } })),
+      run(appendData({ mergeMode: "merge", mergedText: "Q1" })),
     ).rejects.toThrow(/only one column/);
   });
 

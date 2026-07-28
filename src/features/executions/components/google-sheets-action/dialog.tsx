@@ -42,13 +42,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { VariableInput } from "@/components/variable-input";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
 import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
 import { MAX_FAN_OUT_ITEMS_LIMIT, MULTI_MATCH_MODES } from "@/lib/multi-match";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 import {
-  hasActiveRowCondition,
   ROW_MATCH_OPERATORS,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
@@ -62,11 +62,16 @@ import {
   type CellFormat,
   cellFormatSchema,
   DEFAULT_MERGE_MODE,
-  hasAnyCellFormat,
+  DEFAULT_STYLE_MATCH_MODE,
   MERGE_MODE_LABELS,
   MERGE_MODES,
   type MergeMode,
+  resolveColumnBand,
+  STYLE_MATCH_MODE_LABELS,
+  STYLE_MATCH_MODES,
+  type StyleMatchMode,
 } from "@/lib/sheet-style";
+import { refineGoogleSheetsAction } from "@/lib/sheets-action-refine";
 import type { PickerExtraGroup } from "@/lib/upstream-fields";
 import { useTRPC } from "@/trpc/client";
 
@@ -107,11 +112,14 @@ const formSchema = z
     styleColumns: z.array(z.string()).optional(),
     // append_row only: whether the inline style block applies.
     styleAppendedRow: z.boolean().optional(),
+    // append_row + merge ONLY: the single value a merged row holds. Declared
+    // here too so the resolver keeps it on submit (the dual-schema gotcha).
+    mergedText: z.string().optional(),
     // style_cells only: style the topmost matched row ("first"), the bottom-most
     // ("last"), or every matched row ("all", the default). Declared here too so
     // the resolver keeps it on submit (a plain z.object() strips undeclared keys
     // — the dual-schema gotcha).
-    onMultipleStyleMatches: z.enum(["first", "last", "all"]).optional(),
+    onMultipleStyleMatches: z.enum(STYLE_MATCH_MODES).optional(),
     // Multi-match fields, built from the shared constants (see the NOTE on
     // multiMatchConfigFields for why the fragment itself can't be spread here).
     onMultipleMatches: z.enum(MULTI_MATCH_MODES).optional(),
@@ -122,69 +130,7 @@ const formSchema = z
       .max(MAX_FAN_OUT_ITEMS_LIMIT)
       .optional(),
   })
-  .superRefine((data, ctx) => {
-    // The READ action needs only a spreadsheet + tab (already required).
-    if (data.action === "find_rows") return;
-
-    // style_cells uses no columnMappings. Mirrors the config schema's rules.
-    if (data.action === "style_cells") {
-      if (!hasActiveRowCondition(data.conditions)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "Add at least one condition — an empty filter would restyle every row",
-          path: ["conditions"],
-        });
-      }
-      if (
-        !hasAnyCellFormat(data.cellFormat) &&
-        (data.mergeMode ?? DEFAULT_MERGE_MODE) === "none"
-      ) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message:
-            "Set at least one style property, or choose a merge option — otherwise this step would change nothing",
-          path: ["cellFormat"],
-        });
-      }
-      return;
-    }
-
-    const isUnderAppend =
-      data.action === "append_row" && (data.position ?? "bottom") !== "bottom";
-
-    const hasMappings = data.columnMappings
-      ? Object.values(data.columnMappings).some((v) => v.trim())
-      : false;
-
-    // update_row must map at least one column — with none it writes nothing.
-    // append_row needs NO mapping in any position: leaving every column blank
-    // appends a blank row, which is allowed.
-    if (data.action === "update_row" && !hasMappings) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Map at least one column to update",
-        path: ["columnMappings"],
-      });
-    }
-
-    // Both write cases need a real filter: with none, every row "matches" —
-    // update_row would overwrite the whole sheet, and an under-append would have
-    // no meaningful group to join. Mirrors the config schema's rule.
-    if (
-      (data.action === "update_row" || isUnderAppend) &&
-      !hasActiveRowCondition(data.conditions)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          data.action === "update_row"
-            ? "Add at least one condition — an empty filter would overwrite every row"
-            : "Add at least one condition — it picks the group the new row joins",
-        path: ["conditions"],
-      });
-    }
-  });
+  .superRefine(refineGoogleSheetsAction);
 
 export type GoogleSheetsActionFormValues = z.infer<typeof formSchema>;
 
@@ -723,6 +669,7 @@ export const GoogleSheetsActionDialog = ({
       mergeMode: defaultValues.mergeMode ?? DEFAULT_MERGE_MODE,
       styleColumns: defaultValues.styleColumns ?? [],
       styleAppendedRow: defaultValues.styleAppendedRow ?? false,
+      mergedText: defaultValues.mergedText ?? "",
       // Backfill a stable UI id on saved conditions (older saves lacked one).
       conditions: (defaultValues.conditions ?? []).map((c) => ({
         ...c,
@@ -730,7 +677,8 @@ export const GoogleSheetsActionDialog = ({
       })),
       onMultipleMatches: defaultValues.onMultipleMatches ?? "first",
       // Default "all" — style every matched row, the natural reading of a filter.
-      onMultipleStyleMatches: defaultValues.onMultipleStyleMatches ?? "all",
+      onMultipleStyleMatches:
+        defaultValues.onMultipleStyleMatches ?? DEFAULT_STYLE_MATCH_MODE,
       // Left undefined when unset — the control shows the default as a
       // placeholder and the executor applies DEFAULT_MAX_FAN_OUT_ITEMS.
       maxFanOutItems: defaultValues.maxFanOutItems,
@@ -749,12 +697,17 @@ export const GoogleSheetsActionDialog = ({
   const requiredColumns = form.watch("requiredColumns") ?? [];
   const conditions = form.watch("conditions") ?? [];
   const position = form.watch("position") ?? "bottom";
-  const styleMatchMode = form.watch("onMultipleStyleMatches") ?? "all";
+  const styleMatchMode =
+    form.watch("onMultipleStyleMatches") ?? DEFAULT_STYLE_MATCH_MODE;
   const cellFormat = form.watch("cellFormat");
   const mergeMode = form.watch("mergeMode") ?? DEFAULT_MERGE_MODE;
   const styleColumns = form.watch("styleColumns") ?? [];
   const styleAppendedRow = form.watch("styleAppendedRow") ?? false;
   const isAppending = action === "append_row";
+  // An append that MERGES writes one cell, not a mapped row — so the whole
+  // column-mapping block is replaced by a single text field. See `mergedText`.
+  const mergingAppend =
+    isAppending && styleAppendedRow && mergeMode === "merge";
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: buildDefaults reads props/defaultValues, re-run only on open/defaults change.
   useEffect(() => {
@@ -775,6 +728,19 @@ export const GoogleSheetsActionDialog = ({
     enabled: Boolean(spreadsheetId) && Boolean(sheetName),
   });
   const headers = columnsQuery.data?.headers ?? [];
+
+  /**
+   * Headers that sit BETWEEN the picked style columns without being picked.
+   *
+   * A Sheets range cannot express a gap, so the band applied is the min..max
+   * span — meaning a gapped selection would silently style the columns in
+   * between. Derived from the SAME `resolveColumnBand` the executor enforces
+   * with, so the warning shown here and the error thrown mid-run can never
+   * disagree (they previously matched header names differently). It lives
+   * outside the config schema because it depends on the tab's live header
+   * ORDER, which the schema has no access to.
+   */
+  const gappedStyleColumns = resolveColumnBand(headers, styleColumns).gap;
 
   // Count only columns that still exist in the live header row. Stale mappings
   // for columns the sheet no longer has must not inflate the count (else a sheet
@@ -849,6 +815,14 @@ export const GoogleSheetsActionDialog = ({
       delete payload.onMultipleStyleMatches;
     }
     if (values.action !== "append_row") delete payload.styleAppendedRow;
+    // Only a MERGING append carries it; a mapped row uses columnMappings.
+    if (
+      values.action !== "append_row" ||
+      values.styleAppendedRow !== true ||
+      values.mergeMode !== "merge"
+    ) {
+      delete payload.mergedText;
+    }
 
     if (values.action === "find_rows") {
       // Every column exposes two pickable fields: the value from the matched
@@ -1157,67 +1131,104 @@ export const GoogleSheetsActionDialog = ({
                   </WideOverlayPanel>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>
-                    {position === "bottom"
-                      ? "Match the columns"
-                      : "Columns to fill"}
-                  </Label>
-                  <ColumnsNotice
-                    isLoading={columnsQuery.isLoading}
-                    isError={columnsQuery.isError}
-                    hasSpreadsheet={Boolean(spreadsheetId)}
-                    headerCount={headers.length}
+                {/* A merged row is ONE cell. Sheets' MERGE_ALL keeps only the
+                    top-left value, so offering a column mapper here would let
+                    someone fill 16 columns and silently lose 15 of them — and
+                    mapping anything but the first column would leave the merged
+                    cell blank. So merging swaps the mapper for one field. */}
+                {mergingAppend ? (
+                  <FormField
+                    control={form.control}
+                    name="mergedText"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Row text</FormLabel>
+                        <FormControl>
+                          <VariableInput
+                            placeholder="Invoices — March 2026"
+                            value={field.value ?? ""}
+                            onChange={field.onChange}
+                            currentNodeId={currentNodeId}
+                            workflowId={workflowId}
+                            // A non-bottom merged row can name the group it sits
+                            // under, exactly as a mapped column can.
+                            extraGroups={
+                              position !== "bottom" ? anchorGroups : undefined
+                            }
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          The single value this merged row holds. It spans the
+                          tab&apos;s columns as one cell, so there are no
+                          columns to map.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
                   />
-                  {headers.length > 0 ? (
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm text-muted-foreground">
-                        {mappedCount} of {headers.length} mapped
-                        {requiredColumns.length > 0
-                          ? ` · ${requiredColumns.length} required`
-                          : ""}
-                      </p>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setMappingOpen(true)}
-                      >
-                        Configure columns
-                      </Button>
-                    </div>
-                  ) : null}
-                  {form.formState.errors.columnMappings?.message ? (
-                    <p className="text-sm text-destructive">
-                      {String(form.formState.errors.columnMappings.message)}
-                    </p>
-                  ) : null}
-
-                  <ColumnMappingPanel
-                    open={mappingOpen}
-                    onOpenChange={setMappingOpen}
-                    title={
-                      position === "bottom"
+                ) : (
+                  <div className="space-y-2">
+                    <Label>
+                      {position === "bottom"
                         ? "Match the columns"
-                        : "Columns to fill"
-                    }
-                    description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
-                    headers={headers}
-                    value={columnMappings}
-                    onChange={(next) =>
-                      form.setValue("columnMappings", next, {
-                        shouldValidate: true,
-                      })
-                    }
-                    currentNodeId={currentNodeId}
-                    workflowId={workflowId}
-                    requiredColumns={requiredColumns}
-                    onRequiredChange={setRequired}
-                    extraGroups={
-                      position !== "bottom" ? anchorGroups : undefined
-                    }
-                  />
-                </div>
+                        : "Columns to fill"}
+                    </Label>
+                    <ColumnsNotice
+                      isLoading={columnsQuery.isLoading}
+                      isError={columnsQuery.isError}
+                      hasSpreadsheet={Boolean(spreadsheetId)}
+                      headerCount={headers.length}
+                    />
+                    {headers.length > 0 ? (
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm text-muted-foreground">
+                          {mappedCount} of {headers.length} mapped
+                          {requiredColumns.length > 0
+                            ? ` · ${requiredColumns.length} required`
+                            : ""}
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setMappingOpen(true)}
+                        >
+                          Configure columns
+                        </Button>
+                      </div>
+                    ) : null}
+                    {form.formState.errors.columnMappings?.message ? (
+                      <p className="text-sm text-destructive">
+                        {String(form.formState.errors.columnMappings.message)}
+                      </p>
+                    ) : null}
+
+                    <ColumnMappingPanel
+                      open={mappingOpen}
+                      onOpenChange={setMappingOpen}
+                      title={
+                        position === "bottom"
+                          ? "Match the columns"
+                          : "Columns to fill"
+                      }
+                      description="Map each column to a value or an upstream field. Turn off “May be blank” to require a column."
+                      headers={headers}
+                      value={columnMappings}
+                      onChange={(next) =>
+                        form.setValue("columnMappings", next, {
+                          shouldValidate: true,
+                        })
+                      }
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      requiredColumns={requiredColumns}
+                      onRequiredChange={setRequired}
+                      extraGroups={
+                        position !== "bottom" ? anchorGroups : undefined
+                      }
+                    />
+                  </div>
+                )}
 
                 {/* Style the row this append writes. Merging the band is what
                     turns it into a section title, so making one stays a single
@@ -1361,7 +1372,9 @@ export const GoogleSheetsActionDialog = ({
                   ) : null}
                   <p className="text-xs text-muted-foreground">
                     At least one condition is required — an empty filter would
-                    restyle every row on the tab.
+                    restyle every row on the tab. To style section titles, pick{" "}
+                    <strong>Merged row</strong> as a condition&apos;s column;
+                    without it they are left alone.
                   </p>
                 </div>
 
@@ -1373,7 +1386,7 @@ export const GoogleSheetsActionDialog = ({
                       onValueChange={(v) =>
                         form.setValue(
                           "onMultipleStyleMatches",
-                          v as "first" | "last" | "all",
+                          v as StyleMatchMode,
                         )
                       }
                     >
@@ -1381,13 +1394,11 @@ export const GoogleSheetsActionDialog = ({
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="all">Style every match</SelectItem>
-                        <SelectItem value="first">
-                          Only the topmost match
-                        </SelectItem>
-                        <SelectItem value="last">
-                          Only the bottom-most match
-                        </SelectItem>
+                        {STYLE_MATCH_MODES.map((m) => (
+                          <SelectItem key={m} value={m}>
+                            {STYLE_MATCH_MODE_LABELS[m]}
+                          </SelectItem>
+                        ))}
                       </SelectContent>
                     </Select>
                     <p className="text-xs text-muted-foreground">
@@ -1428,8 +1439,19 @@ export const GoogleSheetsActionDialog = ({
                   open={filterOpen}
                   onOpenChange={setFilterOpen}
                   title="Which columns to style"
-                  description="Leave every column unticked to style the whole row. A merge always spans from the first ticked column to the last."
+                  description="Leave every column unticked to style the whole row. A sheet range can't skip a column, so the ones you pick must sit next to each other."
                 >
+                  {/* A Sheets range has no way to express a gap, so the executor
+                      styles the min..max span of what's picked. Flagging a hole
+                      HERE — where the header ORDER is known, which the config
+                      schema can't see — beats failing mid-run. */}
+                  {gappedStyleColumns.length > 0 ? (
+                    <p className="mb-3 text-sm text-destructive">
+                      These columns aren&apos;t next to each other — styling
+                      them would also cover {gappedStyleColumns.join(", ")}.
+                      Either tick those too, or narrow the selection.
+                    </p>
+                  ) : null}
                   <div className="space-y-2">
                     {headers.map((h) => (
                       // A <div>, not a <label>: Radix's Switch renders a button
@@ -1552,7 +1574,10 @@ export const GoogleSheetsActionDialog = ({
                       />
                       <p className="text-xs text-muted-foreground">
                         At least one condition is required — an empty filter
-                        would overwrite every row.
+                        would overwrite every row. Section titles (merged rows)
+                        are left alone unless a condition picks{" "}
+                        <strong>Merged row</strong>, so an ordinary filter can
+                        never overwrite one by accident.
                       </p>
                     </div>
 

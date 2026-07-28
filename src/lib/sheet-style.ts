@@ -83,21 +83,48 @@ export const cellFormatSchema = z.object({
 export type CellFormat = z.infer<typeof cellFormatSchema>;
 
 /**
- * The style properties, in the order the dialog shows them — the ONE list both
- * the editor and `hasAnyCellFormat` walk, so a property added to
- * `cellFormatSchema` can't be silently missed by either.
+ * Every style property, and how it maps onto Sheets' `userEnteredFormat`.
+ *
+ * THE one table — `hasAnyCellFormat` walks it, and so does the request builder
+ * (`cellFormatRequests` in google-sheets.ts). That is the point: adding a
+ * property to `cellFormatSchema` and to this list is enough, and it cannot be
+ * accepted by the schema, offered by the dialog, and then silently never sent.
+ * Before this table the writer had its own hand-written chain, so a tenth
+ * property meant editing three places and forgetting one was invisible.
+ *
+ * - `group`  — `cell` writes onto `userEnteredFormat` directly, `text` onto its
+ *              nested `textFormat` (which is why the mask needs dotted paths).
+ * - `api`    — Sheets' own field name, which differs from ours for the colours.
+ * - `color`  — value is `#RRGGBB` and must go through `hexToRgb` before sending.
+ *
+ * Ordered as the dialog shows them.
  */
-export const CELL_FORMAT_KEYS = [
-  "bold",
-  "italic",
-  "underline",
-  "strikethrough",
-  "fontSize",
-  "textColor",
-  "backgroundColor",
-  "align",
-  "verticalAlign",
-] as const satisfies ReadonlyArray<keyof CellFormat>;
+export const CELL_FORMAT_FIELDS = [
+  { key: "bold", group: "text", api: "bold" },
+  { key: "italic", group: "text", api: "italic" },
+  { key: "underline", group: "text", api: "underline" },
+  { key: "strikethrough", group: "text", api: "strikethrough" },
+  { key: "fontSize", group: "text", api: "fontSize" },
+  { key: "textColor", group: "text", api: "foregroundColor", color: true },
+  {
+    key: "backgroundColor",
+    group: "cell",
+    api: "backgroundColor",
+    color: true,
+  },
+  { key: "align", group: "cell", api: "horizontalAlignment" },
+  { key: "verticalAlign", group: "cell", api: "verticalAlignment" },
+] as const satisfies ReadonlyArray<{
+  key: keyof CellFormat;
+  group: "cell" | "text";
+  api: string;
+  color?: true;
+}>;
+
+/** The style property names alone, DERIVED so the two can never disagree. */
+export const CELL_FORMAT_KEYS = CELL_FORMAT_FIELDS.map(
+  (f) => f.key,
+) as ReadonlyArray<keyof CellFormat>;
 
 /**
  * Does this format actually set anything?
@@ -136,39 +163,101 @@ export const MERGE_MODE_LABELS: Record<MergeMode, string> = {
 export const DEFAULT_MERGE_MODE: MergeMode = "none";
 
 /**
- * Which KIND of row an action is allowed to act on.
+ * Would this style step change nothing at all?
  *
- * A MERGED row is structurally a row like any other (its text sits in the first
- * column — merging is only a display effect), so without this every filter that
- * happens to match a merged row's text would fire on a section title.
- *
- * - `data`     — skip merged rows. The DEFAULT, because a filter written against
- *                your columns is asking about your data, never about a section
- *                title.
- * - `headings` — act ONLY on merged rows.
- * - `all`      — no distinction.
- *
- * ⚠️ The stored VALUES are deliberately unchanged (`headings`, not `merged`):
- * they are persisted in `GoogleSheetsPoll.rowScope`, so renaming them would need
- * a data migration for no behavioural gain. Only the LABELS below were reworded
- * when the "heading" vocabulary was dropped.
- *
- * Used by the Sheets TRIGGER only. The ACTION node expresses the same idea more
- * directly, with a `MERGED_ROW_COLUMN` condition in its normal filter editor.
+ * Every style property starts out as "leave as is" and merging defaults to
+ * "none", so a step that sets neither is easy to reach by accident — it would
+ * read the tab and write nothing while reporting success. Asked in one place
+ * because it is asked in four (the config schema, the dialog's form schema, the
+ * `style_cells` executor guard, and the append's inline-style gate), and the
+ * four had already begun to drift over whether the fallback was `"none"` or
+ * `DEFAULT_MERGE_MODE`.
  */
-export const ROW_SCOPES = ["data", "headings", "all"] as const;
-export type RowScope = (typeof ROW_SCOPES)[number];
+export function isNoOpStyle(
+  format?: CellFormat | null,
+  mergeMode?: MergeMode | null,
+): boolean {
+  return (
+    !hasAnyCellFormat(format) && (mergeMode ?? DEFAULT_MERGE_MODE) === "none"
+  );
+}
 
-export const ROW_SCOPE_LABELS: Record<RowScope, string> = {
-  data: "Normal rows only (skip merged rows)",
-  headings: "Merged rows only",
-  all: "All rows, merged rows included",
+/**
+ * Which columns a chosen subset actually covers, and what it would sweep up.
+ *
+ * A Sheets range cannot express a GAP, so a subset is applied as the min..max
+ * SPAN of the chosen headers. Picking Name and Status while skipping Middle
+ * would therefore style Middle too — silently doing more than was asked.
+ *
+ * Both sides need this and neither can own it alone: the dialog warns live, the
+ * executor enforces (and the config schema can do neither, because a gap is
+ * defined by the tab's live header ORDER, which the schema never sees). Written
+ * once here — dependency-free, so the editor can import it — because the two
+ * implementations it replaces had already diverged on whether header names
+ * matched case-insensitively.
+ *
+ * `unknown` names are reported rather than ignored: styling a wider band than
+ * asked for is exactly the failure this exists to prevent.
+ */
+export function resolveColumnBand(
+  headers: string[],
+  picked: string[],
+): {
+  startColumnIndex: number;
+  endColumnIndex: number;
+  /** Headers inside the span that were NOT picked. Non-empty ⇒ reject. */
+  gap: string[];
+  /** Picked names that are not on the tab at all. Non-empty ⇒ reject. */
+  unknown: string[];
+} {
+  const wanted = picked.map((c) => c.trim()).filter(Boolean);
+  if (wanted.length === 0) {
+    return {
+      startColumnIndex: 0,
+      endColumnIndex: headers.length,
+      gap: [],
+      unknown: [],
+    };
+  }
+
+  const indexOf = (name: string) =>
+    headers.findIndex((h) => h.trim().toLowerCase() === name.toLowerCase());
+
+  const unknown = wanted.filter((name) => indexOf(name) === -1);
+  const indexes = wanted.map(indexOf).filter((i) => i !== -1);
+  if (indexes.length === 0) {
+    return {
+      startColumnIndex: 0,
+      endColumnIndex: headers.length,
+      gap: [],
+      unknown,
+    };
+  }
+
+  const startColumnIndex = Math.min(...indexes);
+  const endColumnIndex = Math.max(...indexes) + 1;
+  const gap = headers
+    .slice(startColumnIndex, endColumnIndex)
+    .filter((_h, i) => !indexes.includes(startColumnIndex + i));
+
+  return { startColumnIndex, endColumnIndex, gap, unknown };
+}
+
+/**
+ * Which matched rows a `style_cells` run acts on when several match.
+ *
+ * Its OWN vocabulary, not the shared `MULTI_MATCH_MODES`: styling deliberately
+ * has no fan-out ("run the next steps once per row"), and `all` — the default,
+ * and the only sensible reading of a filter that paints — has no counterpart
+ * there.
+ */
+export const STYLE_MATCH_MODES = ["first", "last", "all"] as const;
+export type StyleMatchMode = (typeof STYLE_MATCH_MODES)[number];
+
+export const STYLE_MATCH_MODE_LABELS: Record<StyleMatchMode, string> = {
+  all: "Style every match",
+  first: "Only the topmost match",
+  last: "Only the bottom-most match",
 };
 
-export const DEFAULT_ROW_SCOPE: RowScope = "data";
-
-/** Does a row of this kind pass the given scope? */
-export function rowPassesScope(scope: RowScope, isMerged: boolean): boolean {
-  if (scope === "all") return true;
-  return scope === "headings" ? isMerged : !isMerged;
-}
+export const DEFAULT_STYLE_MATCH_MODE: StyleMatchMode = "all";

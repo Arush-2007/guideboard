@@ -25,7 +25,7 @@ import {
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
-import type { RowScope } from "@/lib/sheet-style";
+import type { RowScope } from "@/lib/sheets-trigger-options";
 import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";

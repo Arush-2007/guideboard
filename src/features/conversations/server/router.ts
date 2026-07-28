@@ -74,12 +74,16 @@ and must set at least one "cellFormat" property or a non-"none" "mergeMode".
 It branches "styled" / "no_match".
 
 SECTION TITLES / HEADINGS. There is no separate heading action. A heading is
-simply a row whose cells are MERGED. To CREATE one, use append_row with a single
-column mapped to the title text plus "styleAppendedRow": true, "mergeMode":
-"merge", and a "cellFormat" such as { "bold": true, "align": "CENTER" } — the
-row is written and then merged into one band. append_row's "position" and
-"conditions" work exactly as above, so a heading can go at the bottom, under a
-group, or under every matching row.
+simply a row whose cells are MERGED, and a merged row holds exactly ONE value —
+Sheets keeps only the top-left cell when it merges.
+
+To CREATE one, use append_row with "styleAppendedRow": true, "mergeMode":
+"merge", "mergedText" (the title itself, REQUIRED), and a "cellFormat" such as
+{ "bold": true, "align": "CENTER" }. ⚠️ Do NOT send "columnMappings" for a merged
+row — it takes "mergedText" INSTEAD of a mapping, because 15 of 16 mapped
+columns would be discarded by the merge. append_row's "position" and "conditions"
+work exactly as above, so a title can go at the bottom, under a group, or under
+every matching row, and "mergedText" may reference "@<anchorRow.COLUMN>@".
 
 To FIND, UPDATE or RESTYLE an existing heading, use the ordinary actions with a
 condition whose "column" is the special value "__merged_row__". That pseudo-column
@@ -88,12 +92,19 @@ text with any normal operator. Examples:
   find a section:    find_rows,  conditions: [{ "column": "__merged_row__",
                      "operator": "contains", "value": "March" }]
   rename a section:  update_row, the same condition + columnMappings on the
-                     first column
+                     tab's FIRST column (that is the cell a merged row keeps)
   recolour sections: style_cells, the same condition + a "cellFormat"
-A condition on "__merged_row__" is the ONLY way to select a merged row —
-a filter written against your own columns treats a section title as an ordinary
-row, so prefer "__merged_row__" whenever the user talks about sections, titles,
-headings or dividers.
+⚠️ A filter is one of exactly two things, and "__merged_row__" is what decides
+which:
+  - names it     ⇒ matches ONLY merged rows (section titles).
+  - doesn't name it ⇒ matches only ORDINARY rows; merged rows are EXCLUDED.
+So a condition on "__merged_row__" is the ONLY way to reach a section title, and
+an ordinary filter can never touch one by accident — which matters most on
+update_row, where "Status is_empty" would otherwise match every section title
+(their non-first cells read as empty) and overwrite them. Use "__merged_row__"
+whenever the user talks about sections, titles, headings or dividers.
+It can only NARROW to merged rows, never exclude them: "__merged_row__" with
+"not_contains" still returns merged rows only.
 
 In an "under_*" append's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
 cell of the row the new row is placed under, so a new row can copy values from

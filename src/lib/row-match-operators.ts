@@ -64,6 +64,14 @@ export const MERGED_ROW_COLUMN = "__merged_row__";
 
 export const MERGED_ROW_COLUMN_LABEL = "Merged row (all cells joined)";
 
+/**
+ * Is this condition's column the merged-row sentinel? The one place that test is
+ * spelled, so the trim can't be applied in one caller and forgotten in another.
+ */
+export function isMergedColumn(column?: string): boolean {
+  return column?.trim() === MERGED_ROW_COLUMN;
+}
+
 /** The shape both `RowMatchCondition` and the dialog's form condition satisfy. */
 type ConditionLike = { column?: string; enabled?: boolean };
 
@@ -79,7 +87,7 @@ export function usesMergedColumn(
   conditions: ReadonlyArray<ConditionLike> | undefined,
 ): boolean {
   return (conditions ?? []).some(
-    (c) => isActiveRowCondition(c) && c.column?.trim() === MERGED_ROW_COLUMN,
+    (c) => isActiveRowCondition(c) && isMergedColumn(c.column),
   );
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import {
   changedFieldNames,
   collectHeadingTexts,
@@ -744,9 +745,15 @@ describe("planSheetsPollChanges — rowScope", () => {
     ]);
   });
 
-  it("defaults to 'data' when unspecified", () => {
+  // ONE row-scope default in the codebase. This used to default to "data" while
+  // every real caller resolved an absent stored value to "all", so the same
+  // missing value meant two different things depending on where you asked.
+  it("defaults to the trigger's own default when unspecified", () => {
     expect(planSheetsPollChanges(base).changes).toEqual(
-      planSheetsPollChanges({ ...base, rowScope: "data" }).changes,
+      planSheetsPollChanges({
+        ...base,
+        rowScope: SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
+      }).changes,
     );
   });
 

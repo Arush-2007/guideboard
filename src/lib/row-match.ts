@@ -4,7 +4,7 @@ import {
 } from "@/features/executions/lib/compare";
 import {
   isActiveRowCondition,
-  MERGED_ROW_COLUMN,
+  isMergedColumn,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import { renderTemplate } from "@/lib/templating";
@@ -147,18 +147,23 @@ function isWithinDays(cell: string, days: string, now: number): boolean {
 /**
  * Evaluate one condition against one row.
  *
- * `index` is the row's DATA-row index, needed only to answer the merged-row
- * question — every other operator reads the row's cells alone.
+ * `index` is the row's DATA-row index, REQUIRED because it is what answers the
+ * merged-row question — every other operator reads the row's cells alone. It
+ * deliberately has no default: `0` would silently make row 0 the answer, which
+ * for a merged condition is a false positive on the wrong row.
+ *
+ * Module-private on purpose — `matchRows` is the entry point, and it is what
+ * resolves `now` and the per-condition rendering once for the whole scan.
  */
-export function evaluateRowCondition(
+function evaluateRowCondition(
   row: Record<string, string>,
   condition: RowMatchCondition,
   context: Record<string, unknown>,
-  index = 0,
-  options: RowMatchOptions = {},
+  index: number,
+  options: RowMatchOptions & { now: number },
 ): boolean {
-  const now = options.now ?? Date.now();
-  const isMergedColumn = condition.column?.trim() === MERGED_ROW_COLUMN;
+  const { now } = options;
+  const merged = isMergedColumn(condition.column);
 
   // The merged pseudo-column asks about the SHEET'S STRUCTURE, not the row's
   // values, so it is answered from the tab's real merge ranges.
@@ -169,11 +174,11 @@ export function evaluateRowCondition(
   // condition into a filter that matches EVERY row, and on update_row or
   // style_cells that silently rewrites or repaints the entire tab. Matching
   // nothing is the failure a user notices immediately and that destroys nothing.
-  if (isMergedColumn && !options.mergedRows?.has(index)) return false;
+  if (merged && !options.mergedRows?.has(index)) return false;
 
   // A merged row keeps its text in the tab's first column, which is where the
   // comparison has to read from — the sentinel names no real header.
-  const cell = isMergedColumn
+  const cell = merged
     ? getRowCell(row, options.firstColumn ?? "")
     : getRowCell(row, condition.column);
   const rendered = renderTemplate(condition.value ?? "", context);
@@ -217,13 +222,18 @@ export function matchRows(
   options: RowMatchOptions = {},
 ): RowMatch[] {
   const active = activeConditions(conditions);
-  const now = options.now ?? Date.now();
+  // Resolved ONCE for the whole scan. Both of these are loop-invariant, and
+  // building them per row × per condition is `rows × conditions` throwaway
+  // objects for a value that never changes — 30k of them on a 10k-row tab with
+  // three conditions.
+  const opts: RowMatchOptions & { now: number } = {
+    ...options,
+    now: options.now ?? Date.now(),
+  };
   const matches: RowMatch[] = [];
   rows.forEach((row, index) => {
     if (
-      active.every((c) =>
-        evaluateRowCondition(row, c, context, index, { ...options, now }),
-      )
+      active.every((c) => evaluateRowCondition(row, c, context, index, opts))
     ) {
       matches.push({ index, row });
     }
