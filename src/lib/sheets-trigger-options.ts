@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ROW_SCOPES } from "@/lib/sheet-heading";
+import { ROW_SCOPES } from "@/lib/sheet-style";
 
 /**
  * What an absent `rowScope` means for a TRIGGER: no distinction between data and

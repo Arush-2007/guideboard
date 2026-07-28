@@ -13,23 +13,22 @@ import {
   ROW_SCOPE_LABELS,
   ROW_SCOPES,
   type RowScope,
-} from "@/lib/sheet-heading";
+} from "@/lib/sheet-style";
 
 /**
- * "Which kind of row does this apply to?" — the one picker for the
- * data / headings / all choice, shared by the Sheets ACTION (where it scopes what
- * a conditions filter may touch) and the Sheets TRIGGER (where it scopes what
- * fires a run).
+ * "Which kind of row does this apply to?" — the picker for the
+ * normal / merged / all choice.
  *
- * A heading row is structurally an ordinary row — merging is only a display
- * effect and its text sits in column A — so without this distinction a filter
- * matching a section title would overwrite it, and editing one would fire the
- * trigger as though data had changed. This is also the only way to deliberately
- * target headings.
+ * A merged row is structurally an ordinary row — merging is only a display
+ * effect and its text sits in column A — so without this distinction, editing a
+ * section title would fire the trigger as though data had changed. This is also
+ * the only way to deliberately watch merged rows.
  *
- * Lives here rather than in either dialog because two copies of the choice would
- * be two places for "what counts as a heading" to drift apart in the UI, while
- * the poller and the executor already share one definition (`headingDataRows`).
+ * Used by the Sheets TRIGGER only. The ACTION node expresses the same idea more
+ * directly: a `MERGED_ROW_COLUMN` condition in the filter editor it already has,
+ * which can say "a merged row whose text contains X" rather than only "merged
+ * rows". Both sides still agree on what merged MEANS, because both derive it
+ * from `mergedDataRows`.
  */
 export function RowScopeSelect({
   value,
@@ -40,16 +39,11 @@ export function RowScopeSelect({
 }: {
   value: RowScope | undefined;
   onChange: (next: RowScope) => void;
-  /** What happens to the rows selected, e.g. "changed", "colored", "watched". */
+  /** What happens to the rows selected, e.g. "watched". */
   itemNoun: string;
-  /** Overrides the "Which rows can be {itemNoun}" heading. */
+  /** Overrides the "Which rows can be {itemNoun}" label. */
   label?: string;
-  /**
-   * Overrides the caption under the select. The default is written for an action
-   * that WRITES to the rows it picks; a caller whose scope means something else
-   * (the trigger, which only watches) supplies its own rather than bending the
-   * `itemNoun` phrasing to fit.
-   */
+  /** Overrides the caption under the select. */
   describe?: (scope: RowScope) => string;
 }) {
   const scope = value ?? DEFAULT_ROW_SCOPE;
@@ -72,12 +66,10 @@ export function RowScopeSelect({
         {describe
           ? describe(scope)
           : scope === "headings"
-            ? `Only heading rows are ${itemNoun} — the merged section titles, never your data.`
+            ? `Only merged rows are ${itemNoun} — the section titles, never your data.`
             : scope === "all"
-              ? `Both data and heading rows can be ${itemNoun}. A filter matching a heading's text will change the section title itself.`
-              : `Heading rows are skipped, so a filter can never ${
-                  itemNoun === "changed" ? "overwrite" : "repaint"
-                } a section title by accident.`}
+              ? `Both normal and merged rows are ${itemNoun}.`
+              : `Merged rows are skipped, so only your data is ${itemNoun}.`}
       </p>
     </div>
   );

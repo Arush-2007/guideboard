@@ -33,15 +33,14 @@ DISCORD, SLACK, INSTAGRAM_REPLY_COMMENT, YOUTUBE_REPLY_COMMENT,
 WHATSAPP_ACTION, TELEGRAM_ACTION, NOTION_ACTION, 
 GOOGLE_SHEETS_ACTION, GMAIL_ACTION, EXCEL_ACTION, CONDITION, CONVERT.
 
-GOOGLE_SHEETS_ACTION supports eight actions in its data: "append_row",
-"append_heading", "find_rows", "find_heading", "update_row", "update_heading",
-"color_rows" and "color_heading". find_rows and update_row select rows with an AND-ed
-"conditions" array. find_rows with no conditions reads every row of the tab;
-every column is always returned. update_row overwrites the mapped columns of
-every row matching its conditions; unmapped columns keep their current value.
-update_row REQUIRES at least one condition (an empty filter would overwrite the
-whole sheet), and it never adds a row — when nothing matches it does nothing and
-reports "matched": false.
+GOOGLE_SHEETS_ACTION supports four actions in its data: "append_row",
+"find_rows", "update_row" and "style_cells". find_rows, update_row and
+style_cells select rows with an AND-ed "conditions" array. find_rows with no
+conditions reads every row of the tab; every column is always returned.
+update_row overwrites the mapped columns of every row matching its conditions;
+unmapped columns keep their current value. update_row REQUIRES at least one
+condition (an empty filter would overwrite the whole sheet), and it never adds a
+row — when nothing matches it does nothing and reports "matched": false.
 
 append_row adds a new row. Its "position" field chooses WHERE: "bottom" (the
 default) adds the row at the bottom of the tab; "under_group" and "under_each"
@@ -53,65 +52,52 @@ directly under the LAST matching row, i.e. below the group as a whole;
 it once per added row (capped by "maxFanOutItems"). When nothing matches, one row
 starts a new group at the bottom of the tab.
 
-append_heading adds a SECTION TITLE row: one piece of text ("headingText") in a
-row whose cells are merged into a single band across the tab's columns. Use it
-when the user wants a title, section header or divider label in the sheet rather
-than a data row. It uses "position" and "conditions" exactly like append_row (so
-a heading can go at the bottom, under a group, or under every matching row), but
-it has NO "columnMappings" — "headingText" is required. Optional "headingFormat"
-sets { "bold", "italic", "fontSize", "textColor": "#RRGGBB",
-"backgroundColor": "#RRGGBB", "align": "LEFT"|"CENTER"|"RIGHT" }; omit it for a
-bold, centered, black-on-white heading.
+style_cells FORMATS the rows its conditions select — use it whenever the user
+wants rows flagged, highlighted, color-coded, bolded, resized, or merged. It does
+NOT use "columnMappings". It takes:
+  - "cellFormat": any subset of { "bold", "italic", "underline",
+    "strikethrough", "fontSize" (6-48), "textColor": "#RRGGBB",
+    "backgroundColor": "#RRGGBB", "align": "LEFT"|"CENTER"|"RIGHT",
+    "verticalAlign": "TOP"|"MIDDLE"|"BOTTOM" }.
+    ⚠️ ONLY include the properties the user actually asked for. An omitted
+    property means "leave the cells exactly as they are" — adding one the user
+    did not ask for would overwrite formatting they applied by hand. So "make
+    overdue rows red" is { "backgroundColor": "#fee2e2" } and NOTHING else.
+  - "mergeMode": "none" (default), "merge" (join the cells into ONE — this is
+    how a section-title row is made) or "unmerge".
+  - "styleColumns": optional array of header names to narrow the band. Omit it
+    for the whole row, which is what merging a section title needs.
+  - "onMultipleStyleMatches": "all" (default — style every match), "first"
+    (topmost only) or "last" (bottom-most only).
+It REQUIRES at least one condition (an empty filter would restyle the whole tab)
+and must set at least one "cellFormat" property or a non-"none" "mergeMode".
+It branches "styled" / "no_match".
 
-find_heading searches ONLY the heading rows added by append_heading, and never
-returns an ordinary data row. Use it whenever the user wants to find, check for,
-or locate a section title. It takes an optional "headingFilter":
-{ "operator": "equals"|"contains"|"not_equals"|"not_contains", "value": "..." };
-omit the value to return every heading on the tab. The filter also takes the
-same optional matching restraints a row condition does — "ignoreCase" (defaults
-TRUE here, so omit it unless the user wants a case-SENSITIVE search),
-"ignoreChars" (characters stripped from both sides, e.g. "- " to match
-"Invoices March" against "Invoices — March") and "numeric". It branches "found" /
-"notfound" and reports "firstHeading", "headings", "headingRowIndexes" and
-"rowIndex".
+SECTION TITLES / HEADINGS. There is no separate heading action. A heading is
+simply a row whose cells are MERGED. To CREATE one, use append_row with a single
+column mapped to the title text plus "styleAppendedRow": true, "mergeMode":
+"merge", and a "cellFormat" such as { "bold": true, "align": "CENTER" } — the
+row is written and then merged into one band. append_row's "position" and
+"conditions" work exactly as above, so a heading can go at the bottom, under a
+group, or under every matching row.
 
-find_heading and color_heading accept "onMultipleHeadings" for when several
-headings match: "first" (topmost), "last" (bottom-most), "all" (every one; the
-default for both — find lists them all, color paints them all, and the steps
-after run ONCE), or "each" (every one, and the steps after run once per heading,
-capped by "maxFanOutItems"). Use "each" when the user wants to act on every
-section, e.g. "post a summary for each heading". update_heading has no such
-option — it always renames the single first match.
-
-update_heading renames a section title; color_heading paints matching section
-titles one "headingColor" ("#RRGGBB"). Both take the same optional
-"headingFilter" as find_heading. update_heading needs "headingText" (the new
-text); it rewrites ONE heading and reports "previousHeading" alongside
-"headingText". PREFER text-only renames: only set "restyleHeading": true when
-the user explicitly asks to change how the heading LOOKS, and when you do you
-MUST also supply the full "headingFormat" they asked for — restyling re-applies
-that format, so turning it on without one would overwrite the heading's existing
-styling (and is rejected).
-
-IMPORTANT: heading rows are NEVER selected by a filter written against your
-columns. find_rows, update_row and color_rows all skip them by default, so a
-filter that happens to equal a heading's text will not return, overwrite or
-paint it. To reach a heading use find_heading / update_heading / color_heading,
-or set "rowScope" to "headings" on update_row or color_rows (its values are
-"data" — the default — "headings", and "all").
+To FIND, UPDATE or RESTYLE an existing heading, use the ordinary actions with a
+condition whose "column" is the special value "__merged_row__". That pseudo-column
+matches ONLY rows whose cells are merged, and compares against the merged cell's
+text with any normal operator. Examples:
+  find a section:    find_rows,  conditions: [{ "column": "__merged_row__",
+                     "operator": "contains", "value": "March" }]
+  rename a section:  update_row, the same condition + columnMappings on the
+                     first column
+  recolour sections: style_cells, the same condition + a "cellFormat"
+A condition on "__merged_row__" is the ONLY way to select a merged row —
+a filter written against your own columns treats a section title as an ordinary
+row, so prefer "__merged_row__" whenever the user talks about sections, titles,
+headings or dividers.
 
 In an "under_*" append's columnMappings, "@<anchorRow.COLUMN>@" resolves to a
 cell of the row the new row is placed under, so a new row can copy values from
 the row above it (e.g. "Service Buyer": "@<anchorRow.Service Buyer>@").
-
-color_rows paints matching rows a background color — use it when the user wants
-rows flagged, highlighted or color-coded. It does NOT use "conditions" or
-"columnMappings". Instead it takes "colorRules": an ORDERED array of
-{ "color": "#RRGGBB", "conditions": [...] }. Every row is checked against the
-rules top to bottom and the FIRST matching rule wins, so a row is colored once
-however many rules it matches. Every rule REQUIRES at least one condition (a rule
-with an empty filter would color the whole tab). Rows are colored across their
-used columns, up to the last header. It branches "colored" / "no_match".
 
 find_rows and update_row both accept "onMultipleMatches": "first" (default —
 find_rows continues with the topmost matching row; update_row updates it),

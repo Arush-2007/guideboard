@@ -9,6 +9,7 @@ import {
   Select,
   SelectContent,
   SelectItem,
+  SelectSeparator,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
@@ -16,6 +17,8 @@ import { Switch } from "@/components/ui/switch";
 import { VariableInput } from "@/components/variable-input";
 import type { RowMatchCondition } from "@/lib/row-match";
 import {
+  MERGED_ROW_COLUMN,
+  MERGED_ROW_COLUMN_LABEL,
   ROW_MATCH_OPERATOR_LABELS,
   ROW_MATCH_OPERATORS,
   VALUELESS_ROW_MATCH_OPERATORS,
@@ -29,9 +32,19 @@ export type RowMatchConditionsProps = {
   workflowId?: string;
   /**
    * When given, the column field is a Select of these headers; otherwise a free
-   * text input (e.g. color_rows targeting tabs whose headers aren't loaded).
+   * text input (for tabs whose headers aren't loaded).
    */
   columnOptions?: string[];
+  /**
+   * Offer "Merged row" above the headers — a pseudo-column matching rows whose
+   * cells are joined (section titles), comparing against the merged cell's text.
+   *
+   * Opt-in so this stays a generic conditions editor: only a caller whose
+   * matcher is given the tab's merge ranges can honour it, and a condition the
+   * matcher can't answer would silently match nothing (it fails closed). It also
+   * needs the Select, since a free-text column field can't offer a choice.
+   */
+  allowMergedColumn?: boolean;
 };
 
 /** A fresh condition, with a stable UI id for React keys. */
@@ -45,7 +58,7 @@ export const newRowCondition = (): RowMatchCondition => ({
 
 /**
  * Shared "match rows where…" editor for the Sheets row-selection actions
- * (find_rows, and color_rows in a later step). A CONTROLLED list of AND-ed
+ * (find_rows, update_row, style_cells). A CONTROLLED list of AND-ed
  * conditions — the parent owns the array and wires it like `FieldMapping`. Each
  * row picks a column, a RowMatchOperator, and (unless the operator takes no
  * value) a value via the variable picker, plus an enable toggle.
@@ -60,6 +73,7 @@ export function RowMatchConditions({
   currentNodeId,
   workflowId,
   columnOptions,
+  allowMergedColumn,
 }: RowMatchConditionsProps) {
   const update = (index: number, patch: Partial<RowMatchCondition>) => {
     onChange(value.map((c, i) => (i === index ? { ...c, ...patch } : c)));
@@ -118,6 +132,17 @@ export function RowMatchConditions({
                     <SelectValue placeholder="Column" />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* Above the headers and separated, because it asks about
+                        the row's STRUCTURE rather than naming one of its
+                        columns. */}
+                    {allowMergedColumn ? (
+                      <>
+                        <SelectItem value={MERGED_ROW_COLUMN}>
+                          {MERGED_ROW_COLUMN_LABEL}
+                        </SelectItem>
+                        <SelectSeparator />
+                      </>
+                    ) : null}
                     {columnOptions.map((col) => (
                       <SelectItem key={col} value={col}>
                         {col}

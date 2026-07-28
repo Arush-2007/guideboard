@@ -4,6 +4,7 @@ import {
 } from "@/features/executions/lib/compare";
 import {
   isActiveRowCondition,
+  MERGED_ROW_COLUMN,
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import { renderTemplate } from "@/lib/templating";
@@ -11,7 +12,8 @@ import { renderTemplate } from "@/lib/templating";
 export type { RowMatchOperator };
 
 /**
- * Shared row matcher for the Sheets `find_rows` and `color_rows` actions. Rows
+ * Shared row matcher for every filtering Sheets action — `find_rows`,
+ * `update_row`, `style_cells` and a non-bottom append. Rows
  * are header-keyed objects (see `readSheetTable().rowsByHeader`); a row matches
  * when it satisfies ALL enabled conditions (AND semantics).
  *
@@ -40,6 +42,32 @@ export type RowMatchCondition = {
 };
 
 export type RowMatch = { index: number; row: Record<string, string> };
+
+/**
+ * The facts a match needs that are NOT in the rows themselves.
+ *
+ * An options bag rather than more positional arguments: `now` was already the
+ * fourth parameter, and merge awareness would have made it six.
+ */
+export type RowMatchOptions = {
+  /** Clock, injectable for the date operators. */
+  now?: number;
+  /**
+   * Which DATA-row indexes (0-based, as in `SheetTable.rows`) are merged rows.
+   * Supply `mergedDataRows(grid.merges)` from `google-sheets.ts` — a `Map` of
+   * index → merged width, whose `.has()` is all this needs.
+   *
+   * ⚠️ Absent means NO ROW IS MERGED, so a `MERGED_ROW_COLUMN` condition matches
+   * nothing. That direction is deliberate — see `evaluateRowCondition`.
+   */
+  mergedRows?: ReadonlySet<number> | ReadonlyMap<number, number>;
+  /**
+   * The header key holding a merged row's text — the tab's FIRST column.
+   * Supplied at run time from the live header row rather than saved into a node,
+   * so renaming the first column can't break a saved filter.
+   */
+  firstColumn?: string;
+};
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -116,13 +144,38 @@ function isWithinDays(cell: string, days: string, now: number): boolean {
   return age !== null && age < n * MS_PER_DAY;
 }
 
+/**
+ * Evaluate one condition against one row.
+ *
+ * `index` is the row's DATA-row index, needed only to answer the merged-row
+ * question — every other operator reads the row's cells alone.
+ */
 export function evaluateRowCondition(
   row: Record<string, string>,
   condition: RowMatchCondition,
   context: Record<string, unknown>,
-  now: number = Date.now(),
+  index = 0,
+  options: RowMatchOptions = {},
 ): boolean {
-  const cell = getRowCell(row, condition.column);
+  const now = options.now ?? Date.now();
+  const isMergedColumn = condition.column?.trim() === MERGED_ROW_COLUMN;
+
+  // The merged pseudo-column asks about the SHEET'S STRUCTURE, not the row's
+  // values, so it is answered from the tab's real merge ranges.
+  //
+  // ⚠️ FAILS CLOSED. A row we were not told is merged does not match — including
+  // when the caller supplied no `mergedRows` at all. The alternative (treating
+  // "unknown" as "matches") would make a forgotten merge lookup turn a merged
+  // condition into a filter that matches EVERY row, and on update_row or
+  // style_cells that silently rewrites or repaints the entire tab. Matching
+  // nothing is the failure a user notices immediately and that destroys nothing.
+  if (isMergedColumn && !options.mergedRows?.has(index)) return false;
+
+  // A merged row keeps its text in the tab's first column, which is where the
+  // comparison has to read from — the sentinel names no real header.
+  const cell = isMergedColumn
+    ? getRowCell(row, options.firstColumn ?? "")
+    : getRowCell(row, condition.column);
   const rendered = renderTemplate(condition.value ?? "", context);
   switch (condition.operator) {
     case "older_than_days":
@@ -151,18 +204,27 @@ function activeConditions(
  * Returns the rows matching ALL enabled conditions (AND). `index` is the 0-based
  * data-row index (sheet row = index + 2, after the header). An empty / all-
  * disabled condition set matches EVERY row (vacuous AND) — callers that must not
- * act on all rows (e.g. color target "match") should guard for that themselves.
+ * act on all rows (e.g. a write action) should guard for that themselves.
+ *
+ * To use a `MERGED_ROW_COLUMN` condition, pass `mergedRows` + `firstColumn` in
+ * `options`; without them such a condition matches nothing (it fails closed —
+ * see `evaluateRowCondition`).
  */
 export function matchRows(
   rows: Array<Record<string, string>>,
   conditions: RowMatchCondition[],
   context: Record<string, unknown>,
-  now: number = Date.now(),
+  options: RowMatchOptions = {},
 ): RowMatch[] {
   const active = activeConditions(conditions);
+  const now = options.now ?? Date.now();
   const matches: RowMatch[] = [];
   rows.forEach((row, index) => {
-    if (active.every((c) => evaluateRowCondition(row, c, context, now))) {
+    if (
+      active.every((c) =>
+        evaluateRowCondition(row, c, context, index, { ...options, now }),
+      )
+    ) {
       matches.push({ index, row });
     }
   });

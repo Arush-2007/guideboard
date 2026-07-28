@@ -35,7 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { RowScope } from "@/lib/sheet-heading";
+import type { RowScope } from "@/lib/sheet-style";
 import {
   SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
   sheetsTriggerOptionsSchemaFields,

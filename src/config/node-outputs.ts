@@ -76,30 +76,14 @@ const isSheetsFindRows = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "find_rows";
 const isSheetsUpdate = (data: Record<string, unknown> | null | undefined) =>
   sheetsAction(data) === "update_row";
-const isSheetsColor = (data: Record<string, unknown> | null | undefined) =>
-  sheetsAction(data) === "color_rows";
-// append_heading — one merged cell of text rather than a mapped row, so it emits
-// its TEXT where the other row-writing actions emit header-keyed columns.
-const isSheetsHeading = (data: Record<string, unknown> | null | undefined) =>
-  sheetsAction(data) === "append_heading";
-// find_heading — searches heading rows only, and reports their TEXT and row
-// numbers rather than find_rows' column grid.
-const isSheetsFindHeading = (
+// style_cells — formats the rows a filter selects, and optionally merges them.
+const isSheetsStyle = (data: Record<string, unknown> | null | undefined) =>
+  sheetsAction(data) === "style_cells";
+// An append that also STYLES the row it writes (the inline style block). It
+// reports how wide the styled band was and whether it was merged.
+const isSheetsStyledAppend = (
   data: Record<string, unknown> | null | undefined,
-) => sheetsAction(data) === "find_heading";
-const isSheetsUpdateHeading = (
-  data: Record<string, unknown> | null | undefined,
-) => sheetsAction(data) === "update_heading";
-const isSheetsColorHeading = (
-  data: Record<string, unknown> | null | undefined,
-) => sheetsAction(data) === "color_heading";
-/** Any action that SELECTS headings — all three report `headingsOnTab`. */
-const isSheetsHeadingSelect = (
-  data: Record<string, unknown> | null | undefined,
-) =>
-  isSheetsFindHeading(data) ||
-  isSheetsUpdateHeading(data) ||
-  isSheetsColorHeading(data);
+) => isSheetsAppend(data) && data?.styleAppendedRow === true;
 // A non-bottom append (formerly the insert_row_adjacent action) — an append_row
 // whose `position` drops the row under a matched group / rows. It emits the
 // group/anchor fields a plain bottom append does not. A legacy insert node was
@@ -109,8 +93,7 @@ const isSheetsAppendUnder = (
   data: Record<string, unknown> | null | undefined,
 ) =>
   isLegacyInsert(data) ||
-  ((sheetsAction(data) === "append_row" ||
-    sheetsAction(data) === "append_heading") &&
+  (sheetsAction(data) === "append_row" &&
     ((data?.position as string | undefined) ?? "bottom") !== "bottom");
 
 // Declared incrementally as each node gets its contract defined. Nodes absent
@@ -210,96 +193,39 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "How many rows were added",
         example: "1",
         // Only a bottom append emits this; the under-append reports matchCount.
-        // append_heading's bottom path emits it too.
-        pickIf: (data) =>
-          (isSheetsAppend(data) || isSheetsHeading(data)) &&
-          !isSheetsAppendUnder(data),
+        pickIf: (data) => isSheetsAppend(data) && !isSheetsAppendUnder(data),
       },
-      // append_heading only: the text the merged row was given, AFTER its
-      // template was rendered — so a downstream step can repeat the section
-      // title it just wrote.
-      // append_heading writes it; update_heading rewrites it. Same key, so a
-      // reference survives a switch between them.
+      // style_cells: how many rows were actually restyled — the same as
+      // matchCount in "all" mode, exactly one in "first"/"last".
       {
-        path: "headingText",
-        label: "The heading text that was written",
-        example: "Invoices — March 2026",
-        pickIf: (data) => isSheetsHeading(data) || isSheetsUpdateHeading(data),
+        path: "styledCount",
+        label: "How many rows were styled",
+        example: "1",
+        pickIf: isSheetsStyle,
       },
-      // update_heading only: whether the style was re-applied as well. Branch on
-      // it to tell a rename apart from a rename-and-restyle.
+      // Whether the band was merged into one cell. Branch on it to tell a
+      // recolour apart from "this made a section title". A styling append emits
+      // it too, so one reference reads correctly for both.
       {
-        path: "restyled",
-        label: "Whether the heading was restyled (true/false)",
+        path: "merged",
+        label: "Whether the cells were merged into one (true/false)",
         example: "true",
-        pickIf: isSheetsUpdateHeading,
+        pickIf: (data) => isSheetsStyle(data) || isSheetsStyledAppend(data),
       },
-      // update_heading only: the text BEFORE this run changed it.
+      // style_cells only: which of merge / unmerge / none was applied.
       {
-        path: "previousHeading",
-        label: "The heading text before this step changed it",
-        pickIf: isSheetsUpdateHeading,
-      },
-      // color_heading only.
-      {
-        path: "color",
-        label: "The color the headings were painted",
-        example: "#fef3c7",
-        pickIf: isSheetsColorHeading,
-      },
-      // How wide the merged band ended up: the tab's header width at write time.
-      {
-        path: "mergedColumns",
-        label: "How many columns the heading spans",
-        example: "6",
-        pickIf: isSheetsHeading,
+        path: "mergeMode",
+        label: "The merge option that was applied",
+        example: "merge",
+        pickIf: isSheetsStyle,
         developer: true,
       },
-      // find_heading. `firstHeading` is "the heading this run found" — the
-      // single-value reference, alongside the full list.
+      // How wide the styled band ended up: the tab's header width at write time.
       {
-        path: "firstHeading",
-        label: "The heading this step found",
-        example: "Invoices — March 2026",
-        pickIf: isSheetsFindHeading,
-      },
-      {
-        path: "headings",
-        label: "Every matching heading",
-        pickIf: (data) =>
-          isSheetsFindHeading(data) || isSheetsColorHeading(data),
-      },
-      {
-        path: "headingRowIndexes",
-        label: "The sheet row number of each matching heading",
-        example: "[7, 21]",
-        pickIf: (data) =>
-          isSheetsFindHeading(data) || isSheetsColorHeading(data),
-      },
-      // How many headings the tab has AT ALL, regardless of the search. Branch
-      // on it to tell "nothing matched" from "this tab has no headings yet".
-      {
-        path: "headingsOnTab",
-        label: "How many headings the tab has in total",
-        example: "3",
-        pickIf: isSheetsHeadingSelect,
-      },
-      // find_heading: how many headings this run actually acted on (all of them,
-      // or one in first/last mode) — matchCount is how many MATCHED.
-      {
-        path: "actedCount",
-        label: "How many headings this step used",
-        example: "1",
-        pickIf: isSheetsFindHeading,
-      },
-      // Merged rows that do NOT qualify as headings (wrong start column, or
-      // spanning several rows). Diagnostic: it is what separates "this tab has
-      // nothing merged" from "what you merged doesn't count, and here's why".
-      {
-        path: "nearMisses",
-        label: "Merged rows that don't qualify as headings",
-        example: "1",
-        pickIf: isSheetsHeadingSelect,
+        path: "styledColumns",
+        label: "How many columns the styled band spans",
+        example: "6",
+        pickIf: isSheetsStyledAppend,
         developer: true,
       },
       // find_rows. `firstRow` is "the row this run acted on" in EVERY mode:
@@ -312,8 +238,8 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         label: "The row this run matched (all columns)",
         pickIf: isSheetsFindRows,
       },
-      // find_rows: rows returned. update_row: rows overwritten. color_rows: rows
-      // that matched (all of them, even when only the first/last is painted).
+      // find_rows: rows returned. update_row: rows overwritten. style_cells: rows
+      // that matched (all of them, even when only the first/last is styled).
       // under-append: the size of the group the new row joined (0 ⇒ it started a
       // new one).
       {
@@ -323,17 +249,8 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         pickIf: (data) =>
           isSheetsFindRows(data) ||
           isSheetsUpdate(data) ||
-          isSheetsColor(data) ||
-          isSheetsAppendUnder(data) ||
-          isSheetsHeadingSelect(data),
-      },
-      // color_rows only: how many rows were actually painted — the same as
-      // matchCount in "all" mode, exactly one in "first"/"last".
-      {
-        path: "coloredCount",
-        label: "How many rows were colored",
-        example: "1",
-        pickIf: (data) => isSheetsColor(data) || isSheetsColorHeading(data),
+          isSheetsStyle(data) ||
+          isSheetsAppendUnder(data),
       },
       // update_row only.
       {
@@ -347,7 +264,7 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "matched",
         label: "Whether a row was found to update (true/false)",
         example: "true",
-        pickIf: (data) => isSheetsUpdate(data) || isSheetsUpdateHeading(data),
+        pickIf: isSheetsUpdate,
       },
       // under-append only. False ⇒ nothing matched, so the row started a new
       // group at the bottom instead of joining one.
@@ -371,15 +288,14 @@ export const nodeOutputs: Partial<Record<NodeType, NodeOutputDescriptor>> = {
         path: "rowIndex",
         label: "The sheet row number this step wrote",
         example: "7",
-        pickIf: (data) =>
-          isSheetsAppendUnder(data) ||
-          isSheetsUpdate(data) ||
-          // A heading reports its row in EVERY position — unlike a bottom
-          // append_row, whose answer is "the row after the last one".
-          isSheetsHeading(data) ||
-          // The heading SELECTORS report the row they acted on too.
-          isSheetsFindHeading(data) ||
-          isSheetsUpdateHeading(data),
+        pickIf: (data) => isSheetsAppendUnder(data) || isSheetsUpdate(data),
+      },
+      // style_cells: the sheet row number of each row it styled.
+      {
+        path: "rowIndexes",
+        label: "The sheet row number of each styled row",
+        example: "[7, 21]",
+        pickIf: isSheetsStyle,
       },
       { path: "spreadsheetId", label: "Spreadsheet ID", developer: true },
     ],

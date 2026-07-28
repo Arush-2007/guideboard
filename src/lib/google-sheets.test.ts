@@ -49,13 +49,15 @@ vi.mock("ky", () => {
 });
 
 import {
+  cellFormatRequests,
   getSheetGrid,
-  headingDataRows,
   hexToRgb,
+  mergedDataRows,
   readSheetTable,
   sheetRange,
   sheetsWrite,
   toSheetsError,
+  unqualifiedMerges,
 } from "./google-sheets";
 
 const res = (value: unknown) =>
@@ -190,7 +192,7 @@ describe("getSheetGrid", () => {
     });
     // rowCount is how many rows the GRID has, not how many hold data — an
     // insert can only address rows that exist. `merges` is empty when the tab
-    // reports none; it is what identifies heading rows (see headingDataRows).
+    // reports none; it is what identifies heading rows (see mergedDataRows).
     expect(grid).toEqual({ sheetId: 42, rowCount: 12, merges: [] });
   });
 
@@ -268,7 +270,7 @@ describe("getSheetGrid", () => {
       { startRowIndex: 4, endRowIndex: 5, endColumnIndex: 3 },
     ]);
     // …and that omitted zero still reads as column A, so the row IS a heading.
-    expect(headingDataRows(grid.merges)).toEqual(new Map([[3, 3]]));
+    expect(mergedDataRows(grid.merges)).toEqual(new Map([[3, 3]]));
   });
 
   it("reports rowCount 0 when the tab has no gridProperties", async () => {
@@ -376,11 +378,11 @@ describe("hexToRgb", () => {
   });
 });
 
-describe("headingDataRows", () => {
+describe("mergedDataRows", () => {
   it("maps a single-row merge at column A to its DATA row index", () => {
     // Grid row 4 → data row 3 (grid row 0 is the header).
     expect(
-      headingDataRows([
+      mergedDataRows([
         {
           startRowIndex: 4,
           endRowIndex: 5,
@@ -395,7 +397,7 @@ describe("headingDataRows", () => {
   // places and getting it wrong fails SILENTLY — the trigger would watch the row
   // under each section title instead of the title itself.
   //
-  //   headingDataRows  → DATA-row index, header EXCLUDED (readSheetTable.rows)
+  //   mergedDataRows  → DATA-row index, header EXCLUDED (readSheetTable.rows)
   //   the Sheets poll  → row index with the header AT 0 (the raw values array)
   //
   // So the poller adds one, and the heading's text is that row's column A.
@@ -413,7 +415,7 @@ describe("headingDataRows", () => {
       },
     ];
 
-    const dataRows = [...headingDataRows(merges).keys()];
+    const dataRows = [...mergedDataRows(merges).keys()];
     expect(dataRows).toEqual([0]);
 
     const pollerRows = dataRows.map((i) => i + 1);
@@ -422,9 +424,9 @@ describe("headingDataRows", () => {
     expect(rows[pollerRows[0]][0]).toBe("Q1 Sales");
   });
 
-  it("ignores merges that are not heading-shaped", () => {
+  it("ignores merges that are not merged-row-shaped", () => {
     expect(
-      headingDataRows([
+      mergedDataRows([
         // Not anchored at column A — a mid-row merge in someone's data.
         {
           startRowIndex: 4,
@@ -432,14 +434,14 @@ describe("headingDataRows", () => {
           startColumnIndex: 1,
           endColumnIndex: 3,
         },
-        // Taller than one row — a vertically merged label, not a heading.
+        // Taller than one row — a vertically merged label, not a merged row.
         {
           startRowIndex: 6,
           endRowIndex: 9,
           startColumnIndex: 0,
           endColumnIndex: 3,
         },
-        // The HEADER row itself, merged. A merged header is not a heading.
+        // The HEADER row itself, merged. A merged header does not count.
         {
           startRowIndex: 0,
           endRowIndex: 1,
@@ -450,9 +452,9 @@ describe("headingDataRows", () => {
     ).toEqual(new Map());
   });
 
-  it("collects several headings, and is empty when the tab has no merges", () => {
+  it("collects several merged rows, and is empty when the tab has no merges", () => {
     expect(
-      headingDataRows([
+      mergedDataRows([
         {
           startRowIndex: 1,
           endRowIndex: 2,
@@ -472,6 +474,192 @@ describe("headingDataRows", () => {
         [6, 2],
       ]),
     );
-    expect(headingDataRows([])).toEqual(new Map());
+    expect(mergedDataRows([])).toEqual(new Map());
+  });
+});
+
+describe("unqualifiedMerges", () => {
+  it("counts merges below the header that are not merged rows", () => {
+    expect(
+      unqualifiedMerges([
+        // Qualifies — not a near miss.
+        { startRowIndex: 1, endRowIndex: 2, startColumnIndex: 0 },
+        // Not anchored at column A.
+        { startRowIndex: 3, endRowIndex: 4, startColumnIndex: 2 },
+        // Taller than one row.
+        { startRowIndex: 5, endRowIndex: 8, startColumnIndex: 0 },
+        // The header row — not a candidate at all, so not a near miss either.
+        { startRowIndex: 0, endRowIndex: 1, startColumnIndex: 3 },
+      ]),
+    ).toBe(2);
+  });
+});
+
+/**
+ * The `fields` mask is the whole contract of "unset means leave it alone".
+ *
+ * These assertions are deliberately about the MASK, not just the payload: Sheets
+ * writes exactly what the mask names, so a request carrying `{ bold: true }`
+ * under a mask of `userEnteredFormat.textFormat` would still blank out italic,
+ * size and colour. Every one of these cases has to be checked against the shape
+ * that actually goes over the wire.
+ */
+describe("cellFormatRequests", () => {
+  const range = { sheetId: 7, gridRow0: 4, startColumnIndex: 0 };
+  const req = (over: Partial<Parameters<typeof cellFormatRequests>[0]>) =>
+    cellFormatRequests({ ...range, endColumnIndex: 3, ...over }) as Array<
+      Record<string, { fields?: string; range?: unknown; cell?: unknown }>
+    >;
+
+  it("names ONLY the properties that were set", () => {
+    const [first] = req({ format: { backgroundColor: "#fef3c7" } });
+    expect(first.repeatCell.fields).toBe("userEnteredFormat(backgroundColor)");
+    expect(first.repeatCell.cell).toEqual({
+      userEnteredFormat: { backgroundColor: hexToRgb("#fef3c7") },
+    });
+  });
+
+  it("uses dotted sub-paths so a PARTIAL textFormat survives", () => {
+    // The regression this guards: masking `textFormat` wholesale would wipe the
+    // italic/size/colour a person set by hand on these cells.
+    const [first] = req({ format: { bold: true } });
+    expect(first.repeatCell.fields).toBe("userEnteredFormat(textFormat.bold)");
+    expect(first.repeatCell.cell).toEqual({
+      userEnteredFormat: { textFormat: { bold: true } },
+    });
+  });
+
+  it("treats `false` as a real instruction, not as unset", () => {
+    // "un-bold these cells" must reach Sheets; only `undefined` means leave be.
+    const [first] = req({ format: { bold: false } });
+    expect(first.repeatCell.fields).toBe("userEnteredFormat(textFormat.bold)");
+    expect(first.repeatCell.cell).toEqual({
+      userEnteredFormat: { textFormat: { bold: false } },
+    });
+  });
+
+  it("masks every property when a full format is given", () => {
+    const [first] = req({
+      format: {
+        bold: true,
+        italic: true,
+        underline: true,
+        strikethrough: true,
+        fontSize: 14,
+        textColor: "#000000",
+        backgroundColor: "#ffffff",
+        align: "CENTER",
+        verticalAlign: "MIDDLE",
+      },
+    });
+    expect(first.repeatCell.fields).toBe(
+      "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment," +
+        "textFormat.bold,textFormat.italic,textFormat.underline," +
+        "textFormat.strikethrough,textFormat.fontSize,textFormat.foregroundColor)",
+    );
+  });
+
+  it("emits nothing at all when the format sets nothing and merge is off", () => {
+    expect(req({})).toEqual([]);
+    expect(req({ format: {}, merge: "none" })).toEqual([]);
+  });
+
+  it("emits the merge alone when only merging was asked for", () => {
+    const requests = req({ merge: "merge" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].mergeCells).toEqual({
+      range: {
+        sheetId: 7,
+        startRowIndex: 4,
+        endRowIndex: 5,
+        startColumnIndex: 0,
+        endColumnIndex: 3,
+      },
+      mergeType: "MERGE_ALL",
+    });
+  });
+
+  it("styles BEFORE merging — a merge inherits the top-left cell's format", () => {
+    const requests = req({ format: { bold: true }, merge: "merge" });
+    expect(Object.keys(requests[0])).toEqual(["repeatCell"]);
+    expect(Object.keys(requests[1])).toEqual(["mergeCells"]);
+  });
+
+  it("skips the merge for a band under 2 columns wide", () => {
+    // Sheets rejects a single-cell merge, and there is nothing to span.
+    expect(req({ endColumnIndex: 1, merge: "merge" })).toEqual([]);
+  });
+
+  it("unmerges a band that is actually merged", () => {
+    const requests = req({ merge: "unmerge" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].unmergeCells).toEqual({
+      range: {
+        sheetId: 7,
+        startRowIndex: 4,
+        endRowIndex: 5,
+        startColumnIndex: 0,
+        endColumnIndex: 3,
+      },
+    });
+  });
+
+  // Callers pass the row's REAL merged width, so a one-cell span means "this row
+  // isn't merged" — not "unmerge this single cell".
+  it("skips the unmerge for a one-cell span", () => {
+    expect(req({ endColumnIndex: 1, merge: "unmerge" })).toEqual([]);
+  });
+
+  // Sheets rejects a merge/unmerge range that partially intersects an existing
+  // merge, so the merge band must be able to differ from the format band.
+  it("honours mergeSpan independently of the format band", () => {
+    const requests = req({
+      endColumnIndex: 4,
+      format: { bold: true },
+      merge: "merge",
+      mergeSpan: { startColumnIndex: 0, endColumnIndex: 2 },
+    });
+    // Format across the full band…
+    expect(
+      (requests[0].repeatCell as unknown as { range: Record<string, number> })
+        .range.endColumnIndex,
+    ).toBe(4);
+    // …merge only across the row's real width.
+    expect(
+      (requests[1].mergeCells as unknown as { range: Record<string, number> })
+        .range.endColumnIndex,
+    ).toBe(2);
+  });
+
+  it("skips the merge when mergeSpan is under 2 columns", () => {
+    expect(
+      req({
+        merge: "merge",
+        mergeSpan: { startColumnIndex: 0, endColumnIndex: 1 },
+      }),
+    ).toEqual([]);
+  });
+
+  it("honours a column subset rather than always starting at A", () => {
+    const [first] = cellFormatRequests({
+      sheetId: 7,
+      gridRow0: 4,
+      startColumnIndex: 2,
+      endColumnIndex: 5,
+      format: { bold: true },
+    }) as Array<Record<string, { range?: unknown }>>;
+    expect(first.repeatCell.range).toEqual({
+      sheetId: 7,
+      startRowIndex: 4,
+      endRowIndex: 5,
+      startColumnIndex: 2,
+      endColumnIndex: 5,
+    });
+  });
+
+  it("throws on a malformed colour before anything is written", () => {
+    expect(() => req({ format: { backgroundColor: "nope" } })).toThrow(
+      NonRetriableError,
+    );
   });
 });

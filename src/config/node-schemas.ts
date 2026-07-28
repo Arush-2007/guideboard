@@ -12,12 +12,10 @@ import {
   type RowMatchOperator,
 } from "@/lib/row-match-operators";
 import {
-  HEADING_MATCH_MODES,
-  headingColorSchema,
-  headingFilterSchema,
-  headingFormatSchema,
-  ROW_SCOPES,
-} from "@/lib/sheet-heading";
+  cellFormatSchema,
+  hasAnyCellFormat,
+  MERGE_MODES,
+} from "@/lib/sheet-style";
 import { sheetsTriggerOptionsSchemaFields } from "@/lib/sheets-trigger-options";
 
 type AnyZodSchema = z.ZodTypeAny;
@@ -419,14 +417,14 @@ const excelActionSchema = z
   })
   .passthrough();
 
-// Row-selection operator superset for find_rows / color_rows. Derived from the
+// Row-selection operator superset for the filtering actions. Derived from the
 // single source in row-match-operators.ts (cast only to satisfy z.enum's tuple
 // type) — do NOT re-list literals and do NOT widen compareOperatorEnum (v3 #6).
 const rowMatchOperatorEnum = z.enum(
   ROW_MATCH_OPERATORS as [RowMatchOperator, ...RowMatchOperator[]],
 );
 
-// One filter condition for find_rows / color_rows (matches RowMatchCondition).
+// One filter condition for the filtering actions (matches RowMatchCondition).
 const rowConditionSchema = z.object({
   id: z.string().optional(),
   column: z.string(),
@@ -434,17 +432,6 @@ const rowConditionSchema = z.object({
   value: z.string().optional(),
   enabled: z.boolean().optional(),
   ...compareOptionFields,
-});
-
-// One color_rows rule: a background color plus the filter that selects the rows
-// it paints. Rules are evaluated top-to-bottom and the FIRST match wins, so a
-// row is painted exactly once no matter how many rules it satisfies.
-const colorRuleSchema = z.object({
-  id: z.string().optional(),
-  // #RRGGBB only — `hexToRgb` (google-sheets.ts) accepts exactly this, and
-  // rejecting a bad color at save time beats failing mid-run.
-  color: z.string().regex(/^#[0-9a-f]{6}$/i, "Pick a color"),
-  conditions: z.array(rowConditionSchema),
 });
 
 // The old `insert_row_adjacent` action is now `append_row` with a non-bottom
@@ -478,23 +465,12 @@ const googleSheetsActionSchema = z.preprocess(
       // that were never re-opened keep running instead of permafailing.
       action: z.preprocess(
         (v) => (v === "read_rows" ? "find_rows" : v),
-        z.enum([
-          "append_row",
-          "append_heading",
-          "find_rows",
-          "find_heading",
-          "update_row",
-          "update_heading",
-          "color_rows",
-          "color_heading",
-        ]),
+        z.enum(["append_row", "find_rows", "update_row", "style_cells"]),
       ),
       // Where an appended row lands: the bottom of the tab (default), below a
       // matched GROUP, or below EVERY matched row (which fans out one run per
       // inserted row). The last two use `conditions` to pick the group — what
-      // used to be the separate `insert_row_adjacent` action. Shared by BOTH
-      // appending actions (append_row and append_heading) — they place a row
-      // identically and differ only in what that row contains.
+      // used to be the separate `insert_row_adjacent` action.
       position: z.enum(["bottom", "under_group", "under_each"]).optional(),
       spreadsheetId: z.string().min(1, "Spreadsheet is required"),
       sheetName: z.string().min(1, "Sheet Name is required"),
@@ -510,55 +486,45 @@ const googleSheetsActionSchema = z.preprocess(
       // row placement is absolute (see `nextFreeSheetRow`), so the gap simply
       // stays empty.
       blankRowAbove: z.boolean().optional(),
-      // append_heading only: the single piece of text the merged heading row
-      // holds, templated like any other user-authored field. REQUIRED for that
-      // action — a heading row with nothing in it is just a blank row, which
-      // append_row already does.
-      headingText: z.string().optional(),
-      // append_heading only: how that text is typeset. Every field is optional;
-      // `resolveHeadingFormat` fills the rest. One shared fragment with the
-      // dialog, so neither side can strip a field the other saves.
-      headingFormat: headingFormatSchema.optional(),
-      // The heading actions that SELECT one: find_heading (which to return),
-      // update_heading (which to rewrite), color_heading (which to paint).
-      // Absent ⇒ every heading on the tab.
-      headingFilter: headingFilterSchema.optional(),
-      // update_heading only: also re-apply `headingFormat` to the row it
-      // rewrites. Off ⇒ change the text and leave the styling exactly as it is.
-      restyleHeading: z.boolean().optional(),
-      // color_heading only: the single colour every matching heading is painted.
-      headingColor: headingColorSchema.optional(),
-      // find_heading / color_heading: what to do when SEVERAL headings match —
-      // the topmost, the bottom-most, all of them, or all of them with one run
-      // per heading. Absent ⇒ the action's own default (find keeps "first",
-      // color keeps "all", both of which preserve their original behaviour).
-      // "each" is capped by the shared `maxFanOutItems`.
-      onMultipleHeadings: z.enum(HEADING_MATCH_MODES).optional(),
-      // update_row / color_rows / a non-bottom append: which KIND of row the
-      // filter may select. Absent ⇒ "data", so a filter never touches a section
-      // title by accident. find_rows and find_heading do not read this — their
-      // scope is fixed by the action itself.
-      rowScope: z.enum(ROW_SCOPES).optional(),
-      // AND-ed filter conditions, selecting rows for find_rows, update_row and a
-      // non-bottom append alike (one row-matching mechanism, one editor, one
-      // `matchRows`).
+      // AND-ed filter conditions, selecting rows for find_rows, update_row,
+      // style_cells and a non-bottom append alike (one row-matching mechanism,
+      // one editor, one `matchRows`).
       // find_rows: no conditions reads every row (an old saved `selectedColumns`
       // key rides through harmlessly via .passthrough()).
       // update_row: the rows to overwrite. At least one condition is REQUIRED.
+      // style_cells: the rows to restyle. At least one condition is REQUIRED.
       // append_row under_*: the GROUP the new row joins — `position` decides
       // whether it lands below the group or below each of its rows. At least one
       // condition is REQUIRED.
+      //
+      // A condition may name the `MERGED_ROW_COLUMN` pseudo-column to select
+      // rows whose cells are JOINED (section titles), matching on the merged
+      // cell's text. That is the one way to reach a merged row — there is no
+      // separate "heading" action or row-scope selector.
       conditions: z.array(rowConditionSchema).optional(),
-      // color_rows only: the ordered rule list (first match wins). This action
-      // uses `colorRules[].conditions`, NOT the shared `conditions` above —
-      // each rule carries its own filter.
-      colorRules: z.array(colorRuleSchema).optional(),
-      // color_rows only: paint just the topmost matched row ("first"), just the
-      // bottom-most ("last"), or every matched row ("all", the default — today's
-      // behavior). Its OWN key, not the shared `onMultipleMatches` below, whose
-      // enum has no "all" and whose fan-out semantics color_rows deliberately
-      // does not use.
-      onMultipleColorMatches: z.enum(["first", "last", "all"]).optional(),
+      // style_cells + append_row: the formatting to apply. EVERY property is
+      // optional and unset means "leave the cell's existing value alone", which
+      // is what stops a style pass from wiping formatting applied by hand — see
+      // `cellFormatSchema`. One shared fragment with the dialog, so neither side
+      // can strip a field the other saves.
+      cellFormat: cellFormatSchema.optional(),
+      // style_cells + append_row: merge the targeted band into one cell,
+      // unmerge it, or leave merging alone (the default). Merging is how a
+      // section-title row is made.
+      mergeMode: z.enum(MERGE_MODES).optional(),
+      // style_cells only: restrict the styled band to these header names.
+      // Absent/empty ⇒ the tab's full used width, which is what colouring a row
+      // has always meant.
+      styleColumns: z.array(z.string()).optional(),
+      // append_row only: whether the inline style block applies at all. Kept
+      // separate from `cellFormat` so turning the section off preserves the
+      // choices inside it.
+      styleAppendedRow: z.boolean().optional(),
+      // style_cells only: restyle just the topmost matched row ("first"), just
+      // the bottom-most ("last"), or every matched row ("all", the default).
+      // Its OWN key, not the shared `onMultipleMatches` below, whose enum has no
+      // "all" and whose fan-out semantics styling deliberately does not use.
+      onMultipleStyleMatches: z.enum(["first", "last", "all"]).optional(),
       // Legacy field, superseded by `position` (coerced above). Kept optional so
       // inbound saved data validates; the executor reads `position` now.
       insertUnder: z.enum(["group", "each_row"]).optional(),
@@ -571,87 +537,45 @@ const googleSheetsActionSchema = z.preprocess(
       ...multiMatchConfigFields,
     })
     .superRefine((data, ctx) => {
-      // The two READ actions need only spreadsheet + tab (already required
-      // above). find_heading's filter is optional by design — with none it
-      // returns every heading on the tab.
-      if (data.action === "find_rows" || data.action === "find_heading") return;
+      // The READ action needs only spreadsheet + tab (already required above).
+      if (data.action === "find_rows") return;
 
-      // update_heading rewrites the heading it finds. Its filter is optional
-      // (no filter ⇒ every heading), but it must be given SOMETHING to do —
-      // with neither new text nor a restyle it would read the tab and write
-      // nothing, which is a misconfiguration rather than a no-op worth running.
-      if (data.action === "update_heading") {
-        if (!data.headingText?.trim() && data.restyleHeading !== true) {
+      // style_cells uses no columnMappings, so it validates here and returns
+      // before the mapping checks below.
+      if (data.action === "style_cells") {
+        // An empty filter makes matchRows vacuously true, so it would restyle
+        // every row on the tab. Re-checked in the executor, which is what
+        // actually writes.
+        if (!hasActiveRowCondition(data.conditions)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             message:
-              "Give the heading new text, or turn on “Also restyle it” — otherwise this step would change nothing",
-            path: ["headingText"],
+              "Add at least one condition — an empty filter would restyle every row",
+            path: ["conditions"],
           });
         }
-        return;
-      }
-
-      // color_heading paints the headings its filter selects. The colour is the
-      // one thing it cannot default.
-      if (data.action === "color_heading") {
-        if (!data.headingColor?.trim()) {
+        // A step that sets no property and changes no merge would read the tab
+        // and write nothing. That is a misconfiguration, not a no-op worth
+        // running — and it is easy to reach, since every style property starts
+        // out as "leave as is".
+        const merging = (data.mergeMode ?? "none") !== "none";
+        if (!hasAnyCellFormat(data.cellFormat) && !merging) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            message: "Pick a color",
-            path: ["headingColor"],
+            message:
+              "Set at least one style property, or choose a merge option — otherwise this step would change nothing",
+            path: ["cellFormat"],
           });
         }
-        return;
-      }
-
-      // color_rows uses neither columnMappings nor the shared `conditions` —
-      // each rule carries its own filter — so it validates here and returns
-      // before the checks below.
-      if (data.action === "color_rows") {
-        const rules = data.colorRules ?? [];
-        if (rules.length === 0) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "Add at least one color rule",
-            path: ["colorRules"],
-          });
-          return;
-        }
-        // A rule whose filter is empty (or all-disabled) matches EVERY row —
-        // matchRows is vacuously true — so it would repaint the whole tab.
-        // Re-checked in the executor, which is what actually writes.
-        rules.forEach((rule, i) => {
-          if (!hasActiveRowCondition(rule.conditions)) {
-            ctx.addIssue({
-              code: z.ZodIssueCode.custom,
-              message:
-                "Add at least one condition — a rule with an empty filter would color every row",
-              path: ["colorRules", i, "conditions"],
-            });
-          }
-        });
         return;
       }
 
       const hasMappings = data.columnMappings
         ? Object.values(data.columnMappings).some((v) => v.trim())
         : false;
-      // Both appending actions place their row the same way, so the filter rule
-      // below applies to either one in a non-bottom position.
       const isUnderAppend =
-        (data.action === "append_row" || data.action === "append_heading") &&
+        data.action === "append_row" &&
         (data.position ?? "bottom") !== "bottom";
-
-      // append_heading writes ONE cell, not a mapping — its text is what must be
-      // there. Checked before the mapping rules, none of which apply to it.
-      if (data.action === "append_heading" && !data.headingText?.trim()) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: "Heading text is required",
-          path: ["headingText"],
-        });
-      }
 
       // update_row must map at least one column — with none it writes nothing.
       // append_row needs NO mapping in any position: a row with every column
@@ -679,9 +603,7 @@ const googleSheetsActionSchema = z.preprocess(
           message:
             data.action === "update_row"
               ? "Add at least one condition — an empty filter would overwrite every row"
-              : data.action === "append_heading"
-                ? "Add at least one condition — it picks the group the heading is placed under"
-                : "Add at least one condition — it picks the group the new row joins",
+              : "Add at least one condition — it picks the group the new row joins",
           path: ["conditions"],
         });
       }

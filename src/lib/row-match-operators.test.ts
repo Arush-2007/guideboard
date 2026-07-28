@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { COMPARE_OPERATOR_LABELS } from "@/features/executions/lib/compare";
 import {
+  MERGED_ROW_COLUMN,
   ROW_MATCH_OPERATOR_LABELS,
   ROW_MATCH_OPERATORS,
+  usesMergedColumn,
   VALUELESS_ROW_MATCH_OPERATORS,
 } from "./row-match-operators";
 
@@ -28,5 +30,26 @@ describe("row-match operators (single source)", () => {
     expect(VALUELESS_ROW_MATCH_OPERATORS.has("is_not_empty")).toBe(true);
     expect(VALUELESS_ROW_MATCH_OPERATORS.has("equals")).toBe(false);
     expect(VALUELESS_ROW_MATCH_OPERATORS.has("in_list")).toBe(false);
+  });
+});
+
+describe("usesMergedColumn", () => {
+  const merged = { column: MERGED_ROW_COLUMN };
+
+  it("detects an active merged condition", () => {
+    expect(usesMergedColumn([merged])).toBe(true);
+    expect(usesMergedColumn([{ column: "Status" }, merged])).toBe(true);
+  });
+
+  it("is false without one", () => {
+    expect(usesMergedColumn([])).toBe(false);
+    expect(usesMergedColumn(undefined)).toBe(false);
+    expect(usesMergedColumn([{ column: "Status" }])).toBe(false);
+  });
+
+  // This is what decides whether the executor pays for the tab's merge metadata,
+  // so a condition that filters nothing must not cost an extra API read.
+  it("ignores a DISABLED merged condition", () => {
+    expect(usesMergedColumn([{ ...merged, enabled: false }])).toBe(false);
   });
 });
