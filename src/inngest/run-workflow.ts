@@ -9,6 +9,7 @@ import {
   type WorkflowContext,
 } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
+import { directPublish } from "@/inngest/direct-publish";
 import { isFanOutItem } from "@/inngest/fan-out";
 import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
 import { getOutputKeyForNode } from "@/lib/node-ref";
@@ -351,6 +352,12 @@ export async function runWorkflowNodes({
 }): Promise<WorkflowContext> {
   let context: WorkflowContext = initialData || {};
 
+  // Executors publish node status from the handler body, which the realtime
+  // middleware would otherwise turn into one durable step per publish — two per
+  // checkpointed node, for a fire-and-forget UI ping. Wrapped ONCE here so all
+  // 36 executors are covered without touching any of them. See `directPublish`.
+  const nodePublish = directPublish(publish);
+
   // Replay slice: the set of nodes that actually run this time. Nodes outside it
   // are recorded SKIPPED (their output already lives in the seeded context).
   const replaySlice = replayFromNodeId
@@ -453,7 +460,7 @@ export async function runWorkflowNodes({
         userId,
         context: before,
         step: nodeStep,
-        publish,
+        publish: nodePublish,
       });
 
       // Fan-out: dispatch one child sub-execution per item and activate no
