@@ -536,6 +536,17 @@ model NodeExecution {
   completedAt DateTime?
   durationMs  Int?
 
+  // One row per node per execution — and the target of the recorder's upsert.
+  // The recorder no longer writes inside its own `step.run` (that step cost ~4s
+  // of Inngest dispatch latency per node, for a row nothing else waits on), so a
+  // retried segment re-records the nodes it replays. Without this constraint
+  // that would silently accumulate duplicate rows on every retry.
+  //
+  // Deliberately NOT keyed on `sequence`: a node runs at most once per
+  // execution today, which is what makes (executionId, nodeId) the natural
+  // identity. A future loops feature would have to add it here AND to the
+  // replay-snapshot blob key, which carries the same assumption.
+  @@unique([executionId, nodeId])
   @@index([executionId, sequence])
   // On-demand canvas failure lookup: latest FAILED run for a given node
   // (executions.getLatestNodeFailure) filters by nodeId, so it needs its own

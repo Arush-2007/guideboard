@@ -1,7 +1,8 @@
 import type { Realtime } from "@inngest/realtime";
-import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
+import { requiresCheckpoint, TRIGGER_NODE_TYPES } from "@/config/node-kinds";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
+  type ExecutorStep,
   isFanOut,
   isRouted,
   type StepTools,
@@ -167,6 +168,98 @@ function forwardReachableFrom(
 }
 
 /**
+ * How many nodes one batched segment may hold.
+ *
+ * The batch runs entirely inside ONE Inngest step, so it must also fit inside
+ * ONE serverless invocation — Vercel kills a function at 300s (800s on Pro).
+ * Per-node checkpointing never had this problem: each node was its own
+ * invocation.
+ *
+ * Only inline-safe types are ever batched, and those are pure computation or
+ * plain reads — a `RECORD_LOOKUP` hitting a slow Sheets tab is the realistic
+ * worst case at a second or two. 25 caps a segment at well under a minute even
+ * on that pessimistic footing, while costing at most one extra step per 25
+ * nodes. Lower it if a workflow ever approaches the ceiling; the only cost is
+ * latency, never correctness.
+ */
+const MAX_SEGMENT_NODES = 25;
+
+/**
+ * The step API handed to nodes running INSIDE a batched segment.
+ *
+ * Runs their work immediately rather than checkpointing it, because the
+ * enclosing segment already IS the checkpoint and Inngest steps cannot nest.
+ *
+ * The cast is deliberate and marks the one place the shim and the real thing
+ * genuinely differ: Inngest's `step.run` returns `Jsonify<T>` (the value has
+ * been through JSON), while this returns `T` untouched — so a `Date` stays a
+ * `Date` here where a checkpoint would have made it a string. That is a
+ * WIDENING, never a loss, and it cannot escape the segment: the segment's own
+ * `step.run` JSON-round-trips the context on the way out. Only inline-safe types
+ * see this shim, and none of them put non-JSON values into the context.
+ */
+const inlineStep = {
+  run: async (_id: string, fn: () => unknown) => fn(),
+  ai: {
+    wrap: async (
+      _id: string,
+      fn: (...args: unknown[]) => unknown,
+      ...args: unknown[]
+    ) => fn(...args),
+  },
+} as unknown as ExecutorStep;
+
+/** A node's outgoing-edge activation, in the form that survives JSON. */
+type SerializedActivation = { all: boolean; outputs: string[] };
+
+/**
+ * What a batched segment hands back across its checkpoint.
+ *
+ * Everything a later segment needs must travel through here rather than through
+ * closure state. On a REPLAY the segment's body never runs — Inngest returns the
+ * memoized value — so any state the body only mutated in memory would silently
+ * be lost. `sequence` needs no entry: it is exactly the node's index in
+ * `sortedNodes` (every path through the loop advances it once).
+ */
+type SegmentResult = {
+  context: WorkflowContext;
+  /** Only this segment's own nodes; earlier ones are already applied. */
+  activations: Array<[string, SerializedActivation]>;
+};
+
+/**
+ * Split the topologically-sorted nodes into units of execution: one unit per
+ * checkpointed node, and one per contiguous run of inline-safe nodes.
+ *
+ * Contiguity is decided on TOPOLOGICAL position, not on reachability — which
+ * nodes actually run is a runtime question (branches, skips, replay slices), and
+ * a segment handles that internally. So the split is a pure function of the
+ * node list, and therefore identical on every retry: the step ids it produces
+ * are stable, which is what lets Inngest memoize them.
+ */
+function planSegments(
+  sortedNodes: ExecutableNode[],
+): Array<{ start: number; end: number; checkpoint: boolean }> {
+  const segments: Array<{ start: number; end: number; checkpoint: boolean }> =
+    [];
+
+  for (let i = 0; i < sortedNodes.length; i++) {
+    const checkpoint = requiresCheckpoint(sortedNodes[i].type as NodeType);
+    const open = segments[segments.length - 1];
+    const canExtend =
+      open !== undefined &&
+      !open.checkpoint &&
+      !checkpoint &&
+      open.end - open.start + 1 < MAX_SEGMENT_NODES;
+
+    if (canExtend) open.end = i;
+    else segments.push({ start: i, end: i, checkpoint });
+  }
+
+  return segments;
+}
+
+/**
  * Runs a workflow's nodes sequentially, threading the `context` object from one
  * node's output into the next node's input. This is the core of the execution
  * engine; `executeWorkflow` (src/inngest/functions.ts) wraps it with the
@@ -254,8 +347,24 @@ export async function runWorkflowNodes({
     return act.all || act.outputs.has(conn.fromOutput);
   };
 
-  let sequence = 0;
-  for (const node of sortedNodes) {
+  /**
+   * Run ONE node: reachability, execution, branch activation, recording.
+   *
+   * Extracted from the loop so a node behaves identically whether it is running
+   * as its own checkpointed step or inline inside a batched segment — the only
+   * difference is which `nodeStep` it is handed. Writing it once is what keeps
+   * the two paths from drifting.
+   *
+   * Mutates `context` and `activationByNode` in the enclosing scope. Inside a
+   * segment those mutations are captured into the `SegmentResult` the step
+   * returns, because on a replay this function never runs at all.
+   */
+  const runNode = async (
+    node: ExecutableNode,
+    sequence: number,
+    nodeStep: ExecutorStep,
+    inline: boolean,
+  ): Promise<void> => {
     const before = context;
     const base = {
       nodeId: node.id,
@@ -270,8 +379,7 @@ export async function runWorkflowNodes({
     // original trigger/roots don't re-fire on a replay.
     if (replaySlice && !replaySlice.has(node.id)) {
       await recorder?.record({ ...base, status: "SKIPPED", durationMs: 0 });
-      sequence++;
-      continue;
+      return;
     }
 
     // Reachability: **triggers** are the only roots — they always run. Every
@@ -293,8 +401,7 @@ export async function runWorkflowNodes({
 
     if (!reachable) {
       await recorder?.record({ ...base, status: "SKIPPED", durationMs: 0 });
-      sequence++;
-      continue;
+      return;
     }
 
     const executor = getExecutor(node.type as NodeType);
@@ -315,7 +422,7 @@ export async function runWorkflowNodes({
         executionId,
         userId,
         context: before,
-        step,
+        step: nodeStep,
         publish,
       });
 
@@ -331,6 +438,21 @@ export async function runWorkflowNodes({
           throw new Error(
             `Node ${node.id} (${node.type}) returned a fan-out result but no ` +
               "fanOutDispatcher was wired into runWorkflowNodes — this is a bug.",
+          );
+        }
+
+        // Dispatching sends events, which Inngest forbids from inside a step —
+        // and the dispatcher checkpoints its sends so a retry re-emits every
+        // item. Neither works within a batched segment. Today this is
+        // unreachable: `fanOut(...)` comes only from `applyMultiMatchPolicy`,
+        // used only by GOOGLE_SHEETS_ACTION, which is checkpointed. It is a
+        // guard against a FUTURE fan-out node being classified inline-safe,
+        // where the failure would otherwise be a silently dropped fan-out.
+        if (inline) {
+          throw new Error(
+            `Node ${node.id} (${node.type}) fanned out from inside a batched ` +
+              "segment, which cannot dispatch child runs. Mark this node type " +
+              "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",
           );
         }
 
@@ -352,8 +474,7 @@ export async function runWorkflowNodes({
         });
 
         context = after;
-        sequence++;
-        continue;
+        return;
       }
 
       // Normalize the executor return into (next context, activated outputs).
@@ -383,8 +504,56 @@ export async function runWorkflowNodes({
       });
       throw error;
     }
+  };
 
-    sequence++;
+  // Execute the plan: a checkpointed node runs directly against Inngest's real
+  // `step` — so the read/write splits inside its executor stay real, separately
+  // memoized steps — while a run of inline-safe nodes shares ONE step.
+  for (const segment of planSegments(sortedNodes)) {
+    if (segment.checkpoint) {
+      await runNode(sortedNodes[segment.start], segment.start, step, false);
+      continue;
+    }
+
+    // The step id is derived from topological POSITION, which `planSegments`
+    // computes identically on every attempt — so a retry addresses the same
+    // step and Inngest can memoize it.
+    const result = (await step.run(
+      `nodes:${segment.start}-${segment.end}`,
+      async (): Promise<SegmentResult> => {
+        for (let i = segment.start; i <= segment.end; i++) {
+          await runNode(sortedNodes[i], i, inlineStep, true);
+        }
+
+        // Only this segment's nodes: earlier activations are already applied
+        // below, and re-returning them would grow the payload quadratically.
+        // A skipped node has no entry, and `isEdgeActive` reads a missing one
+        // as inactive — which is exactly right.
+        const activations: Array<[string, SerializedActivation]> = [];
+        for (let i = segment.start; i <= segment.end; i++) {
+          const activation = activationByNode.get(sortedNodes[i].id);
+          if (activation) {
+            activations.push([
+              sortedNodes[i].id,
+              { all: activation.all, outputs: [...activation.outputs] },
+            ]);
+          }
+        }
+
+        return { context, activations };
+      },
+    )) as SegmentResult;
+
+    // Re-seed from the RETURNED value rather than trusting the mutations above:
+    // on a replay the body never ran, so the closure state is untouched and this
+    // is the only place the segment's effect exists.
+    context = result.context;
+    for (const [nodeId, activation] of result.activations) {
+      activationByNode.set(nodeId, {
+        all: activation.all,
+        outputs: new Set(activation.outputs),
+      });
+    }
   }
 
   return context;

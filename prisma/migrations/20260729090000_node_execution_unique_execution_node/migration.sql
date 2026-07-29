@@ -1,0 +1,22 @@
+-- The NodeExecution recorder no longer writes inside its own `step.run`. That
+-- wrapper cost one durable Inngest step per node — roughly four seconds of
+-- dispatch latency each, on Inngest Cloud, for a row nothing in the run waits
+-- on — which made recording a dominant share of every workflow's wall clock.
+-- It also cannot remain a step: the engine now batches contiguous inline-safe
+-- nodes into a single step, and Inngest steps cannot nest.
+--
+-- Losing the step means losing its memoization, so a retried segment re-records
+-- the nodes it replays. The recorder therefore upserts instead of creating, and
+-- this constraint is what it upserts against.
+--
+-- Safe on existing data: verified 0 duplicate (executionId, nodeId) groups
+-- across 496 rows before applying. The old step-wrapped recorder wrote each
+-- node exactly once per execution, which is the invariant this now enforces.
+--
+-- Deliberately NOT keyed on `sequence`: a node runs at most once per execution
+-- today. A future loops feature must add it here AND to the replay-snapshot
+-- blob key (`replay-contexts/<executionId>/<nodeId>.json`), which encodes the
+-- same assumption.
+
+-- CreateIndex
+CREATE UNIQUE INDEX "NodeExecution_executionId_nodeId_key" ON "NodeExecution"("executionId", "nodeId");

@@ -491,3 +491,195 @@ describe("outcome brand cross-checks", () => {
     expect(isRouted(routed({}, []))).toBe(true);
   });
 });
+
+// ── Step batching ─────────────────────────────────────────────────────────────
+// Contiguous inline-safe nodes share ONE Inngest step; a checkpointed node gets
+// its own. This is what makes a run fast (a step costs ~4s of dispatch latency
+// on Inngest Cloud, dwarfing the work), so the batching has to be both correct
+// and actually happening — a regression that quietly stopped batching would
+// still pass every test above.
+//
+// CALCULATOR is inline-safe and AI_TEXT is checkpointed in
+// CHECKPOINTED_NODE_TYPES; these tests are written against that classification.
+const inline = (id: string, data?: unknown): N => ({
+  id,
+  type: "CALCULATOR",
+  name: id,
+  data,
+});
+
+/** A step shim that records the ids it is asked to run. */
+const recordingStep = () => {
+  const ids: string[] = [];
+  return {
+    ids,
+    step: {
+      run: async (id: string, fn: () => unknown) => {
+        ids.push(id);
+        return fn();
+      },
+    } as any,
+  };
+};
+
+describe("runWorkflowNodes step batching", () => {
+  it("runs a contiguous run of inline-safe nodes in ONE step", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), inline("b"), inline("c")],
+      connections: [edge("t", "a"), edge("a", "b"), edge("b", "c")],
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    // All four nodes, one step. (The mock executors call no steps of their own,
+    // so every id here is the engine's.)
+    expect(ran).toEqual(["t", "a", "b", "c"]);
+    expect(ids).toEqual(["nodes:0-3"]);
+  });
+
+  it("never wraps a checkpointed node — its executor's own steps stay real", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("ai")],
+      connections: [edge("t", "ai")],
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toEqual(["t", "ai"]);
+    // Only the trigger's segment. Wrapping `ai` would nest its executor's
+    // internal step.run calls inside an outer step, which Inngest forbids — and
+    // would destroy the read/write memoization those splits exist for.
+    expect(ids).toEqual(["nodes:0-0"]);
+  });
+
+  it("splits a batch where a checkpointed node interrupts it", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("t"),
+        inline("a"),
+        node("ai"),
+        inline("b"),
+        inline("c"),
+      ],
+      connections: [
+        edge("t", "a"),
+        edge("a", "ai"),
+        edge("ai", "b"),
+        edge("b", "c"),
+      ],
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toEqual(["t", "a", "ai", "b", "c"]);
+    expect(ids).toEqual(["nodes:0-1", "nodes:3-4"]);
+  });
+
+  it("caps a batch so one step can't outgrow the serverless time limit", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    // 1 trigger + 29 inline nodes = 30 batchable nodes, past the cap of 25.
+    const nodes = [
+      trigger("t"),
+      ...Array.from({ length: 29 }, (_, i) => inline(`n${i}`)),
+    ];
+    const connections = nodes.slice(1).map((n, i) => edge(nodes[i].id, n.id));
+
+    await runWorkflowNodes({
+      sortedNodes: nodes,
+      connections,
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toHaveLength(30);
+    expect(ids).toEqual(["nodes:0-24", "nodes:25-29"]);
+  });
+
+  it("carries a branch decided inside a batch out to a later step", async () => {
+    // The routing happens in the middle of a segment and the nodes it gates sit
+    // in a LATER one — so the activation has to survive the step boundary, not
+    // just the in-memory loop.
+    const { recorder, ran, skipped } = collect();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("t"),
+        inline("cond", { route: ["true"] }),
+        node("yes"),
+        node("no"),
+      ],
+      connections: [
+        edge("t", "cond"),
+        edge("cond", "yes", "true"),
+        edge("cond", "no", "false"),
+      ],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toEqual(["t", "cond", "yes"]);
+    expect(skipped).toEqual(["no"]);
+  });
+
+  it("resumes from a memoized segment without re-running its nodes", async () => {
+    // THE failure mode this design has to survive. On a replay Inngest returns a
+    // completed step's stored value and never runs its body — so the segment's
+    // context and activations exist ONLY in what it returned. An engine that
+    // trusted its in-memory closure would resume with an empty context and skip
+    // everything downstream, silently.
+    const { recorder, ran } = collect();
+    const memoized = {
+      run: async (id: string, fn: () => unknown) =>
+        id === "nodes:0-1"
+          ? {
+              context: { fromMemo: true },
+              activations: [["a", { all: true, outputs: [] }]],
+            }
+          : fn(),
+    } as any;
+
+    const context = await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), node("after")],
+      connections: [edge("t", "a"), edge("a", "after")],
+      userId: "u",
+      executionId: "exec_test",
+      step: memoized,
+      publish,
+      recorder,
+    });
+
+    // The memoized segment's nodes did not re-run …
+    expect(ran).toEqual(["after"]);
+    // … `after` was still reachable, because the segment's activation for `a`
+    // came back with the memoized value …
+    expect(context).toHaveProperty("after", true);
+    // … and it ran against the stored context, not a fresh empty one.
+    expect(context).toHaveProperty("fromMemo", true);
+  });
+});

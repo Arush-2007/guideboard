@@ -75,17 +75,26 @@ const GMAIL_READ = {
 
 /**
  * Prisma-backed NodeRecorder: writes one NodeExecution row per node, once when
- * the node settles, wrapped in a stable-id `step.run` so Inngest checkpoints it
- * and retries stay idempotent. One write-on-settle (vs a RUNNING insert + an
- * update) halves the durable steps and DB writes per node and leaves no orphan
- * RUNNING rows. `input`/`output` are size-capped via `clampJson` here so the
- * engine stays Prisma-free.
+ * the node settles. One write-on-settle (vs a RUNNING insert + an update) halves
+ * the DB writes per node and leaves no orphan RUNNING rows. `input`/`output` are
+ * size-capped via `clampJson` here so the engine stays Prisma-free.
+ *
+ * Writes DIRECTLY rather than inside a `step.run`, which is the single largest
+ * saving in the whole run. That wrapper was one durable step per node — and on
+ * Inngest Cloud a step costs roughly four seconds of dispatch latency regardless
+ * of how long the work takes, so recording a row nothing waits on was doubling
+ * the length of every workflow. It also cannot be a step any more: nodes inside
+ * a batched segment are already inside one, and steps cannot nest.
+ *
+ * The cost is that a retry re-records the nodes it replays, so this must be
+ * idempotent on its own — hence the upsert against the `(executionId, nodeId)`
+ * unique constraint rather than a create. Rows land SOONER than before, not
+ * later: the write is inline instead of deferred to a checkpoint, so the
+ * executions page gains if anything.
  */
 function createPrismaNodeRecorder({
-  step,
   executionId,
 }: {
-  step: StepTools;
   executionId: string;
 }): NodeRecorder {
   return {
@@ -112,70 +121,75 @@ function createPrismaNodeRecorder({
       const completedAt = new Date();
       const startedAt = new Date(completedAt.getTime() - durationMs);
 
-      await step.run(`node-record:${nodeId}`, async () => {
-        const clampedInput = clampJson(input);
+      const clampedInput = clampJson(input);
 
-        // When the inline snapshot had to be truncated, park the full context
-        // in R2 so replay-from-node can still seed real data (a marker context
-        // would silently corrupt the replay). The key is deterministic per
-        // (execution, node) so a retried step overwrites its own object. It
-        // assumes one run per node per execution (true today, like
-        // replayFromNode's snapshot pick) — a future loops feature must add
-        // `sequence` to the key or later iterations overwrite earlier ones.
-        // Best-effort: recording must never break a run — on failure (or with
-        // R2 unconfigured) the key stays null and replay refuses instead.
-        // SKIPPED nodes never seed a replay (replayFromNode rejects them), so
-        // their snapshots aren't stored — otherwise a replay would re-upload
-        // the same oversized context once per skipped upstream node.
-        let inputBlobKey: string | null = null;
-        if (
-          status !== "SKIPPED" &&
-          isClampedMarker(clampedInput) &&
-          isBlobConfigured()
-        ) {
-          const key = `replay-contexts/${executionId}/${nodeId}.json`;
-          try {
-            await putBlob({
-              key,
-              bytes: Buffer.from(JSON.stringify(input)),
-              contentType: "application/json",
-            });
-            inputBlobKey = key;
-          } catch (err) {
-            logger.error("Failed to store full input snapshot", err, {
-              executionId,
-              nodeId,
-            });
-          }
-        }
-
-        return prisma.nodeExecution.create({
-          data: {
+      // When the inline snapshot had to be truncated, park the full context
+      // in R2 so replay-from-node can still seed real data (a marker context
+      // would silently corrupt the replay). The key is deterministic per
+      // (execution, node) so a re-recorded node overwrites its own object. It
+      // assumes one run per node per execution (true today, like
+      // replayFromNode's snapshot pick, and now also asserted by the
+      // `(executionId, nodeId)` unique constraint) — a future loops feature must
+      // add `sequence` to the key or later iterations overwrite earlier ones.
+      // Best-effort: recording must never break a run — on failure (or with
+      // R2 unconfigured) the key stays null and replay refuses instead.
+      // SKIPPED nodes never seed a replay (replayFromNode rejects them), so
+      // their snapshots aren't stored — otherwise a replay would re-upload
+      // the same oversized context once per skipped upstream node.
+      let inputBlobKey: string | null = null;
+      if (
+        status !== "SKIPPED" &&
+        isClampedMarker(clampedInput) &&
+        isBlobConfigured()
+      ) {
+        const key = `replay-contexts/${executionId}/${nodeId}.json`;
+        try {
+          await putBlob({
+            key,
+            bytes: Buffer.from(JSON.stringify(input)),
+            contentType: "application/json",
+          });
+          inputBlobKey = key;
+        } catch (err) {
+          logger.error("Failed to store full input snapshot", err, {
             executionId,
             nodeId,
-            nodeType,
-            nodeName,
-            sequence,
-            status:
-              status === "FAILED"
-                ? NodeExecutionStatus.FAILED
-                : status === "SKIPPED"
-                  ? NodeExecutionStatus.SKIPPED
-                  : NodeExecutionStatus.SUCCESS,
-            input: clampedInput as Prisma.InputJsonValue,
-            inputBlobKey,
-            output:
-              output !== undefined
-                ? (clampJson(output) as Prisma.InputJsonValue)
-                : undefined,
-            error: message,
-            errorStack: stack,
-            startedAt,
-            completedAt,
-            durationMs,
-          },
-          select: { id: true },
-        });
+          });
+        }
+      }
+
+      const row = {
+        nodeType,
+        nodeName,
+        sequence,
+        status:
+          status === "FAILED"
+            ? NodeExecutionStatus.FAILED
+            : status === "SKIPPED"
+              ? NodeExecutionStatus.SKIPPED
+              : NodeExecutionStatus.SUCCESS,
+        input: clampedInput as Prisma.InputJsonValue,
+        inputBlobKey,
+        output:
+          output !== undefined
+            ? (clampJson(output) as Prisma.InputJsonValue)
+            : undefined,
+        error: message,
+        errorStack: stack,
+        startedAt,
+        completedAt,
+        durationMs,
+      };
+
+      // Upsert, not create: a retried segment replays the nodes it contains, so
+      // this runs again for rows it already wrote. The latest attempt wins —
+      // which is the honest record, since it describes the run that actually
+      // produced the final context.
+      await prisma.nodeExecution.upsert({
+        where: { executionId_nodeId: { executionId, nodeId } },
+        create: { executionId, nodeId, ...row },
+        update: row,
+        select: { id: true },
       });
     },
   };
@@ -487,7 +501,7 @@ export const executeWorkflow = inngest.createFunction(
       initialData,
       step,
       publish,
-      recorder: createPrismaNodeRecorder({ step, executionId }),
+      recorder: createPrismaNodeRecorder({ executionId }),
       fanOutDispatcher: createFanOutDispatcher({
         step,
         executionId,
