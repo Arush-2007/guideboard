@@ -24,6 +24,38 @@ export interface BuiltEmail {
   text: string;
 }
 
+/**
+ * The error text a failed run should actually show.
+ *
+ * When a node throws, the engine records it FAILED — with its message, stack and
+ * input — before the throw propagates, so there is always per-node detail to
+ * open. `recordedNodes === 0` therefore means the run never reached that path:
+ * the platform ended the invocation (execution-time ceiling, out of memory), or
+ * it failed before the first node (a cyclic graph, a workflow that would not
+ * load).
+ *
+ * Those runs otherwise present as a failure with an empty node list and an error
+ * like "function timed out" — technically true, and useless. This says the cause
+ * is unknown and WHY it is unknown, so the absence of detail reads as
+ * information rather than as a missing feature.
+ *
+ * Shared by the Execution row and the alert email deliberately: the email is
+ * often the only thing anyone reads.
+ */
+export function resolveFailureCause(
+  recordedNodes: number,
+  platformError: string,
+): string {
+  if (recordedNodes > 0) return platformError;
+  return (
+    "Node failed: cause unknown — the run stopped before any node could record " +
+    "what it was doing, so there is no per-node detail. This is usually the " +
+    "platform ending the run (time limit or out of memory) rather than a node " +
+    "erroring; a workflow that cannot be loaded or contains a cycle also lands " +
+    `here. Underlying error: ${platformError}`
+  );
+}
+
 const escapeHtml = (s: string) =>
   s
     .replace(/&/g, "&amp;")

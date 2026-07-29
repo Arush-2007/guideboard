@@ -1,5 +1,8 @@
 import { NonRetriableError } from "inngest";
-import { buildFailureEmail } from "@/features/executions/lib/failure-email";
+import {
+  buildFailureEmail,
+  resolveFailureCause,
+} from "@/features/executions/lib/failure-email";
 import type { StepTools } from "@/features/executions/types";
 import {
   ExecutionStatus,
@@ -355,11 +358,21 @@ export const executeWorkflow = inngest.createFunction(
     // workflows still run fully in parallel (the key partitions the limit).
     concurrency: { key: "event.data.workflowId", limit: 1 },
     onFailure: async ({ event }) => {
+      const inngestEventId = event.data.event.id;
+      const platformError = event.data.error.message;
+
+      // Did ANY node get as far as recording? Zero rows means the run never
+      // reached the engine's own failure path — see `resolveFailureCause`.
+      const recordedNodes = await prisma.nodeExecution.count({
+        where: { execution: { inngestEventId } },
+      });
+      const error = resolveFailureCause(recordedNodes, platformError);
+
       const execution = await prisma.execution.update({
-        where: { inngestEventId: event.data.event.id },
+        where: { inngestEventId },
         data: {
           status: ExecutionStatus.FAILED,
-          error: event.data.error.message,
+          error,
           errorStack: event.data.error.stack,
           completedAt: new Date(),
         },
@@ -392,7 +405,10 @@ export const executeWorkflow = inngest.createFunction(
           workflowName: execution.workflow.name,
           userId: execution.workflow.user.id,
           userEmail: execution.workflow.user.email,
-          error: event.data.error.message,
+          // The same resolved message the row got, not the raw platform error —
+          // the email is often the only thing the user reads, and "function timed
+          // out" alone tells them nothing actionable.
+          error,
         });
       } catch (err) {
         logger.error("Failed to send workflow failure email", err, {
