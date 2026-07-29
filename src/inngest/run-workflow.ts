@@ -1,4 +1,5 @@
 import type { Realtime } from "@inngest/realtime";
+import { NonRetriableError } from "inngest";
 import { requiresCheckpoint, TRIGGER_NODE_TYPES } from "@/config/node-kinds";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
@@ -244,6 +245,14 @@ export const MAX_SEGMENT_NODES = Math.min(
  * WIDENING, never a loss, and it cannot escape the segment: the segment's own
  * `step.run` JSON-round-trips the context on the way out. Only inline-safe types
  * see this shim, and none of them put non-JSON values into the context.
+ *
+ * ⚠️ The cast also means the type system checks nothing here. `ExecutorStep` is
+ * `Pick<StepTools, "run" | "ai">`, and `ai` carries `infer` and `models` as well
+ * as `wrap` — so an executor reaching for one of those compiles cleanly and
+ * would hit `undefined is not a function` the first time it landed in a batch.
+ * They are implemented rather than omitted for that reason; `infer` throws a
+ * legible error instead of pretending, because it asks the PLATFORM to perform
+ * the inference and there is nothing to run inline.
  */
 const inlineStep = {
   run: async (_id: string, fn: () => unknown) => fn(),
@@ -253,6 +262,18 @@ const inlineStep = {
       fn: (...args: unknown[]) => unknown,
       ...args: unknown[]
     ) => fn(...args),
+    // Unreachable today — every AI node is checkpointed, and all five use
+    // `wrap`. If that ever changes, fail with an actionable message rather than
+    // a TypeError from a missing method.
+    infer: async () => {
+      throw new NonRetriableError(
+        "step.ai.infer() cannot run inside a batched segment — it is executed " +
+          "by the Inngest platform, not by this process. Mark the node type " +
+          "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",
+      );
+    },
+    // Pure model descriptors, no execution — safe to pass through untouched.
+    models: {},
   },
 } as unknown as ExecutorStep;
 
@@ -575,8 +596,12 @@ export async function runWorkflowNodes({
         const after = result.context;
         activationByNode.set(node.id, { all: false, outputs: new Set() });
 
+        // NonRetriableError, not Error: both guards below describe a WIRING
+        // fault, which no retry can resolve. A plain Error costs three full
+        // re-runs of the batch — including the network reads of every node in
+        // it — before the run finally fails with the same message.
         if (!fanOutDispatcher) {
-          throw new Error(
+          throw new NonRetriableError(
             `Node ${node.id} (${node.type}) returned a fan-out result but no ` +
               "fanOutDispatcher was wired into runWorkflowNodes — this is a bug.",
           );
@@ -590,7 +615,7 @@ export async function runWorkflowNodes({
         // guard against a FUTURE fan-out node being classified inline-safe,
         // where the failure would otherwise be a silently dropped fan-out.
         if (inline) {
-          throw new Error(
+          throw new NonRetriableError(
             `Node ${node.id} (${node.type}) fanned out from inside a batched ` +
               "segment, which cannot dispatch child runs. Mark this node type " +
               "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",

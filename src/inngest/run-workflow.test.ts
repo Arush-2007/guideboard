@@ -1,3 +1,4 @@
+import { NonRetriableError } from "inngest";
 import { describe, expect, it, vi } from "vitest";
 import {
   fanOut,
@@ -382,17 +383,22 @@ describe("runWorkflowNodes fan-out", () => {
       },
     };
 
-    await expect(
-      runWorkflowNodes({
-        sortedNodes: [trigger("t"), node("fan", { fanOut: [{ x: 1 }] })],
-        connections: [edge("t", "fan")],
-        userId: "u",
-        executionId: "exec_test",
-        step,
-        publish,
-        recorder,
-      }),
-    ).rejects.toThrow(/fanOutDispatcher/);
+    const thrown = await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("fan", { fanOut: [{ x: 1 }] })],
+      connections: [edge("t", "fan")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    }).catch((e) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/fanOutDispatcher/);
+    // NonRetriableError specifically: this is a wiring fault, and a plain Error
+    // costs three full re-runs of the batch — including every network read in
+    // it — before failing with the identical message.
+    expect(thrown).toBeInstanceOf(NonRetriableError);
 
     expect(failed).toEqual(["fan"]);
     // The node never reaches a SUCCESS record.
