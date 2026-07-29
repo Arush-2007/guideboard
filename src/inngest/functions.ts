@@ -75,22 +75,30 @@ const GMAIL_READ = {
 
 /**
  * Prisma-backed NodeRecorder: writes one NodeExecution row per node, once when
- * the node settles. One write-on-settle (vs a RUNNING insert + an update) halves
- * the DB writes per node and leaves no orphan RUNNING rows. `input`/`output` are
- * size-capped via `clampJson` here so the engine stays Prisma-free.
+ * the node settles. `input`/`output` are size-capped via `clampJson` here so the
+ * engine stays Prisma-free.
  *
- * Writes DIRECTLY rather than inside a `step.run`, which is the single largest
- * saving in the whole run. That wrapper was one durable step per node — and on
- * Inngest Cloud a step costs roughly four seconds of dispatch latency regardless
- * of how long the work takes, so recording a row nothing waits on was doubling
- * the length of every workflow. It also cannot be a step any more: nodes inside
- * a batched segment are already inside one, and steps cannot nest.
+ * Takes a BATCH because the engine buffers settled nodes and flushes them inside
+ * a step it is already paying for. The per-node `step.run` this replaced cost
+ * one durable step per node — seconds of Inngest dispatch latency each, for a row
+ * nothing in the run waits on — and it cannot be a step any more regardless,
+ * since nodes inside a batched segment are already inside one and steps do not
+ * nest.
  *
- * The cost is that a retry re-records the nodes it replays, so this must be
- * idempotent on its own — hence the upsert against the `(executionId, nodeId)`
- * unique constraint rather than a create. Rows land SOONER than before, not
- * later: the write is inline instead of deferred to a checkpoint, so the
- * executions page gains if anything.
+ * **Idempotence is a hard requirement, not a nicety.** Inngest re-executes the
+ * whole handler body on every step boundary, so the engine rebuilds the same
+ * buffer each time and can offer the same record repeatedly. Three properties
+ * make that safe:
+ *
+ *  1. Rows already present are filtered out BEFORE the write, so a repeat costs
+ *     one indexed lookup instead of re-shipping every clamped context — the
+ *     difference between O(K) and O(K²) bytes on the wire for a K-node run.
+ *  2. `createMany({ skipDuplicates: true })` backstops that filter against the
+ *     `(executionId, nodeId)` unique constraint, so a race cannot duplicate.
+ *  3. Because rows are never overwritten, the FIRST write's timestamps survive —
+ *     which is what keeps per-node settle times honest even though the write is
+ *     deferred. The record carries the moment the engine OBSERVED the node
+ *     settle, so flush time never leaks into the data.
  */
 function createPrismaNodeRecorder({
   executionId,
@@ -98,99 +106,123 @@ function createPrismaNodeRecorder({
   executionId: string;
 }): NodeRecorder {
   return {
-    async record({
-      nodeId,
-      nodeType,
-      nodeName,
-      sequence,
-      status,
-      input,
-      output,
-      error,
-      durationMs,
-    }) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : error != null
-            ? String(error)
-            : null;
-      const stack = error instanceof Error ? (error.stack ?? null) : null;
-      // startedAt is back-dated from the settle time so the row reflects the
-      // node's real span; durationMs is the source of truth either way.
-      const completedAt = new Date();
-      const startedAt = new Date(completedAt.getTime() - durationMs);
+    async flush(records) {
+      if (records.length === 0) return;
 
-      const clampedInput = clampJson(input);
+      const nodeIds = records.map((r) => r.nodeId);
 
-      // When the inline snapshot had to be truncated, park the full context
-      // in R2 so replay-from-node can still seed real data (a marker context
-      // would silently corrupt the replay). The key is deterministic per
-      // (execution, node) so a re-recorded node overwrites its own object. It
-      // assumes one run per node per execution (true today, like
-      // replayFromNode's snapshot pick, and now also asserted by the
-      // `(executionId, nodeId)` unique constraint) — a future loops feature must
-      // add `sequence` to the key or later iterations overwrite earlier ones.
-      // Best-effort: recording must never break a run — on failure (or with
-      // R2 unconfigured) the key stays null and replay refuses instead.
+      // Which of these are already durable? A FAILED row is deliberately NOT
+      // counted: it is the one status that can be stale, because a later
+      // function attempt may re-run that node and succeed. Everything else is
+      // written once and never revised.
+      const alreadyWritten = await prisma.nodeExecution.findMany({
+        where: {
+          executionId,
+          nodeId: { in: nodeIds },
+          status: { not: NodeExecutionStatus.FAILED },
+        },
+        select: { nodeId: true },
+      });
+      const done = new Set(alreadyWritten.map((r) => r.nodeId));
+      const fresh = records.filter((r) => !done.has(r.nodeId));
+      if (fresh.length === 0) return;
+
+      const rows = fresh.map((record) => {
+        const message =
+          record.error instanceof Error
+            ? record.error.message
+            : record.error != null
+              ? String(record.error)
+              : null;
+        const stack =
+          record.error instanceof Error ? (record.error.stack ?? null) : null;
+        // Back-dated from the settle time the ENGINE observed, so the row
+        // reflects the node's real span regardless of when this flush runs.
+        const completedAt = record.completedAt;
+        const startedAt = new Date(completedAt.getTime() - record.durationMs);
+
+        return {
+          executionId,
+          nodeId: record.nodeId,
+          nodeType: record.nodeType,
+          nodeName: record.nodeName,
+          sequence: record.sequence,
+          status:
+            record.status === "FAILED"
+              ? NodeExecutionStatus.FAILED
+              : record.status === "SKIPPED"
+                ? NodeExecutionStatus.SKIPPED
+                : NodeExecutionStatus.SUCCESS,
+          input: clampJson(record.input) as Prisma.InputJsonValue,
+          // Deliberately null on insert. The R2 upload happens AFTER the row
+          // exists, so a failed upload can never leave a row pointing at an
+          // object that was never stored — replay then refuses cleanly instead
+          // of 404ing. See the second pass below.
+          inputBlobKey: null,
+          output:
+            record.output !== undefined
+              ? (clampJson(record.output) as Prisma.InputJsonValue)
+              : undefined,
+          error: message,
+          errorStack: stack,
+          startedAt,
+          completedAt,
+          durationMs: record.durationMs,
+        };
+      });
+
+      // One transaction: clear any stale FAILED row for exactly the nodes being
+      // written, then insert. The delete is a no-op on the common path and can
+      // only ever remove a row this same statement is about to replace, so a
+      // retry that succeeds where it previously failed ends with one correct
+      // row rather than the old failure.
+      await prisma.$transaction([
+        prisma.nodeExecution.deleteMany({
+          where: {
+            executionId,
+            nodeId: { in: fresh.map((r) => r.nodeId) },
+            status: NodeExecutionStatus.FAILED,
+          },
+        }),
+        prisma.nodeExecution.createMany({ data: rows, skipDuplicates: true }),
+      ]);
+
+      // Oversized contexts: park the full snapshot in R2 so replay-from-node can
+      // seed real data (a truncation marker would silently corrupt the replay),
+      // then point the row at it. Only for rows THIS flush inserted, so a
+      // rebuilt buffer never re-uploads — the objection that sank an earlier
+      // design, where `skipDuplicates` deduped at the database long after the
+      // bytes had already gone over the wire.
+      //
       // SKIPPED nodes never seed a replay (replayFromNode rejects them), so
-      // their snapshots aren't stored — otherwise a replay would re-upload
-      // the same oversized context once per skipped upstream node.
-      let inputBlobKey: string | null = null;
-      if (
-        status !== "SKIPPED" &&
-        isClampedMarker(clampedInput) &&
-        isBlobConfigured()
-      ) {
-        const key = `replay-contexts/${executionId}/${nodeId}.json`;
+      // their snapshots aren't stored. Best-effort throughout: recording must
+      // never break a run.
+      if (!isBlobConfigured()) return;
+      for (const record of fresh) {
+        if (record.status === "SKIPPED") continue;
+        if (!isClampedMarker(clampJson(record.input))) continue;
+
+        const key = `replay-contexts/${executionId}/${record.nodeId}.json`;
         try {
           await putBlob({
             key,
-            bytes: Buffer.from(JSON.stringify(input)),
+            bytes: Buffer.from(JSON.stringify(record.input)),
             contentType: "application/json",
           });
-          inputBlobKey = key;
+          await prisma.nodeExecution.update({
+            where: {
+              executionId_nodeId: { executionId, nodeId: record.nodeId },
+            },
+            data: { inputBlobKey: key },
+            select: { id: true },
+          });
         } catch (err) {
           logger.error("Failed to store full input snapshot", err, {
             executionId,
-            nodeId,
+            nodeId: record.nodeId,
           });
         }
       }
-
-      const row = {
-        nodeType,
-        nodeName,
-        sequence,
-        status:
-          status === "FAILED"
-            ? NodeExecutionStatus.FAILED
-            : status === "SKIPPED"
-              ? NodeExecutionStatus.SKIPPED
-              : NodeExecutionStatus.SUCCESS,
-        input: clampedInput as Prisma.InputJsonValue,
-        inputBlobKey,
-        output:
-          output !== undefined
-            ? (clampJson(output) as Prisma.InputJsonValue)
-            : undefined,
-        error: message,
-        errorStack: stack,
-        startedAt,
-        completedAt,
-        durationMs,
-      };
-
-      // Upsert, not create: a retried segment replays the nodes it contains, so
-      // this runs again for rows it already wrote. The latest attempt wins —
-      // which is the honest record, since it describes the run that actually
-      // produced the final context.
-      await prisma.nodeExecution.upsert({
-        where: { executionId_nodeId: { executionId, nodeId } },
-        create: { executionId, nodeId, ...row },
-        update: row,
-        select: { id: true },
-      });
     },
   };
 }

@@ -89,9 +89,14 @@ const collect = () => {
   const skipped: string[] = [];
   return {
     recorder: {
-      record: async (r: { nodeId: string; status: string }) => {
-        if (r.status === "SKIPPED") skipped.push(r.nodeId);
-        else ran.push(r.nodeId);
+      // Records arrive in batches now — the engine buffers each settled node and
+      // flushes inside a step it is already paying for. Buffer order is settle
+      // order, so flattening here preserves what these assertions check.
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          if (r.status === "SKIPPED") skipped.push(r.nodeId);
+          else ran.push(r.nodeId);
+        }
       },
     },
     ran,
@@ -369,9 +374,11 @@ describe("runWorkflowNodes fan-out", () => {
     const failed: string[] = [];
     const succeeded: string[] = [];
     const recorder = {
-      record: async (r: { nodeId: string; status: string }) => {
-        if (r.status === "FAILED") failed.push(r.nodeId);
-        if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          if (r.status === "FAILED") failed.push(r.nodeId);
+          if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+        }
       },
     };
 
@@ -396,9 +403,11 @@ describe("runWorkflowNodes fan-out", () => {
     const failed: string[] = [];
     const succeeded: string[] = [];
     const recorder = {
-      record: async (r: { nodeId: string; status: string }) => {
-        if (r.status === "FAILED") failed.push(r.nodeId);
-        if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          if (r.status === "FAILED") failed.push(r.nodeId);
+          if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+        }
       },
     };
     const { dispatcher } = collectDispatcher({ reject: true });
@@ -449,12 +458,12 @@ describe("fan-out child output recording", () => {
   it("records a node's rewrite of its own seed key, not downstream pass-through", async () => {
     const outputs = new Map<string, unknown>();
     const recorder = {
-      record: async (r: {
-        nodeId: string;
-        status: string;
-        output?: unknown;
-      }) => {
-        if (r.status !== "SKIPPED") outputs.set(r.nodeId, r.output);
+      flush: async (
+        records: Array<{ nodeId: string; status: string; output?: unknown }>,
+      ) => {
+        for (const r of records) {
+          if (r.status !== "SKIPPED") outputs.set(r.nodeId, r.output);
+        }
       },
     };
     // The engine keys node "a" (type AI_TEXT, no ref) by its legacy output key.
@@ -625,6 +634,125 @@ describe("runWorkflowNodes step batching", () => {
       `nodes:0-${MAX_SEGMENT_NODES - 1}`,
       `nodes:${MAX_SEGMENT_NODES}-${total - 1}`,
     ]);
+  });
+
+  it("writes node records from inside a step, not the handler body", async () => {
+    // THE regression this design exists for. Inngest re-executes the whole
+    // handler body at every step boundary, memoizing only completed steps — so a
+    // record written from the body was re-written once per subsequent
+    // invocation (O(K^2) round trips), with durationMs and completedAt
+    // recomputed against an already-memoized executor, i.e. against nothing.
+    //
+    // There is no "did this node just run" signal to gate on: the invocation in
+    // which a callback executes is always abandoned before control returns. So
+    // records are buffered and flushed inside a step callback, which runs
+    // exactly once and is memoized thereafter.
+    const flushedInsideStep: boolean[] = [];
+    let insideStep = false;
+
+    const trackingStep = {
+      run: async (_id: string, fn: () => unknown) => {
+        insideStep = true;
+        try {
+          return await fn();
+        } finally {
+          insideStep = false;
+        }
+      },
+    } as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), node("checkpointed")],
+      connections: [edge("t", "a"), edge("a", "checkpointed")],
+      userId: "u",
+      executionId: "exec_test",
+      step: trackingStep,
+      publish,
+      recorder: {
+        flush: async (records) => {
+          for (let i = 0; i < records.length; i++) {
+            flushedInsideStep.push(insideStep);
+          }
+        },
+      },
+    });
+
+    // Every record but the tail is written inside a step. The tail — nodes that
+    // settle after the last callback — is flushed from the body deliberately,
+    // where the recorder's already-written check makes the repeat a lookup
+    // rather than a write.
+    expect(flushedInsideStep.length).toBe(3);
+    expect(flushedInsideStep.slice(0, 2)).toEqual([true, true]);
+  });
+
+  it("stamps each record when the node settled, not when it is written", async () => {
+    // Flushing is deferred, so a row stamped at WRITE time would collapse every
+    // node's completedAt onto one instant and destroy the per-node timeline —
+    // the only honest per-node timing there is, since durationMs for a
+    // checkpointed node times a JSON deserialization rather than any work.
+    //
+    // Asserted as "settled at or before the flush that carried it", which holds
+    // however many nodes share a millisecond; strict ordering would only be
+    // testing how fast the mock executor is.
+    const seen: Array<{ stamped: number; flushedAt: number }> = [];
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), node("b")],
+      connections: [edge("t", "a"), edge("a", "b")],
+      userId: "u",
+      executionId: "exec_test",
+      step: {
+        run: async (_id: string, fn: () => unknown) => {
+          // Separate settle time from flush time measurably.
+          await new Promise((r) => setTimeout(r, 5));
+          return fn();
+        },
+      } as any,
+      publish,
+      recorder: {
+        flush: async (records) => {
+          const flushedAt = Date.now();
+          for (const r of records) {
+            seen.push({ stamped: r.completedAt.getTime(), flushedAt });
+          }
+        },
+      },
+    });
+
+    expect(seen).toHaveLength(3);
+    for (const { stamped, flushedAt } of seen) {
+      expect(stamped).toBeLessThanOrEqual(flushedAt);
+    }
+    // Non-decreasing in settle order, so the timeline reads correctly.
+    expect(seen[1].stamped).toBeGreaterThanOrEqual(seen[0].stamped);
+    expect(seen[2].stamped).toBeGreaterThanOrEqual(seen[1].stamped);
+  });
+
+  it("flushes a failed node immediately, since no later step will run", async () => {
+    // A throw ends the run, so there is no later callback to ride on. Bounded to
+    // once per attempt, which is why a body write is affordable here and not on
+    // the success path.
+    const flushed: string[][] = [];
+
+    await expect(
+      runWorkflowNodes({
+        sortedNodes: [trigger("t"), node("boom", { fanOut: [{ x: 1 }] })],
+        connections: [edge("t", "boom")],
+        userId: "u",
+        executionId: "exec_test",
+        step,
+        publish,
+        recorder: {
+          flush: async (records) => {
+            flushed.push(records.map((r) => `${r.nodeId}:${r.status}`));
+          },
+        },
+        // No dispatcher wired in, so the fan-out node throws.
+      }),
+    ).rejects.toThrow(/fanOutDispatcher/);
+
+    // The FAILED record reached the sink before the throw propagated.
+    expect(flushed.flat()).toContain("boom:FAILED");
   });
 
   it("derives the cap from the step budget, not a hand-picked number", () => {

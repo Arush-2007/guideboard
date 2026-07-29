@@ -63,6 +63,16 @@ export interface NodeRecord {
   error?: unknown;
   /** Wall-clock around the executor (includes Inngest step + network). */
   durationMs: number;
+  /**
+   * When the engine OBSERVED this node settle — captured at buffering time, not
+   * at write time.
+   *
+   * Load-bearing for the deferred write: records are flushed inside a later
+   * step, so stamping the row when it is written would collapse every node's
+   * `completedAt` onto one instant and destroy the per-node timeline. Capturing
+   * it here makes flush time irrelevant to the data.
+   */
+  completedAt: Date;
 }
 
 /**
@@ -71,9 +81,15 @@ export interface NodeRecord {
  * undefined by the integration tests that drive the engine directly, so the
  * pure engine has no Prisma dependency. The implementation is responsible for
  * size-capping `input`/`output` before persisting.
+ *
+ * Takes a BATCH, not one record, because the engine buffers settled nodes and
+ * flushes them inside a step it is already paying for — see `flushPending`. The
+ * implementation must be idempotent: the same record can be offered more than
+ * once (a replayed invocation rebuilds the same buffer), and writing it twice
+ * must not duplicate a row or move its timestamps.
  */
 export interface NodeRecorder {
-  record(node: NodeRecord): Promise<void>;
+  flush(records: NodeRecord[]): Promise<void>;
 }
 
 /**
@@ -240,6 +256,51 @@ const inlineStep = {
   },
 } as unknown as ExecutorStep;
 
+/**
+ * Wraps the real step so every callback flushes buffered node records first.
+ *
+ * The engine cannot detect whether a node just ran: the invocation in which a
+ * step callback executes is always abandoned before control returns, so "did it
+ * execute" and "did control reach the recorder" are mutually exclusive. What it
+ * CAN rely on is that a callback runs exactly once and is memoized forever
+ * after — making it a free, exactly-once write point.
+ *
+ * `...input` is forwarded on both paths because `createStepRun` persists trailing
+ * input for `run` as well as `ai.wrap`; dropping it would silently discard it. On
+ * `ai.wrap` the callback must be invoked with the SDK-supplied arguments (`...a`)
+ * rather than the captured ones — on replay the SDK substitutes the memoized
+ * input, and closing over the outer values would quietly diverge from it.
+ */
+function flushingStep(
+  real: ExecutorStep,
+  flush: () => Promise<void>,
+): ExecutorStep {
+  const hook =
+    <TArgs extends unknown[], TResult>(fn: (...args: TArgs) => TResult) =>
+    async (...args: TArgs) => {
+      await flush();
+      return fn(...args);
+    };
+
+  return {
+    run: (id: unknown, fn: unknown, ...input: unknown[]) =>
+      (real.run as (...a: unknown[]) => unknown)(
+        id,
+        hook(fn as (...a: unknown[]) => unknown),
+        ...input,
+      ),
+    ai: {
+      ...real.ai,
+      wrap: (id: unknown, fn: unknown, ...args: unknown[]) =>
+        (real.ai.wrap as (...a: unknown[]) => unknown)(
+          id,
+          hook(fn as (...a: unknown[]) => unknown),
+          ...args,
+        ),
+    },
+  } as unknown as ExecutorStep;
+}
+
 /** A node's outgoing-edge activation, in the form that survives JSON. */
 type SerializedActivation = { all: boolean; outputs: string[] };
 
@@ -358,6 +419,39 @@ export async function runWorkflowNodes({
   // 36 executors are covered without touching any of them. See `directPublish`.
   const nodePublish = directPublish(publish);
 
+  /**
+   * Settled nodes waiting to be written, each stamped when the engine OBSERVED
+   * it settle — not when the row is written, so a delayed flush costs nothing in
+   * timestamp accuracy.
+   *
+   * Buffering exists because Inngest re-executes the whole handler body on every
+   * step boundary, memoizing only completed steps. Writing a row from the handler
+   * body therefore re-wrote it once per subsequent invocation — O(K²) round trips
+   * for a K-node workflow, with `durationMs` and `completedAt` recomputed against
+   * an already-memoized executor each time, which is to say against nothing.
+   *
+   * A step callback, by contrast, runs exactly once and is memoized thereafter.
+   * So the fix is not to detect replays (there is no signal for it — the
+   * invocation where a callback runs is always an abandoned one) but to write
+   * from inside a step the run is already paying for.
+   */
+  const pending: NodeRecord[] = [];
+
+  /**
+   * Write everything buffered so far. Safe to call anywhere and any number of
+   * times: the buffer is drained on the way out, and the recorder is required to
+   * be idempotent for the case where a rebuilt buffer offers the same record
+   * again.
+   */
+  const flushPending = async (): Promise<void> => {
+    if (!recorder || pending.length === 0) return;
+    // Drain BEFORE awaiting: nothing else runs concurrently here, but leaving
+    // records in the buffer while the write is in flight would re-ship them if
+    // another flush point fired first.
+    const batch = pending.splice(0, pending.length);
+    await recorder.flush(batch);
+  };
+
   // Replay slice: the set of nodes that actually run this time. Nodes outside it
   // are recorded SKIPPED (their output already lives in the seeded context).
   const replaySlice = replayFromNodeId
@@ -415,7 +509,12 @@ export async function runWorkflowNodes({
     // (its output is in the seeded context). Checked before reachability so the
     // original trigger/roots don't re-fire on a replay.
     if (replaySlice && !replaySlice.has(node.id)) {
-      await recorder?.record({ ...base, status: "SKIPPED", durationMs: 0 });
+      pending.push({
+        ...base,
+        status: "SKIPPED",
+        durationMs: 0,
+        completedAt: new Date(),
+      });
       return;
     }
 
@@ -437,7 +536,12 @@ export async function runWorkflowNodes({
       incoming.some(isEdgeActive);
 
     if (!reachable) {
-      await recorder?.record({ ...base, status: "SKIPPED", durationMs: 0 });
+      pending.push({
+        ...base,
+        status: "SKIPPED",
+        durationMs: 0,
+        completedAt: new Date(),
+      });
       return;
     }
 
@@ -503,11 +607,12 @@ export async function runWorkflowNodes({
           items: result.items,
         });
 
-        await recorder?.record({
+        pending.push({
           ...base,
           status: "SUCCESS",
           output: newKeysDiff(before, after),
           durationMs: Date.now() - startedAt,
+          completedAt: new Date(),
         });
 
         context = after;
@@ -524,21 +629,28 @@ export async function runWorkflowNodes({
           : { all: true, outputs: new Set() },
       );
 
-      await recorder?.record({
+      pending.push({
         ...base,
         status: "SUCCESS",
         output: newKeysDiff(before, after),
         durationMs: Date.now() - startedAt,
+        completedAt: new Date(),
       });
 
       context = after;
     } catch (error) {
-      await recorder?.record({
+      pending.push({
         ...base,
         status: "FAILED",
         error,
         durationMs: Date.now() - startedAt,
+        completedAt: new Date(),
       });
+      // Flush IMMEDIATELY rather than waiting for a later step callback: this
+      // node's throw ends the run, so there is no later step to ride on. Bounded
+      // to once per attempt for the same reason, which is why writing from the
+      // handler body is affordable here and not on the success path.
+      await flushPending();
       throw error;
     }
   };
@@ -548,7 +660,16 @@ export async function runWorkflowNodes({
   // memoized steps — while a run of inline-safe nodes shares ONE step.
   for (const segment of planSegments(sortedNodes)) {
     if (segment.checkpoint) {
-      await runNode(sortedNodes[segment.start], segment.start, step, false);
+      // Hand the node a step that flushes the buffer inside each callback. That
+      // callback runs exactly once and is memoized thereafter, so every buffered
+      // row is written once, at no extra step. Flushing BEFORE the callback's own
+      // work means a node that throws still persists its predecessors.
+      await runNode(
+        sortedNodes[segment.start],
+        segment.start,
+        flushingStep(step, flushPending),
+        false,
+      );
       continue;
     }
 
@@ -558,9 +679,18 @@ export async function runWorkflowNodes({
     const result = (await step.run(
       `nodes:${segment.start}-${segment.end}`,
       async (): Promise<SegmentResult> => {
+        // Anything settled before this segment rides in on the step we are
+        // already paying for.
+        await flushPending();
+
         for (let i = segment.start; i <= segment.end; i++) {
           await runNode(sortedNodes[i], i, inlineStep, true);
         }
+
+        // The segment's OWN nodes, written inside the segment's step so they
+        // are memoized with it. Without this they would wait for the next
+        // checkpointed node, which may be a whole segment away.
+        await flushPending();
 
         // Only this segment's nodes: earlier activations are already applied
         // below, and re-returning them would grow the payload quadratically.
@@ -592,6 +722,12 @@ export async function runWorkflowNodes({
       });
     }
   }
+
+  // The tail: nodes that settled after the last step callback. This runs in the
+  // handler body, so it repeats on the one or two invocations where the loop
+  // completes — bounded, and the recorder skips rows already written, so the
+  // repeat costs a lookup rather than a write.
+  await flushPending();
 
   return context;
 }
