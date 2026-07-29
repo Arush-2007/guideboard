@@ -101,7 +101,7 @@ describe("CHECKPOINTED_NODE_TYPES", () => {
   });
 
   it("inlines pure computation", () => {
-    // No network, no side effect, deterministic — the whole point of batching.
+    // No third-party call, no side effect — the whole point of batching.
     for (const type of [
       NodeType.CONDITION,
       NodeType.SWITCH,
@@ -110,6 +110,38 @@ describe("CHECKPOINTED_NODE_TYPES", () => {
     ]) {
       expect(requiresCheckpoint(type)).toBe(false);
     }
+  });
+
+  it("checkpoints nodes that are safe to repeat but too slow to share a step", () => {
+    // Question 4. Both pass the correctness questions and fail the time one, so
+    // "is re-running this safe?" is not sufficient grounds to inline anything.
+    // RECORD_LOOKUP: a 30s READ behind a 10s token refresh. CANDIDATE_SCORING on
+    // affinda: 45s to index plus 45s to match, one node exceeding the whole
+    // step budget — and billed on top, so question 2 catches it as well.
+    expect(requiresCheckpoint(NodeType.RECORD_LOOKUP)).toBe(true);
+    expect(requiresCheckpoint(NodeType.CANDIDATE_SCORING)).toBe(true);
+  });
+
+  it("keeps every inline-safe node free of unbounded third-party calls", () => {
+    // The invariant MAX_SEGMENT_NODES is derived from: the cap assumes the
+    // slowest inline node is CODE at its 1s interrupt deadline. Classifying a
+    // network-calling node as inline-safe silently invalidates that arithmetic,
+    // so the allowlist is pinned here — a new `false` entry must be justified
+    // against question 4 before this test will pass.
+    const inlineSafe = Object.entries(CHECKPOINTED_NODE_TYPES)
+      .filter(([, checkpointed]) => !checkpointed)
+      .map(([type]) => type);
+
+    expect(sorted(inlineSafe)).toEqual(
+      sorted([
+        ...TRIGGER_NODE_TYPES,
+        NodeType.INITIAL,
+        NodeType.CONDITION,
+        NodeType.SWITCH,
+        NodeType.CALCULATOR,
+        NodeType.CODE,
+      ]),
+    );
   });
 
   it("fails closed on an unknown type", () => {

@@ -10,6 +10,7 @@ import {
 } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
 import { isFanOutItem } from "@/inngest/fan-out";
+import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
@@ -168,21 +169,50 @@ function forwardReachableFrom(
 }
 
 /**
+ * The longest a single inline-safe node can occupy inside a segment.
+ *
+ * Every `false` entry in `CHECKPOINTED_NODE_TYPES` makes no unbounded
+ * third-party call (that is question 4 there, and it exists to keep this number
+ * meaningful). Triggers and the pure-computation nodes are effectively instant;
+ * the only one with a real clock is `CODE`, whose QuickJS interrupt deadline
+ * hard-stops it at 1s (`DEFAULT_TIMEOUT_MS`, `js-sandbox.ts`).
+ *
+ * ⚠️ If a node type is ever classified inline-safe while making a network call,
+ * this constant becomes fiction and the cap below with it.
+ */
+export const WORST_INLINE_NODE_MS = 1_000;
+
+/**
  * How many nodes one batched segment may hold.
  *
- * The batch runs entirely inside ONE Inngest step, so it must also fit inside
- * ONE serverless invocation — Vercel kills a function at 300s (800s on Pro).
- * Per-node checkpointing never had this problem: each node was its own
- * invocation.
+ * A segment runs entirely inside ONE Inngest step, so it must fit inside one
+ * platform invocation. Per-node checkpointing never had this problem — each node
+ * was its own invocation — so this ceiling arrived with batching.
  *
- * Only inline-safe types are ever batched, and those are pure computation or
- * plain reads — a `RECORD_LOOKUP` hitting a slow Sheets tab is the realistic
- * worst case at a second or two. 25 caps a segment at well under a minute even
- * on that pessimistic footing, while costing at most one extra step per 25
- * nodes. Lower it if a workflow ever approaches the ceiling; the only cost is
- * latency, never correctness.
+ * DERIVED, not chosen. An earlier version asserted 25 against "Vercel kills a
+ * function at 300s", which contradicted `MAX_STEP_BUDGET_MS` — the repo's own
+ * figure for the same platform limit, 5× smaller and deliberately conservative.
+ * Two numbers for one ceiling is how a cap silently stops protecting anything,
+ * so this one is computed from that single source instead:
+ *
+ *     usable   = MAX_STEP_BUDGET_MS - STEP_OVERHEAD_MS   = 55s
+ *     worst    = WORST_INLINE_NODE_MS                    =  1s
+ *     25 nodes = 25s                                     ⇒ 2.2× headroom
+ *
+ * The headroom is deliberate: `WORST_INLINE_NODE_MS` bounds the executor, not
+ * the realtime `publish()` calls around it, which are HTTP and unmeasured here.
+ *
+ * ⚠️ DEPLOY-UNSAFE. Changing this re-partitions segments, which changes the
+ * `nodes:i-j` step ids, which means any run in flight across the deploy
+ * re-executes its already-completed inline nodes. That is harmless only because
+ * inline-safe nodes are re-runnable by definition — so it stays harmless only
+ * while `CHECKPOINTED_NODE_TYPES` is honest. Prefer changing it during a quiet
+ * window.
  */
-const MAX_SEGMENT_NODES = 25;
+export const MAX_SEGMENT_NODES = Math.min(
+  25,
+  Math.floor((MAX_STEP_BUDGET_MS - STEP_OVERHEAD_MS) / WORST_INLINE_NODE_MS),
+);
 
 /**
  * The step API handed to nodes running INSIDE a batched segment.

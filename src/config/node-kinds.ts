@@ -63,19 +63,29 @@ export const isTriggerNodeType = (type: string | null | undefined): boolean =>
  * cost of a wrong `true` is four seconds, the cost of a wrong `false` is a
  * duplicate side effect.
  *
- * The three questions that decide it — answered by READING the executor, never
- * by the node's name:
+ * The four questions that decide it — answered by READING the executor, never by
+ * the node's name:
  *
  *  1. **Does it mutate anything outside this process?** Sends a message, writes
  *     a row, creates a record → `true`. Eight of the senders below already say
  *     so themselves, via `idempotent: false` in their own `rethrowTimeout` call.
  *  2. **Does it cost money per call?** LLM tokens, a CloudConvert job, a paid
- *     parse → `true`. A replay is billed again.
+ *     parse or a paid SCORE → `true`. A replay is billed again.
  *  3. **Does it split a READ from a WRITE across two `step.run`s?** If so the
  *     split is load-bearing and inlining destroys it — the memoized plan is what
  *     makes the write replay-safe. See `GOOGLE_SHEETS_ACTION` below.
+ *  4. **Can it make an unbounded third-party call?** → `true`, even when
+ *     repeating it is perfectly safe. This one is about TIME, not correctness: a
+ *     whole segment shares ONE step, so it must fit inside one
+ *     `MAX_STEP_BUDGET_MS`. A single `HTTP_TIMEOUT.READ` is 30s and `SLOW_API`
+ *     is 45s, so two such nodes in a segment can blow the step budget between
+ *     them. Every `false` below therefore also makes no unbounded call —
+ *     `MAX_SEGMENT_NODES` derives its cap from that being true.
  *
- * Question 3 is the subtle one and the easiest to get wrong from the outside.
+ * Questions 3 and 4 are the subtle ones, and both were missed on the first pass.
+ * 3 is invisible unless you read the executor. 4 looks like a performance
+ * concern right up until a segment exceeds the platform ceiling and the run dies
+ * as an opaque kill rather than a node failure.
  */
 export const CHECKPOINTED_NODE_TYPES: Record<NodeType, boolean> = {
   // ─── Inline-safe: triggers ────────────────────────────────────────────────
@@ -96,25 +106,52 @@ export const CHECKPOINTED_NODE_TYPES: Record<NodeType, boolean> = {
   [NodeType.INITIAL]: false,
 
   // ─── Inline-safe: pure computation ────────────────────────────────────────
-  // No network, no side effect, deterministic given the same context — all four
-  // already declare their failures `NonRetriableError` for exactly that reason.
-  // `CODE` runs user JS in a QuickJS-WASM sandbox with no I/O of any kind.
+  // No third-party call, no side effect — all four declare their failures
+  // `NonRetriableError` for exactly that reason. `CODE` runs user JS in a
+  // QuickJS-WASM sandbox with no I/O BY CONSTRUCTION rather than by policy: the
+  // input crosses in as a JSON literal and the result comes back as a string,
+  // with no host function ever bridged into the isolate (`js-sandbox.ts`).
+  //
+  // Two footnotes that do not change the classification but should not be lost.
+  // `CODE` is not strictly DETERMINISTIC — QuickJS still provides `Date.now()`
+  // and `Math.random()`. That stays contained because a segment only re-runs
+  // when its own step failed, i.e. before anything downstream consumed its
+  // output. And `CODE` is the only one of the four that is not instant: it
+  // carries a hard 1s interrupt deadline, which is what bounds
+  // `MAX_SEGMENT_NODES`.
   [NodeType.CONDITION]: false,
   [NodeType.SWITCH]: false,
   [NodeType.CALCULATOR]: false,
   [NodeType.CODE]: false,
 
-  // ─── Inline-safe: reads ───────────────────────────────────────────────────
-  // Reads a Sheets column or a Notion property and reports whether a value is
-  // there. The Notion `/query` call is a POST only because the filter travels in
-  // a body; it mutates nothing.
-  [NodeType.RECORD_LOOKUP]: false,
-  // The `rules` provider is a pure scorecard. The `affinda` provider adds the
-  // resume to a Search & Match index first — a mutation, but one deliberately
-  // engineered to be repeatable: `ensureResumeIndexed` treats "already indexed"
-  // and "already exists" as success precisely so reruns and retries are no-ops.
-  // The match call itself is a GET.
-  [NodeType.CANDIDATE_SCORING]: false,
+  // ─── Checkpointed: safe to repeat, but too SLOW to share a step ───────────
+  // Both pass questions 1-3 and fail question 4. They are why question 4 exists.
+  //
+  // RECORD_LOOKUP genuinely is a read — the Notion `/query` POST carries its
+  // filter in a body and mutates nothing, and the Sheets path is `readSheetTable`.
+  // But it is a NETWORK read: `HTTP_TIMEOUT.READ` is 30s and the Google path adds
+  // a 10s token refresh in front of it, so one node can occupy 40s of a 60s step
+  // budget and two cannot coexist in a segment at all.
+  //
+  // (That token refresh also does a `prisma.googleCredential.update` and can
+  // persist a rotated refresh token, so "pure read" is not literally true either.
+  // It is expiry-gated and user-invisible, so it never drove this — but the
+  // comment should not claim more than the code does.)
+  [NodeType.RECORD_LOOKUP]: true,
+  // CANDIDATE_SCORING's `rules` provider really is a pure scorecard, but its
+  // `affinda` provider is BILLED: `/v3/resume_search/match` is Affinda's paid
+  // Search & Match, on the same credential as RESUME_PARSER, which is
+  // checkpointed for precisely that reason. Question 2 applies and was missed —
+  // an earlier version of this file argued only that re-running is harmless
+  // (it is: `ensureResumeIndexed` treats "already exists" as success on every
+  // path) and never asked what a replay COSTS. Two nodes, one paid vendor, and
+  // the classification has to match.
+  //
+  // It was also the slowest inline candidate there was: `SLOW_API` 45s to index
+  // plus `SLOW_API` 45s to match is 90s in ONE node — more than the entire step
+  // budget — so a segment containing it could be killed by the platform before
+  // any other node in that segment had run.
+  [NodeType.CANDIDATE_SCORING]: true,
 
   // ─── Checkpointed: sends a message a second send would duplicate ──────────
   // All eight declare `idempotent: false` in their own `rethrowTimeout` config,

@@ -6,6 +6,7 @@ import {
   routed,
   type WorkflowContext,
 } from "@/features/executions/types";
+import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 
 // Fake executor registry: each node's behavior is driven by its `data`.
@@ -52,7 +53,8 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
     },
 }));
 
-const { runWorkflowNodes } = await import("./run-workflow");
+const { runWorkflowNodes, MAX_SEGMENT_NODES, WORST_INLINE_NODE_MS } =
+  await import("./run-workflow");
 
 const step = { run: async (_n: string, fn: () => unknown) => fn() } as any;
 const publish = (async () => {}) as any;
@@ -593,14 +595,18 @@ describe("runWorkflowNodes step batching", () => {
     expect(ids).toEqual(["nodes:0-1", "nodes:3-4"]);
   });
 
-  it("caps a batch so one step can't outgrow the serverless time limit", async () => {
+  it("caps a batch so one step can't outgrow the platform step budget", async () => {
     const { recorder, ran } = collect();
     const { ids, step: recording } = recordingStep();
 
-    // 1 trigger + 29 inline nodes = 30 batchable nodes, past the cap of 25.
+    // Five past the cap, so the run must split into exactly two segments.
+    // Derived from the constant rather than hard-coded: the cap is computed from
+    // the step budget, so a change there must not quietly make this test assert
+    // a boundary the engine no longer uses.
+    const total = MAX_SEGMENT_NODES + 5;
     const nodes = [
       trigger("t"),
-      ...Array.from({ length: 29 }, (_, i) => inline(`n${i}`)),
+      ...Array.from({ length: total - 1 }, (_, i) => inline(`n${i}`)),
     ];
     const connections = nodes.slice(1).map((n, i) => edge(nodes[i].id, n.id));
 
@@ -614,8 +620,27 @@ describe("runWorkflowNodes step batching", () => {
       recorder,
     });
 
-    expect(ran).toHaveLength(30);
-    expect(ids).toEqual(["nodes:0-24", "nodes:25-29"]);
+    expect(ran).toHaveLength(total);
+    expect(ids).toEqual([
+      `nodes:0-${MAX_SEGMENT_NODES - 1}`,
+      `nodes:${MAX_SEGMENT_NODES}-${total - 1}`,
+    ]);
+  });
+
+  it("derives the cap from the step budget, not a hand-picked number", () => {
+    // These were once two independent numbers for ONE platform ceiling, 5x
+    // apart — run-workflow.ts asserted 25 against "Vercel kills at 300s" while
+    // http-budget.ts called 60s the conservative floor for the same limit. The
+    // batch cap silently inherited the permissive one. Pinning the arithmetic
+    // means a change to either constant surfaces here instead of widening the
+    // batch past what a single step can actually complete.
+    const usableMs = MAX_STEP_BUDGET_MS - STEP_OVERHEAD_MS;
+    expect(MAX_SEGMENT_NODES).toBeLessThanOrEqual(
+      Math.floor(usableMs / WORST_INLINE_NODE_MS),
+    );
+    // Headroom, because WORST_INLINE_NODE_MS bounds the executor but not the
+    // realtime publish() calls around it.
+    expect(MAX_SEGMENT_NODES * WORST_INLINE_NODE_MS).toBeLessThan(usableMs / 2);
   });
 
   it("carries a branch decided inside a batch out to a later step", async () => {
