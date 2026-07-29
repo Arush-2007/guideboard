@@ -5,6 +5,34 @@ export type WorkflowContext = Record<string, unknown>;
 
 export type StepTools = GetStepTools<Inngest.Any>;
 
+/**
+ * The slice of Inngest's step API that node executors are allowed to touch.
+ *
+ * Deliberately far narrower than `StepTools`, because an executor no longer
+ * always receives the real thing. The engine batches contiguous inline-safe
+ * nodes into a single `step.run` and hands the nodes inside it a SHIM that
+ * executes their work immediately instead of checkpointing it (steps cannot
+ * nest). That shim can only implement what executors actually call — so this
+ * type is the contract that keeps the two interchangeable.
+ *
+ * Both members are load-bearing:
+ *  - `run` — used by 33 executors.
+ *  - `ai.wrap` — used by the five LLM executors, which is why this isn't just
+ *    `{ run }`. Those are all checkpointed (`CHECKPOINTED_NODE_TYPES`), so in
+ *    practice they only ever see the real step; the shim implements it anyway so
+ *    the two sides stay honestly substitutable.
+ *
+ * Anything else Inngest offers — `sendEvent`, `sleep`, `waitForEvent`, `invoke`
+ * — is intentionally absent. An executor reaching for one now fails to compile
+ * rather than throwing at runtime the first time it lands inside a batch.
+ *
+ * Derived from `StepTools` with `Pick` rather than written out by hand, so the
+ * signatures can never drift from Inngest's. (Hand-writing `run` as
+ * `(id, fn) => Promise<T>` does not typecheck: the real one returns
+ * `Promise<Jsonify<T>>`, because a checkpointed value has been through JSON.)
+ */
+export type ExecutorStep = Pick<StepTools, "run" | "ai">;
+
 export interface NodeExecutorParams<TData = Record<string, unknown>> {
   data: TData;
   nodeId: string;
@@ -23,7 +51,11 @@ export interface NodeExecutorParams<TData = Record<string, unknown>> {
   executionId: string;
   userId: string;
   context: WorkflowContext;
-  step: StepTools;
+  /**
+   * Either Inngest's real step API or the engine's inline shim, depending on
+   * whether this node type is checkpointed — see `ExecutorStep`.
+   */
+  step: ExecutorStep;
   publish: Realtime.PublishFn;
 }
 
