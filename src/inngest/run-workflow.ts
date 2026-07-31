@@ -13,6 +13,7 @@ import type { NodeType } from "@/generated/prisma";
 import { directPublish } from "@/inngest/direct-publish";
 import { isFanOutItem } from "@/inngest/fan-out";
 import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
+import { logger } from "@/lib/logger";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
@@ -91,6 +92,22 @@ export interface NodeRecord {
  */
 export interface NodeRecorder {
   flush(records: NodeRecord[]): Promise<void>;
+  /**
+   * Which of these nodes already have a durable record, i.e. settled during an
+   * EARLIER invocation of this run.
+   *
+   * Not for recording — for suppressing repeat status publishes. Inngest
+   * re-executes the handler body at every step boundary, so a completed node's
+   * executor body (and its `publish("loading")` / `publish("success")`) runs
+   * again on every later invocation. While publishing was a memoized
+   * `step.run`, those repeats cost nothing; now that it is a direct call they
+   * are real blocking HTTP, O(K²) of it across a run — and they tell the canvas
+   * that a finished node is loading again.
+   *
+   * Optional: engine tests supply a recorder without it and simply publish
+   * every time, which is correct-if-chatty.
+   */
+  settledNodeIds?(nodeIds: string[]): Promise<Set<string>>;
 }
 
 /**
@@ -441,6 +458,22 @@ export async function runWorkflowNodes({
   const nodePublish = directPublish(publish);
 
   /**
+   * Nodes that already settled in an EARLIER invocation, so their status was
+   * published then and must not be published again — see `settledNodeIds`.
+   *
+   * Queried once per invocation, before any node runs. A node that settles
+   * during THIS invocation is deliberately absent, because that is exactly when
+   * its status should go out.
+   */
+  const alreadySettled =
+    (await recorder?.settledNodeIds?.(sortedNodes.map((n) => n.id))) ??
+    new Set<string>();
+
+  /** Accepts and discards, so a replayed node's executor publishes nothing. */
+  const silentPublish = (async () =>
+    undefined) as unknown as Realtime.PublishFn;
+
+  /**
    * Settled nodes waiting to be written, each stamped when the engine OBSERVED
    * it settle — not when the row is written, so a delayed flush costs nothing in
    * timestamp accuracy.
@@ -585,7 +618,7 @@ export async function runWorkflowNodes({
         userId,
         context: before,
         step: nodeStep,
-        publish: nodePublish,
+        publish: alreadySettled.has(node.id) ? silentPublish : nodePublish,
       });
 
       // Fan-out: dispatch one child sub-execution per item and activate no
@@ -675,7 +708,21 @@ export async function runWorkflowNodes({
       // node's throw ends the run, so there is no later step to ride on. Bounded
       // to once per attempt for the same reason, which is why writing from the
       // handler body is affordable here and not on the success path.
-      await flushPending();
+      //
+      // Swallowed deliberately, and ONLY here. If this write rejects — a Prisma
+      // pool timeout, a connection blip — an unguarded `await` would replace the
+      // node's real error with the database's on its way out. The run would then
+      // report "Timed out fetching a new connection" for what was actually a
+      // Calculator divide-by-zero, and with no FAILED row written,
+      // `resolveFailureCause` would additionally see zero records and prepend
+      // "cause unknown". Losing the record is bad; losing the diagnosis is worse.
+      // The other flush points stay unguarded — their throws are legitimately
+      // retryable.
+      try {
+        await flushPending();
+      } catch (flushError) {
+        logger.error("Failed to record a failed node", flushError);
+      }
       throw error;
     }
   };

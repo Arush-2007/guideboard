@@ -109,6 +109,20 @@ function createPrismaNodeRecorder({
   executionId: string;
 }): NodeRecorder {
   return {
+    async settledNodeIds(nodeIds) {
+      // A FAILED row does not count as settled: a later attempt may re-run that
+      // node, and it should publish its status again when it does.
+      const rows = await prisma.nodeExecution.findMany({
+        where: {
+          executionId,
+          nodeId: { in: nodeIds },
+          status: { not: NodeExecutionStatus.FAILED },
+        },
+        select: { nodeId: true },
+      });
+      return new Set(rows.map((r) => r.nodeId));
+    },
+
     async flush(records) {
       if (records.length === 0) return;
 
@@ -127,10 +141,19 @@ function createPrismaNodeRecorder({
         select: { nodeId: true },
       });
       const done = new Set(alreadyWritten.map((r) => r.nodeId));
-      const fresh = records.filter((r) => !done.has(r.nodeId));
+      // A record that FAILED is never filtered out, even when the node already
+      // has a SUCCESS row. The reverse transition is real: a batched segment can
+      // retry, and a node that passed on attempt 1 can fail on attempt 2 for a
+      // genuinely time-dependent reason (a CODE node tripping its 1s interrupt
+      // deadline, say). Dropping it would leave the page showing that node
+      // SUCCESS while the run failed, and leave the alert email unable to name
+      // any node at all.
+      const fresh = records.filter(
+        (r) => r.status === "FAILED" || !done.has(r.nodeId),
+      );
       if (fresh.length === 0) return;
 
-      const rows = fresh.map((record) => {
+      const prepared = fresh.map((record) => {
         const message =
           record.error instanceof Error
             ? record.error.message
@@ -144,7 +167,13 @@ function createPrismaNodeRecorder({
         const completedAt = record.completedAt;
         const startedAt = new Date(completedAt.getTime() - record.durationMs);
 
-        return {
+        // Clamped ONCE and carried to the blob pass below. It was previously
+        // recomputed there just to test `isClampedMarker`, which meant a second
+        // full serialization of every node's context — on the run's critical
+        // path, since this flush runs inside a step the run is waiting on.
+        const clampedInput = clampJson(record.input);
+
+        const row = {
           executionId,
           nodeId: record.nodeId,
           nodeType: record.nodeType,
@@ -156,7 +185,7 @@ function createPrismaNodeRecorder({
               : record.status === "SKIPPED"
                 ? NodeExecutionStatus.SKIPPED
                 : NodeExecutionStatus.SUCCESS,
-          input: clampJson(record.input) as Prisma.InputJsonValue,
+          input: clampedInput as Prisma.InputJsonValue,
           // Deliberately null on insert. The R2 upload happens AFTER the row
           // exists, so a failed upload can never leave a row pointing at an
           // object that was never stored — replay then refuses cleanly instead
@@ -172,19 +201,35 @@ function createPrismaNodeRecorder({
           completedAt,
           durationMs: record.durationMs,
         };
+
+        return { record, clampedInput, row };
       });
 
-      // One transaction: clear any stale FAILED row for exactly the nodes being
-      // written, then insert. The delete is a no-op on the common path and can
-      // only ever remove a row this same statement is about to replace, so a
-      // retry that succeeds where it previously failed ends with one correct
-      // row rather than the old failure.
+      const rows = prepared.map((p) => p.row);
+      const writtenIds = fresh.map((r) => r.nodeId);
+      // Nodes whose NEW record is a failure. Their existing row is superseded
+      // whatever its status, so it must go — `createMany`'s `skipDuplicates`
+      // would otherwise keep the stale SUCCESS and drop the failure.
+      const supersededIds = fresh
+        .filter((r) => r.status === "FAILED")
+        .map((r) => r.nodeId);
+
+      // One transaction: clear rows this insert replaces, then insert. Both
+      // deletes are no-ops on the common path, and each can only remove a row
+      // the very same statement is about to rewrite.
       await prisma.$transaction([
         prisma.nodeExecution.deleteMany({
           where: {
             executionId,
-            nodeId: { in: fresh.map((r) => r.nodeId) },
-            status: NodeExecutionStatus.FAILED,
+            OR: [
+              // A stale failure from an earlier attempt, now re-run.
+              {
+                nodeId: { in: writtenIds },
+                status: NodeExecutionStatus.FAILED,
+              },
+              // A row of any status being replaced by a failure.
+              { nodeId: { in: supersededIds } },
+            ],
           },
         }),
         prisma.nodeExecution.createMany({ data: rows, skipDuplicates: true }),
@@ -201,9 +246,9 @@ function createPrismaNodeRecorder({
       // their snapshots aren't stored. Best-effort throughout: recording must
       // never break a run.
       if (!isBlobConfigured()) return;
-      for (const record of fresh) {
+      for (const { record, clampedInput } of prepared) {
         if (record.status === "SKIPPED") continue;
-        if (!isClampedMarker(clampJson(record.input))) continue;
+        if (!isClampedMarker(clampedInput)) continue;
 
         const key = `replay-contexts/${executionId}/${record.nodeId}.json`;
         try {

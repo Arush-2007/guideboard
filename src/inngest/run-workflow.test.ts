@@ -26,12 +26,18 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
       nodeId,
       outputKey,
       context,
+      publish,
     }: {
       data: Record<string, unknown>;
       nodeId: string;
       outputKey: string;
       context: WorkflowContext;
+      publish: (m: unknown) => Promise<unknown>;
     }) => {
+      // Real executors publish "loading" on entry and "success" on exit. Modelled
+      // here so the suppression tests below can observe what the engine actually
+      // handed this node.
+      await publish?.({ data: { nodeId, status: "loading" } });
       if (Array.isArray(data?.route)) {
         return routed(context, data.route as string[]);
       }
@@ -759,6 +765,81 @@ describe("runWorkflowNodes step batching", () => {
 
     // The FAILED record reached the sink before the throw propagated.
     expect(flushed.flat()).toContain("boom:FAILED");
+  });
+
+  it("does not re-publish status for a node that settled earlier", async () => {
+    // Inngest re-executes the handler body at every step boundary, so a
+    // completed node's executor — and its publish("loading")/publish("success")
+    // — runs again on every later invocation. That was free while publishing was
+    // a memoized step.run; as a direct call it is real blocking HTTP, O(K²) of it
+    // across a run, and it tells the canvas a finished node is loading again.
+    const published: string[] = [];
+    const publishSpy = (async (msg: { data?: { nodeId?: string } }) => {
+      published.push(msg?.data?.nodeId ?? "?");
+    }) as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a"), node("b")],
+      connections: [edge("t", "a"), edge("a", "b")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish: publishSpy,
+      recorder: {
+        flush: async () => {},
+        // Models the second invocation: `t` and `a` settled last time round.
+        settledNodeIds: async () => new Set(["t", "a"]),
+      },
+    });
+
+    // Only `b` — the node that had not settled before — reaches the real
+    // publish. `t` and `a` are replaying and stay silent.
+    expect(published).toEqual(["b"]);
+  });
+
+  it("still publishes for a node running for the first time", async () => {
+    // The mirror of the above — suppressing everything would be just as wrong,
+    // and would leave the canvas dead for the whole run.
+    const published: string[] = [];
+    const publishSpy = (async (msg: { data?: { nodeId?: string } }) => {
+      published.push(msg?.data?.nodeId ?? "?");
+    }) as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a")],
+      connections: [edge("t", "a")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish: publishSpy,
+      recorder: {
+        flush: async () => {},
+        settledNodeIds: async () => new Set<string>(),
+      },
+    });
+
+    expect(published).toEqual(["t", "a"]);
+  });
+
+  it("publishes for every node when the recorder cannot say (no settledNodeIds)", async () => {
+    // Engine tests and any future recorder without the optional method fall back
+    // to publishing every time: chatty, never silent.
+    const published: string[] = [];
+    const publishSpy = (async (msg: { data?: { nodeId?: string } }) => {
+      published.push(msg?.data?.nodeId ?? "?");
+    }) as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a")],
+      connections: [edge("t", "a")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish: publishSpy,
+      recorder: { flush: async () => {} },
+    });
+
+    expect(published).toEqual(["t", "a"]);
   });
 
   it("derives the cap from the step budget, not a hand-picked number", () => {
