@@ -48,3 +48,8 @@ next-env.d.ts
 # local throwaway scripts (workflow probes, DB patches)
 /scratchpad
 
+# working notes: investigations, design plans, decision memos. Local only —
+# they are a thinking surface, not a deliverable, and they churn far faster than
+# the code they describe.
+/plans
+

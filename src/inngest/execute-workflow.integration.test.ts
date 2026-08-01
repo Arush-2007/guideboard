@@ -321,8 +321,8 @@ describe("executeWorkflow engine (5-node workflow)", () => {
       step,
       publish,
       recorder: {
-        async record({ nodeId, status }) {
-          statuses[nodeId] = status;
+        async flush(records) {
+          for (const { nodeId, status } of records) statuses[nodeId] = status;
         },
       },
     });
@@ -416,8 +416,9 @@ describe("runWorkflowNodes replay-from-node", () => {
       step,
       publish,
       recorder: {
-        async record({ nodeId, input }) {
-          capturedInputs[nodeId] = input;
+        async flush(records) {
+          for (const { nodeId, input } of records)
+            capturedInputs[nodeId] = input;
         },
       },
     });
@@ -439,8 +440,9 @@ describe("runWorkflowNodes replay-from-node", () => {
       step,
       publish,
       recorder: {
-        async record({ nodeId, status }) {
-          replayStatuses[nodeId] = status;
+        async flush(records) {
+          for (const { nodeId, status } of records)
+            replayStatuses[nodeId] = status;
         },
       },
     });
@@ -481,10 +483,12 @@ describe("runWorkflowNodes recorder (per-node observability)", () => {
   };
 
   const makeRecorder = (captured: Captured): NodeRecorder => ({
-    async record({ nodeId, status, output }) {
-      captured.order.push(nodeId);
-      captured.statuses[nodeId] = status;
-      if (output !== undefined) captured.outputs[nodeId] = output;
+    async flush(records) {
+      for (const { nodeId, status, output } of records) {
+        captured.order.push(nodeId);
+        captured.statuses[nodeId] = status;
+        if (output !== undefined) captured.outputs[nodeId] = output;
+      }
     },
   });
 

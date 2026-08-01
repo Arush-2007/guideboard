@@ -108,8 +108,10 @@ const runEngine = async (g: Graph) => {
     step,
     publish,
     recorder: {
-      record: async (r: { nodeId: string; status: string }) => {
-        (r.status === "SKIPPED" ? skipped : ran).push(r.nodeId);
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          (r.status === "SKIPPED" ? skipped : ran).push(r.nodeId);
+        }
       },
     } as any,
   });

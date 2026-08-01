@@ -1,3 +1,4 @@
+import { NonRetriableError } from "inngest";
 import { describe, expect, it, vi } from "vitest";
 import {
   fanOut,
@@ -6,6 +7,7 @@ import {
   routed,
   type WorkflowContext,
 } from "@/features/executions/types";
+import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 
 // Fake executor registry: each node's behavior is driven by its `data`.
@@ -24,12 +26,18 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
       nodeId,
       outputKey,
       context,
+      publish,
     }: {
       data: Record<string, unknown>;
       nodeId: string;
       outputKey: string;
       context: WorkflowContext;
+      publish: (m: unknown) => Promise<unknown>;
     }) => {
+      // Real executors publish "loading" on entry and "success" on exit. Modelled
+      // here so the suppression tests below can observe what the engine actually
+      // handed this node.
+      await publish?.({ data: { nodeId, status: "loading" } });
       if (Array.isArray(data?.route)) {
         return routed(context, data.route as string[]);
       }
@@ -52,7 +60,8 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
     },
 }));
 
-const { runWorkflowNodes } = await import("./run-workflow");
+const { runWorkflowNodes, MAX_SEGMENT_NODES, WORST_INLINE_NODE_MS } =
+  await import("./run-workflow");
 
 const step = { run: async (_n: string, fn: () => unknown) => fn() } as any;
 const publish = (async () => {}) as any;
@@ -87,9 +96,14 @@ const collect = () => {
   const skipped: string[] = [];
   return {
     recorder: {
-      record: async (r: { nodeId: string; status: string }) => {
-        if (r.status === "SKIPPED") skipped.push(r.nodeId);
-        else ran.push(r.nodeId);
+      // Records arrive in batches now — the engine buffers each settled node and
+      // flushes inside a step it is already paying for. Buffer order is settle
+      // order, so flattening here preserves what these assertions check.
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          if (r.status === "SKIPPED") skipped.push(r.nodeId);
+          else ran.push(r.nodeId);
+        }
       },
     },
     ran,
@@ -367,23 +381,30 @@ describe("runWorkflowNodes fan-out", () => {
     const failed: string[] = [];
     const succeeded: string[] = [];
     const recorder = {
-      record: async (r: { nodeId: string; status: string }) => {
-        if (r.status === "FAILED") failed.push(r.nodeId);
-        if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          if (r.status === "FAILED") failed.push(r.nodeId);
+          if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+        }
       },
     };
 
-    await expect(
-      runWorkflowNodes({
-        sortedNodes: [trigger("t"), node("fan", { fanOut: [{ x: 1 }] })],
-        connections: [edge("t", "fan")],
-        userId: "u",
-        executionId: "exec_test",
-        step,
-        publish,
-        recorder,
-      }),
-    ).rejects.toThrow(/fanOutDispatcher/);
+    const thrown = await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("fan", { fanOut: [{ x: 1 }] })],
+      connections: [edge("t", "fan")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    }).catch((e) => e);
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toMatch(/fanOutDispatcher/);
+    // NonRetriableError specifically: this is a wiring fault, and a plain Error
+    // costs three full re-runs of the batch — including every network read in
+    // it — before failing with the identical message.
+    expect(thrown).toBeInstanceOf(NonRetriableError);
 
     expect(failed).toEqual(["fan"]);
     // The node never reaches a SUCCESS record.
@@ -394,9 +415,11 @@ describe("runWorkflowNodes fan-out", () => {
     const failed: string[] = [];
     const succeeded: string[] = [];
     const recorder = {
-      record: async (r: { nodeId: string; status: string }) => {
-        if (r.status === "FAILED") failed.push(r.nodeId);
-        if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+      flush: async (records: Array<{ nodeId: string; status: string }>) => {
+        for (const r of records) {
+          if (r.status === "FAILED") failed.push(r.nodeId);
+          if (r.status === "SUCCESS") succeeded.push(r.nodeId);
+        }
       },
     };
     const { dispatcher } = collectDispatcher({ reject: true });
@@ -447,12 +470,12 @@ describe("fan-out child output recording", () => {
   it("records a node's rewrite of its own seed key, not downstream pass-through", async () => {
     const outputs = new Map<string, unknown>();
     const recorder = {
-      record: async (r: {
-        nodeId: string;
-        status: string;
-        output?: unknown;
-      }) => {
-        if (r.status !== "SKIPPED") outputs.set(r.nodeId, r.output);
+      flush: async (
+        records: Array<{ nodeId: string; status: string; output?: unknown }>,
+      ) => {
+        for (const r of records) {
+          if (r.status !== "SKIPPED") outputs.set(r.nodeId, r.output);
+        }
       },
     };
     // The engine keys node "a" (type AI_TEXT, no ref) by its legacy output key.
@@ -489,5 +512,414 @@ describe("outcome brand cross-checks", () => {
     expect(isRouted(fanOut({}, [1, 2]))).toBe(false);
     expect(isFanOut(fanOut({}, []))).toBe(true);
     expect(isRouted(routed({}, []))).toBe(true);
+  });
+});
+
+// ── Step batching ─────────────────────────────────────────────────────────────
+// Contiguous inline-safe nodes share ONE Inngest step; a checkpointed node gets
+// its own. This is what makes a run fast (a step costs ~4s of dispatch latency
+// on Inngest Cloud, dwarfing the work), so the batching has to be both correct
+// and actually happening — a regression that quietly stopped batching would
+// still pass every test above.
+//
+// CALCULATOR is inline-safe and AI_TEXT is checkpointed in
+// CHECKPOINTED_NODE_TYPES; these tests are written against that classification.
+const inline = (id: string, data?: unknown): N => ({
+  id,
+  type: "CALCULATOR",
+  name: id,
+  data,
+});
+
+/** A step shim that records the ids it is asked to run. */
+const recordingStep = () => {
+  const ids: string[] = [];
+  return {
+    ids,
+    step: {
+      run: async (id: string, fn: () => unknown) => {
+        ids.push(id);
+        return fn();
+      },
+    } as any,
+  };
+};
+
+describe("runWorkflowNodes step batching", () => {
+  it("runs a contiguous run of inline-safe nodes in ONE step", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), inline("b"), inline("c")],
+      connections: [edge("t", "a"), edge("a", "b"), edge("b", "c")],
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    // All four nodes, one step. (The mock executors call no steps of their own,
+    // so every id here is the engine's.)
+    expect(ran).toEqual(["t", "a", "b", "c"]);
+    expect(ids).toEqual(["nodes:0-3"]);
+  });
+
+  it("never wraps a checkpointed node — its executor's own steps stay real", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("ai")],
+      connections: [edge("t", "ai")],
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toEqual(["t", "ai"]);
+    // Only the trigger's segment. Wrapping `ai` would nest its executor's
+    // internal step.run calls inside an outer step, which Inngest forbids — and
+    // would destroy the read/write memoization those splits exist for.
+    expect(ids).toEqual(["nodes:0-0"]);
+  });
+
+  it("splits a batch where a checkpointed node interrupts it", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("t"),
+        inline("a"),
+        node("ai"),
+        inline("b"),
+        inline("c"),
+      ],
+      connections: [
+        edge("t", "a"),
+        edge("a", "ai"),
+        edge("ai", "b"),
+        edge("b", "c"),
+      ],
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toEqual(["t", "a", "ai", "b", "c"]);
+    expect(ids).toEqual(["nodes:0-1", "nodes:3-4"]);
+  });
+
+  it("caps a batch so one step can't outgrow the platform step budget", async () => {
+    const { recorder, ran } = collect();
+    const { ids, step: recording } = recordingStep();
+
+    // Five past the cap, so the run must split into exactly two segments.
+    // Derived from the constant rather than hard-coded: the cap is computed from
+    // the step budget, so a change there must not quietly make this test assert
+    // a boundary the engine no longer uses.
+    const total = MAX_SEGMENT_NODES + 5;
+    const nodes = [
+      trigger("t"),
+      ...Array.from({ length: total - 1 }, (_, i) => inline(`n${i}`)),
+    ];
+    const connections = nodes.slice(1).map((n, i) => edge(nodes[i].id, n.id));
+
+    await runWorkflowNodes({
+      sortedNodes: nodes,
+      connections,
+      userId: "u",
+      executionId: "exec_test",
+      step: recording,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toHaveLength(total);
+    expect(ids).toEqual([
+      `nodes:0-${MAX_SEGMENT_NODES - 1}`,
+      `nodes:${MAX_SEGMENT_NODES}-${total - 1}`,
+    ]);
+  });
+
+  it("writes node records from inside a step, not the handler body", async () => {
+    // THE regression this design exists for. Inngest re-executes the whole
+    // handler body at every step boundary, memoizing only completed steps — so a
+    // record written from the body was re-written once per subsequent
+    // invocation (O(K^2) round trips), with durationMs and completedAt
+    // recomputed against an already-memoized executor, i.e. against nothing.
+    //
+    // There is no "did this node just run" signal to gate on: the invocation in
+    // which a callback executes is always abandoned before control returns. So
+    // records are buffered and flushed inside a step callback, which runs
+    // exactly once and is memoized thereafter.
+    const flushedInsideStep: boolean[] = [];
+    let insideStep = false;
+
+    const trackingStep = {
+      run: async (_id: string, fn: () => unknown) => {
+        insideStep = true;
+        try {
+          return await fn();
+        } finally {
+          insideStep = false;
+        }
+      },
+    } as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), node("checkpointed")],
+      connections: [edge("t", "a"), edge("a", "checkpointed")],
+      userId: "u",
+      executionId: "exec_test",
+      step: trackingStep,
+      publish,
+      recorder: {
+        flush: async (records) => {
+          for (let i = 0; i < records.length; i++) {
+            flushedInsideStep.push(insideStep);
+          }
+        },
+      },
+    });
+
+    // Every record but the tail is written inside a step. The tail — nodes that
+    // settle after the last callback — is flushed from the body deliberately,
+    // where the recorder's already-written check makes the repeat a lookup
+    // rather than a write.
+    expect(flushedInsideStep.length).toBe(3);
+    expect(flushedInsideStep.slice(0, 2)).toEqual([true, true]);
+  });
+
+  it("stamps each record when the node settled, not when it is written", async () => {
+    // Flushing is deferred, so a row stamped at WRITE time would collapse every
+    // node's completedAt onto one instant and destroy the per-node timeline —
+    // the only honest per-node timing there is, since durationMs for a
+    // checkpointed node times a JSON deserialization rather than any work.
+    //
+    // Asserted as "settled at or before the flush that carried it", which holds
+    // however many nodes share a millisecond; strict ordering would only be
+    // testing how fast the mock executor is.
+    const seen: Array<{ stamped: number; flushedAt: number }> = [];
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), node("b")],
+      connections: [edge("t", "a"), edge("a", "b")],
+      userId: "u",
+      executionId: "exec_test",
+      step: {
+        run: async (_id: string, fn: () => unknown) => {
+          // Separate settle time from flush time measurably.
+          await new Promise((r) => setTimeout(r, 5));
+          return fn();
+        },
+      } as any,
+      publish,
+      recorder: {
+        flush: async (records) => {
+          const flushedAt = Date.now();
+          for (const r of records) {
+            seen.push({ stamped: r.completedAt.getTime(), flushedAt });
+          }
+        },
+      },
+    });
+
+    expect(seen).toHaveLength(3);
+    for (const { stamped, flushedAt } of seen) {
+      expect(stamped).toBeLessThanOrEqual(flushedAt);
+    }
+    // Non-decreasing in settle order, so the timeline reads correctly.
+    expect(seen[1].stamped).toBeGreaterThanOrEqual(seen[0].stamped);
+    expect(seen[2].stamped).toBeGreaterThanOrEqual(seen[1].stamped);
+  });
+
+  it("flushes a failed node immediately, since no later step will run", async () => {
+    // A throw ends the run, so there is no later callback to ride on. Bounded to
+    // once per attempt, which is why a body write is affordable here and not on
+    // the success path.
+    const flushed: string[][] = [];
+
+    await expect(
+      runWorkflowNodes({
+        sortedNodes: [trigger("t"), node("boom", { fanOut: [{ x: 1 }] })],
+        connections: [edge("t", "boom")],
+        userId: "u",
+        executionId: "exec_test",
+        step,
+        publish,
+        recorder: {
+          flush: async (records) => {
+            flushed.push(records.map((r) => `${r.nodeId}:${r.status}`));
+          },
+        },
+        // No dispatcher wired in, so the fan-out node throws.
+      }),
+    ).rejects.toThrow(/fanOutDispatcher/);
+
+    // The FAILED record reached the sink before the throw propagated.
+    expect(flushed.flat()).toContain("boom:FAILED");
+  });
+
+  it("does not re-publish status for a node that settled earlier", async () => {
+    // Inngest re-executes the handler body at every step boundary, so a
+    // completed node's executor — and its publish("loading")/publish("success")
+    // — runs again on every later invocation. That was free while publishing was
+    // a memoized step.run; as a direct call it is real blocking HTTP, O(K²) of it
+    // across a run, and it tells the canvas a finished node is loading again.
+    const published: string[] = [];
+    const publishSpy = (async (msg: { data?: { nodeId?: string } }) => {
+      published.push(msg?.data?.nodeId ?? "?");
+    }) as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a"), node("b")],
+      connections: [edge("t", "a"), edge("a", "b")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish: publishSpy,
+      recorder: {
+        flush: async () => {},
+        // Models the second invocation: `t` and `a` settled last time round.
+        settledNodeIds: async () => new Set(["t", "a"]),
+      },
+    });
+
+    // Only `b` — the node that had not settled before — reaches the real
+    // publish. `t` and `a` are replaying and stay silent.
+    expect(published).toEqual(["b"]);
+  });
+
+  it("still publishes for a node running for the first time", async () => {
+    // The mirror of the above — suppressing everything would be just as wrong,
+    // and would leave the canvas dead for the whole run.
+    const published: string[] = [];
+    const publishSpy = (async (msg: { data?: { nodeId?: string } }) => {
+      published.push(msg?.data?.nodeId ?? "?");
+    }) as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a")],
+      connections: [edge("t", "a")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish: publishSpy,
+      recorder: {
+        flush: async () => {},
+        settledNodeIds: async () => new Set<string>(),
+      },
+    });
+
+    expect(published).toEqual(["t", "a"]);
+  });
+
+  it("publishes for every node when the recorder cannot say (no settledNodeIds)", async () => {
+    // Engine tests and any future recorder without the optional method fall back
+    // to publishing every time: chatty, never silent.
+    const published: string[] = [];
+    const publishSpy = (async (msg: { data?: { nodeId?: string } }) => {
+      published.push(msg?.data?.nodeId ?? "?");
+    }) as any;
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("t"), node("a")],
+      connections: [edge("t", "a")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish: publishSpy,
+      recorder: { flush: async () => {} },
+    });
+
+    expect(published).toEqual(["t", "a"]);
+  });
+
+  it("derives the cap from the step budget, not a hand-picked number", () => {
+    // These were once two independent numbers for ONE platform ceiling, 5x
+    // apart — run-workflow.ts asserted 25 against "Vercel kills at 300s" while
+    // http-budget.ts called 60s the conservative floor for the same limit. The
+    // batch cap silently inherited the permissive one. Pinning the arithmetic
+    // means a change to either constant surfaces here instead of widening the
+    // batch past what a single step can actually complete.
+    const usableMs = MAX_STEP_BUDGET_MS - STEP_OVERHEAD_MS;
+    expect(MAX_SEGMENT_NODES).toBeLessThanOrEqual(
+      Math.floor(usableMs / WORST_INLINE_NODE_MS),
+    );
+    // Headroom, because WORST_INLINE_NODE_MS bounds the executor but not the
+    // realtime publish() calls around it.
+    expect(MAX_SEGMENT_NODES * WORST_INLINE_NODE_MS).toBeLessThan(usableMs / 2);
+  });
+
+  it("carries a branch decided inside a batch out to a later step", async () => {
+    // The routing happens in the middle of a segment and the nodes it gates sit
+    // in a LATER one — so the activation has to survive the step boundary, not
+    // just the in-memory loop.
+    const { recorder, ran, skipped } = collect();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("t"),
+        inline("cond", { route: ["true"] }),
+        node("yes"),
+        node("no"),
+      ],
+      connections: [
+        edge("t", "cond"),
+        edge("cond", "yes", "true"),
+        edge("cond", "no", "false"),
+      ],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+    });
+
+    expect(ran).toEqual(["t", "cond", "yes"]);
+    expect(skipped).toEqual(["no"]);
+  });
+
+  it("resumes from a memoized segment without re-running its nodes", async () => {
+    // THE failure mode this design has to survive. On a replay Inngest returns a
+    // completed step's stored value and never runs its body — so the segment's
+    // context and activations exist ONLY in what it returned. An engine that
+    // trusted its in-memory closure would resume with an empty context and skip
+    // everything downstream, silently.
+    const { recorder, ran } = collect();
+    const memoized = {
+      run: async (id: string, fn: () => unknown) =>
+        id === "nodes:0-1"
+          ? {
+              context: { fromMemo: true },
+              activations: [["a", { all: true, outputs: [] }]],
+            }
+          : fn(),
+    } as any;
+
+    const context = await runWorkflowNodes({
+      sortedNodes: [trigger("t"), inline("a"), node("after")],
+      connections: [edge("t", "a"), edge("a", "after")],
+      userId: "u",
+      executionId: "exec_test",
+      step: memoized,
+      publish,
+      recorder,
+    });
+
+    // The memoized segment's nodes did not re-run …
+    expect(ran).toEqual(["after"]);
+    // … `after` was still reachable, because the segment's activation for `a`
+    // came back with the memoized value …
+    expect(context).toHaveProperty("after", true);
+    // … and it ran against the stored context, not a fresh empty one.
+    expect(context).toHaveProperty("fromMemo", true);
   });
 });
