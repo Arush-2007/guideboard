@@ -35,7 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { RowScope } from "@/lib/sheet-heading";
+import type { RowScope } from "@/lib/sheets-trigger-options";
 import {
   SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
   sheetsTriggerOptionsSchemaFields,
@@ -270,7 +270,6 @@ export const GoogleSheetsTriggerDialog = ({
                   <RowScopeSelect
                     value={field.value}
                     onChange={field.onChange}
-                    itemNoun="watched"
                     label="Which rows trigger this workflow"
                     describe={describeTriggerScope}
                   />

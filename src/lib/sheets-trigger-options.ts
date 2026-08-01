@@ -1,9 +1,43 @@
 import { z } from "zod";
-import { ROW_SCOPES } from "@/lib/sheet-heading";
 
 /**
- * What an absent `rowScope` means for a TRIGGER: no distinction between data and
- * heading rows — exactly how the trigger behaved before it understood headings.
+ * Which KIND of row may fire the Sheets TRIGGER.
+ *
+ * A MERGED row (a section title) is structurally a row like any other — its text
+ * sits in the first column and merging is only a display effect — so without
+ * this distinction, editing a title would fire the trigger as though data had
+ * changed. This is also the only way to deliberately watch merged rows.
+ *
+ * Lives HERE, with the trigger's other options, rather than in `sheet-style.ts`:
+ * the ACTION node has no row-scope selector at all. It expresses the same idea
+ * more directly, with a `MERGED_ROW_COLUMN` condition in the filter editor it
+ * already has, which can say "a merged row whose text contains X" rather than
+ * only "merged rows". Both sides still agree on what MERGED means, because both
+ * derive it from `mergedDataRows`.
+ *
+ * ⚠️ The stored VALUES are deliberately unchanged (`headings`, not `merged`):
+ * they are persisted in `GoogleSheetsPoll.rowScope`, so renaming them would need
+ * a data migration for no behavioural gain. Only the LABELS were reworded when
+ * the "heading" vocabulary was dropped.
+ */
+export const ROW_SCOPES = ["data", "headings", "all"] as const;
+export type RowScope = (typeof ROW_SCOPES)[number];
+
+export const ROW_SCOPE_LABELS: Record<RowScope, string> = {
+  data: "Normal rows only (skip merged rows)",
+  headings: "Merged rows only",
+  all: "All rows, merged rows included",
+};
+
+/** Does a row of this kind pass the given scope? */
+export function rowPassesScope(scope: RowScope, isMerged: boolean): boolean {
+  if (scope === "all") return true;
+  return scope === "headings" ? isMerged : !isMerged;
+}
+
+/**
+ * What an absent `rowScope` means: no distinction between normal and merged
+ * rows — exactly how the trigger behaved before it understood merging.
  *
  * Every reader resolves it this way, the dialog included. That uniformity is the
  * point. Resolving it as "data" in the dialog while the poll sync said "all"
@@ -12,14 +46,15 @@ import { ROW_SCOPES } from "@/lib/sheet-heading";
  * had been made. One default, so saving can only ever persist what the user was
  * actually shown.
  *
- * "all" rather than the shared `DEFAULT_ROW_SCOPE` ("data") the ACTION uses,
- * because the two are answering different questions — the action asks which rows
- * a filter may WRITE to, where skipping headings is the safe answer; the trigger
- * only watches. "all" is also the cheaper answer: it needs no merged-ranges
- * lookup, so a poll stays at one API call until someone opts into a
- * heading-aware scope.
+ * "all" is also the cheaper answer: it needs no merged-ranges lookup, so a poll
+ * stays at one API call until someone opts into a merge-aware scope.
+ *
+ * This is now the ONLY row-scope default. There was briefly a second one
+ * (`DEFAULT_ROW_SCOPE = "data"`) left over from the deleted heading actions,
+ * which contradicted this and was justified by a comment about behaviour that no
+ * longer exists.
  */
-export const SHEETS_TRIGGER_DEFAULT_ROW_SCOPE = "all" as const;
+export const SHEETS_TRIGGER_DEFAULT_ROW_SCOPE: RowScope = "all";
 
 /**
  * The single source for the Google Sheets trigger's "Restraints" zod fields.

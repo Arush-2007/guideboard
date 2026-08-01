@@ -1,7 +1,7 @@
 /**
  * Diagnostic: what does Google ACTUALLY return for a tab's merged ranges?
  *
- * Heading detection (`headingDataRows`) is driven entirely by the `merges` array
+ * Merged-row detection (`mergedDataRows`) is driven entirely by the `merges` array
  * on the Sheet resource. When a tab plainly has a merged row but the app reports
  * none, the question is whether the request is wrong, the response is shaped
  * differently than assumed, or the merge itself fails one of the three rules.
@@ -24,7 +24,7 @@
 import "dotenv/config";
 import { NodeType } from "../src/generated/prisma";
 import db from "../src/lib/db";
-import { headingDataRows } from "../src/lib/google-sheets";
+import { mergedDataRows } from "../src/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "../src/lib/google-token";
 
 const [argSpreadsheetId, argTabName] = process.argv.slice(2);
@@ -171,10 +171,10 @@ async function inspect(
       if (merges?.length) {
         console.log(`    raw: ${JSON.stringify(merges)}`);
         // What the app would conclude from exactly this payload.
-        const detected = headingDataRows(merges as never);
+        const detected = mergedDataRows(merges as never);
         const dataRows = [...detected.keys()];
         console.log(
-          `    → headingDataRows: ${
+          `    → mergedDataRows: ${
             detected.size === 0
               ? "NONE — every merge failed a rule below"
               : dataRows

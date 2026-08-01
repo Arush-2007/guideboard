@@ -25,7 +25,7 @@ export type WideOverlayPanelProps = {
  * button from `DialogContent`.
  *
  * Extracted from the Google Form trigger's "questions" overlay so every Sheets
- * config surface (append mapping, find_rows, color_rows) shares one panel.
+ * config surface (append mapping, find_rows, style_cells) shares one panel.
  */
 export function WideOverlayPanel({
   open,

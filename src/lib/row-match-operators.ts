@@ -5,7 +5,7 @@ import {
 
 /**
  * Single source of truth for the row-selection operator set used by the Sheets
- * `find_rows` and `color_rows` actions (`row-match.ts`) and their shared config
+ * filtering actions (`row-match.ts`) and their shared config
  * UI (`row-match-conditions.tsx`).
  *
  * Deliberately dependency-free (imports only the pure `compare.ts`) so the CLIENT
@@ -40,8 +40,56 @@ export const ROW_MATCH_OPERATORS = Object.keys(
 export const VALUELESS_ROW_MATCH_OPERATORS: ReadonlySet<RowMatchOperator> =
   new Set<RowMatchOperator>(["is_empty", "is_not_empty"]);
 
+/**
+ * The sentinel `column` value meaning "this row's cells are MERGED" rather than
+ * naming a real header.
+ *
+ * A merged row — a section title — is structurally an ordinary row: merging is
+ * only a display effect and its text sits in column A. So "is this a section
+ * title?" cannot be asked of the row's VALUES at all; it has to come from the
+ * tab's real merge ranges (`mergedDataRows` in `google-sheets.ts`). Expressing
+ * it as a pseudo-column means that question is asked in the SAME conditions
+ * editor as everything else, with the same operators and the same restraints,
+ * instead of needing its own parallel filter UI.
+ *
+ * Prefixed and underscored so it cannot collide with a real header: Sheets
+ * headers are trimmed on read, and a header literally named `__merged_row__`
+ * would have to be typed deliberately.
+ *
+ * Lives HERE, in the dependency-free module, because the client conditions
+ * editor offers it and the server matcher resolves it — and `row-match.ts`
+ * imports Handlebars via templating, so it must never reach the editor bundle.
+ */
+export const MERGED_ROW_COLUMN = "__merged_row__";
+
+export const MERGED_ROW_COLUMN_LABEL = "Merged row (all cells joined)";
+
+/**
+ * Is this condition's column the merged-row sentinel? The one place that test is
+ * spelled, so the trim can't be applied in one caller and forgotten in another.
+ */
+export function isMergedColumn(column?: string): boolean {
+  return column?.trim() === MERGED_ROW_COLUMN;
+}
+
 /** The shape both `RowMatchCondition` and the dialog's form condition satisfy. */
 type ConditionLike = { column?: string; enabled?: boolean };
+
+/**
+ * Does this filter ask about merged rows?
+ *
+ * The executor calls this to decide whether it must pay for the tab's merge
+ * metadata (`includeMerges`, an extra API read) before matching. Only ACTIVE
+ * conditions count — a disabled merged condition filters nothing, so it must not
+ * cost a read.
+ */
+export function usesMergedColumn(
+  conditions: ReadonlyArray<ConditionLike> | undefined,
+): boolean {
+  return (conditions ?? []).some(
+    (c) => isActiveRowCondition(c) && isMergedColumn(c.column),
+  );
+}
 
 /**
  * A condition only filters anything if it is enabled AND names a column.

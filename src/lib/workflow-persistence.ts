@@ -13,7 +13,7 @@ import {
   stripRefFromData,
 } from "@/lib/node-ref";
 import { computeNextRunAt, isValidSchedule } from "@/lib/schedule";
-import type { RowScope } from "@/lib/sheet-heading";
+import type { RowScope } from "@/lib/sheets-trigger-options";
 import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 
 /**
