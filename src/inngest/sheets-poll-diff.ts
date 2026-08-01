@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import {
-  DEFAULT_ROW_SCOPE,
   type RowScope,
   rowPassesScope,
-} from "@/lib/sheet-heading";
+  SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
+} from "@/lib/sheets-trigger-options";
 
 export type SheetsTriggerOn = "added" | "updated" | "added_or_updated";
 
@@ -11,7 +11,7 @@ export type SheetsTriggerOn = "added" | "updated" | "added_or_updated";
  * A HEADING's text changing — the other half of the node.
  *
  * A heading is a merged section title sitting inside the data (see
- * `headingDataRows` in `lib/google-sheets.ts`, the one definition of what
+ * `mergedDataRows` in `lib/google-sheets.ts`, the one definition of what
  * qualifies). Structurally it is an ordinary row whose text lives in column A, so
  * without the merge information it is indistinguishable from a data row — which
  * is why it used to fire as a generic `"updated"` row change.
@@ -186,7 +186,7 @@ export function sheetsHeadingIdempotencyKey(params: {
 /**
  * The heading text at each heading position, ready to store and to diff against
  * the previous poll. `headingRows` holds POLLER row indices (see
- * `toPollerRowIndex` at the call site — `headingDataRows` speaks data-row
+ * `toPollerRowIndex` at the call site — `mergedDataRows` speaks data-row
  * indices, which are one lower).
  *
  * A heading's text always lives in column A, which is where Sheets keeps a merged
@@ -656,7 +656,15 @@ export function planSheetsPollChanges(params: {
   oldProjection?: StoredProjection | null;
   /** Projection for this poll; null skips the check (e.g. in tests). */
   newProjection?: SheetsProjection | null;
-  /** Which kind of row may fire. Absent ⇒ the shared default ("data"). */
+  /**
+   * Which kind of row may fire.
+   *
+   * Defaults to `SHEETS_TRIGGER_DEFAULT_ROW_SCOPE` — the codebase's ONE
+   * row-scope default, which every caller also resolves an absent stored value
+   * through. It used to default to a separate `DEFAULT_ROW_SCOPE` ("data") left
+   * over from the deleted heading actions, so the same absent value meant "skip
+   * merged rows" here and "all rows" at the call site.
+   */
   rowScope?: RowScope;
   /** POLLER row indices (not data-row indices) that are headings. */
   headingRows?: Set<number>;
@@ -669,7 +677,7 @@ export function planSheetsPollChanges(params: {
     watchColumns,
     oldProjection = null,
     newProjection = null,
-    rowScope = DEFAULT_ROW_SCOPE,
+    rowScope = SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
     headingRows,
   } = params;
   const newCellHashes = rows.map((row) => hashCells(row, watchColumns));

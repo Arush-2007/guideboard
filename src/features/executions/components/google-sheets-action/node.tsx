@@ -26,15 +26,7 @@ import { NodeType } from "@/generated/prisma";
 const option = getNodeOption(NodeType.GOOGLE_SHEETS_ACTION);
 
 type GoogleSheetsActionNodeData = {
-  action?:
-    | "append_row"
-    | "append_heading"
-    | "find_rows"
-    | "find_heading"
-    | "update_row"
-    | "update_heading"
-    | "color_rows"
-    | "color_heading";
+  action?: "append_row" | "find_rows" | "update_row" | "style_cells";
   position?: "bottom" | "under_group" | "under_each";
   spreadsheetId?: string;
   sheetName?: string;
@@ -81,8 +73,9 @@ export const GoogleSheetsActionNode = memo(
 
     const nodeData = props.data;
 
-    // find_rows / update_row branch (Found/Not-found, Updated/No-match); the
-    // other two actions keep the single default handle. The handle set therefore
+    // find_rows / update_row / style_cells branch (Found/Not-found,
+    // Updated/No-match, Styled/No-match); append_row keeps the single default
+    // handle. The handle set therefore
     // changes when the action is switched in the dialog, so React Flow — which
     // caches handle geometry per node — must be told to re-measure, exactly as
     // the Switch node does when cases are added or removed. `handleKey` is the
@@ -112,26 +105,15 @@ export const GoogleSheetsActionNode = memo(
     const description = nodeData?.sheetName
       ? nodeData.action === "find_rows"
         ? `Find rows in ${nodeData.sheetName}`
-        : nodeData.action === "find_heading"
-          ? `Find a heading in ${nodeData.sheetName}`
-          : nodeData.action === "update_heading"
-            ? `Update a heading in ${nodeData.sheetName}`
-            : nodeData.action === "color_heading"
-              ? `Color headings in ${nodeData.sheetName}`
-              : nodeData.action === "update_row"
-                ? `Update a row in ${nodeData.sheetName}`
-                : nodeData.action === "color_rows"
-                  ? `Color rows in ${nodeData.sheetName}`
-                  : nodeData.action === "append_heading"
-                    ? // A heading is placed by the same `position` as an appended row,
-                      // but "insert"/"append" would read as adding data — say what it
-                      // actually adds.
-                      `Add a heading to ${nodeData.sheetName}`
-                    : position === "under_each"
-                      ? `Insert rows into ${nodeData.sheetName}`
-                      : position === "under_group"
-                        ? `Insert a row into ${nodeData.sheetName}`
-                        : `Append to ${nodeData.sheetName}`
+        : nodeData.action === "update_row"
+          ? `Update a row in ${nodeData.sheetName}`
+          : nodeData.action === "style_cells"
+            ? `Style rows in ${nodeData.sheetName}`
+            : position === "under_each"
+              ? `Insert rows into ${nodeData.sheetName}`
+              : position === "under_group"
+                ? `Insert a row into ${nodeData.sheetName}`
+                : `Append to ${nodeData.sheetName}`
       : "Not configured";
 
     return (

@@ -1,7 +1,11 @@
 import { NonRetriableError, RetryAfterError } from "inngest";
 import { HTTPError, type Options as KyOptions } from "ky";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "./http";
-import { type HeadingFormat, resolveHeadingFormat } from "./sheet-heading";
+import {
+  CELL_FORMAT_FIELDS,
+  type CellFormat,
+  type MergeMode,
+} from "./sheet-style";
 
 /**
  * Shared Google Sheets v4 REST plumbing — the Sheets counterpart of
@@ -40,7 +44,7 @@ export const SHEETS_WRITE = {
 export const SHEETS_ABSOLUTE_WRITE = {
   timeoutClass: "WRITE",
   // Writes each cell's FINAL state to a FIXED target — its value via
-  // values:batchUpdate, or its FORMAT via a repeatCell batchUpdate (color_rows).
+  // values:batchUpdate, or its FORMAT via a repeatCell batchUpdate (style_cells).
   // A retry rewrites the identical cells, so Inngest may safely retry — unlike
   // :append and insertDimension, which ADD rows/dimensions and stay
   // idempotent:false.
@@ -213,8 +217,8 @@ export type SheetGrid = {
    */
   rowCount: number;
   /**
-   * Every merged range on the tab. This is what makes a HEADING row identifiable
-   * with certainty rather than by guesswork — see `headingDataRows`.
+   * Every merged range on the tab. This is what makes a MERGED row identifiable
+   * with certainty rather than by guesswork — see `mergedDataRows`.
    *
    * ⚠️ `[]` unless the call passed `includeMerges: true`. An empty array from a
    * default call means "not requested", NOT "this tab has none".
@@ -223,53 +227,29 @@ export type SheetGrid = {
 };
 
 /**
- * How many merged ranges on the tab sit below the header but do NOT qualify as
- * headings — because they span more than one row, or start somewhere other than
- * column A.
+ * The MERGED rows of a tab: DATA-row index (0-based, as in `SheetTable.rows`)
+ * → how many columns that row is actually merged across.
  *
- * Purely diagnostic, and it exists because "no headings found" is otherwise a
- * dead end: the user is looking at something plainly merged, so being told the
- * tab has none reads as a bug rather than as a rule they tripped. This number
- * turns that into "2 merged rows here don't qualify, and here is why", which is
- * the difference between a fixable sheet and a support conversation.
- */
-export function nonHeadingMerges(merges: SheetMergeRange[]): number {
-  let count = 0;
-  for (const m of merges) {
-    const start = m.startRowIndex ?? 0;
-    const end = m.endRowIndex ?? start + 1;
-    // The header row is not a candidate at all, so a merged header is not a
-    // near miss — it is simply not in scope.
-    if (start < 1) continue;
-    const qualifies = (m.startColumnIndex ?? 0) === 0 && end - start === 1;
-    if (!qualifies) count++;
-  }
-  return count;
-}
-
-/**
- * The heading rows of a tab: DATA-row index (0-based, as in `SheetTable.rows`)
- * → how many columns that heading is actually MERGED across.
- *
- * A heading is identified by the one thing that is true of it and of nothing
+ * A merged row is identified by the one thing that is true of it and of nothing
  * else: its cells are MERGED, starting at column A, across a single row. That
  * comes from the sheet's own structure, so a genuine data row that merely
  * happens to have only its first column filled is never mistaken for one — which
  * a "first cell filled, rest empty" heuristic would get wrong, and silently.
  *
+ * This is what backs the `MERGED_ROW_COLUMN` condition (`row-match.ts`) and the
+ * trigger's `rowScope`, so both agree on what "merged" means by construction.
+ *
  * A Map rather than a Set because the WIDTH is load-bearing, not incidental: a
- * heading merged when the tab had 3 columns stays 3 wide after a 4th is added,
- * and anything re-merging it must use the width it actually has. Merging a range
+ * row merged when the tab had 3 columns stays 3 wide after a 4th is added, and
+ * anything re-merging it must use the width it actually has. Merging a range
  * that overlaps an existing merge is rejected by Sheets, so re-deriving the width
  * from today's header row would fail the write. `.has()` and `.size` read the
  * same as on a Set, so membership callers are unaffected.
  *
  * Grid row 0 is the header, so data row i is grid row i + 1; anything at or above
- * the header is ignored (a merged header is not a heading).
+ * the header is ignored (a merged header row does not count).
  */
-export function headingDataRows(
-  merges: SheetMergeRange[],
-): Map<number, number> {
+export function mergedDataRows(merges: SheetMergeRange[]): Map<number, number> {
   const rows = new Map<number, number>();
   for (const m of merges) {
     const start = m.startRowIndex ?? 0;
@@ -298,15 +278,15 @@ export async function getSheetGrid({
   sheetName: string;
   /**
    * Also fetch the tab's merged ranges (`merges`), which is what identifies
-   * heading rows. OFF by default: most callers here only want `sheetId` +
+   * merged rows. OFF by default: most callers here only want `sheetId` +
    * `rowCount` — every append goes through `ensureGridRows`, and the whiten /
-   * heading-style / color paths all need the id alone. A workbook of report
-   * tabs can carry thousands of merge objects, and pulling them on every append
-   * would put that on the hot write path for nothing.
+   * styling paths all need the id alone. A workbook of report tabs can carry
+   * thousands of merge objects, and pulling them on every append would put that
+   * on the hot write path for nothing.
    *
-   * Only the row-reading path, which must tell headings from data, asks for
-   * them. `merges` is `[]` when this is off — never trust it as "no merges"
-   * unless you requested them.
+   * Only the paths that must tell merged rows from data ask for them — a
+   * `MERGED_ROW_COLUMN` condition, or the trigger's `rowScope`. `merges` is `[]`
+   * when this is off — never trust it as "no merges" unless you requested them.
    */
   includeMerges?: boolean;
 }): Promise<SheetGrid> {
@@ -514,7 +494,7 @@ export function whiteRowRequest(
         endRowIndex: gridRow0 + 1,
         startColumnIndex: 0,
         // Exclusive bound — the full header width, so the white band matches the
-        // table exactly (the same bound color_rows paints to).
+        // table exactly (the same bound style_cells paints to).
         endColumnIndex: columnCount,
       },
       cell: { userEnteredFormat: { backgroundColor: WHITE } },
@@ -524,77 +504,135 @@ export function whiteRowRequest(
 }
 
 /**
- * The `batchUpdate` requests that turn one freshly-written row into a HEADING:
- * the whole band styled from `format`, then merged into a single cell.
+ * The `batchUpdate` requests that style one row's band, and optionally merge or
+ * unmerge it.
  *
- * Two requests, in this order and never separated — a merge inherits the
+ * ## Only what was set is written
+ *
+ * The `fields` mask is built from exactly the properties `format` actually sets
+ * — never from a defaults-filled format. That is what makes an unset property
+ * mean "leave it alone" rather than "reset it": styling runs over rows a person
+ * may have formatted by hand, so a step that sets only a background must not
+ * also write `bold: false` and strip their work. It also means a styled row
+ * keeps the number format, borders and padding of the tab it lives in.
+ *
+ * A format that sets nothing yields NO `repeatCell` request at all, so a
+ * merge-only step costs one request instead of two, and a step that sets
+ * nothing and merges nothing yields `[]` — no API call.
+ *
+ * ## Ordering
+ *
+ * Format FIRST, merge second, and never separated — a merge inherits the
  * top-left cell's format, so styling first is what makes the merged band come
  * out uniform rather than carrying the old formatting of the cells it swallowed.
  *
- * `fields` names every sub-field written (rather than the whole
- * `userEnteredFormat`) so a heading row keeps the number format, borders and
- * padding of the tab it lives in; only the properties the user chose are
- * touched.
+ * ## Retry safety
  *
- * Both requests are IDEMPOTENT: `repeatCell` sets fixed values on fixed cells,
- * and `mergeCells` over an already-identical merge is accepted and changes
- * nothing. So an Inngest retry of the step carrying them repaints and re-merges
- * to exactly the same result.
- *
- * `columnCount` is the table's width (the header row) — the same band
- * `whiteRowRequest` clears and `color_rows` paints, so a heading stops where the
- * table stops. A one-column table yields NO merge request: Sheets rejects a
- * single-cell merge, and there is nothing to span anyway.
+ * Every request here is IDEMPOTENT: `repeatCell` sets fixed values on fixed
+ * cells, `mergeCells` over an already-identical merge is accepted and changes
+ * nothing, and `unmergeCells` over an unmerged range is a no-op. So an Inngest
+ * retry of the step carrying them reproduces exactly the same result.
  *
  * `gridRow0` is the 0-based grid row: the header is grid row 0, so sheet row N
- * is grid row N − 1.
+ * is grid row N − 1. `endColumnIndex` is EXCLUSIVE — pass the table's header
+ * width for a full-width band, the same bound `whiteRowRequest` clears.
+ *
+ * A band less than 2 columns wide yields no merge request: Sheets rejects a
+ * single-cell merge, and there is nothing to span anyway.
+ *
+ * ## Why the merge band can differ from the format band
+ *
+ * `mergeSpan` overrides the columns the merge/unmerge covers, leaving the format
+ * on the band above. Sheets REJECTS a merge or unmerge range that PARTIALLY
+ * INTERSECTS an existing merge, and a row's real merge width is a fact about the
+ * sheet, not about today's header row: a row merged when the tab had 3 columns
+ * stays 3 wide after a 4th is added (see `mergedDataRows`). So a caller
+ * re-merging or unmerging an already-merged row must pass that row's ACTUAL
+ * width here, or the whole batchUpdate fails.
  */
-export function headingRowRequests({
+export function cellFormatRequests({
   sheetId,
   gridRow0,
-  columnCount,
+  startColumnIndex,
+  endColumnIndex,
   format,
+  merge,
+  mergeSpan,
 }: {
   sheetId: number;
   gridRow0: number;
-  columnCount: number;
-  format?: HeadingFormat | null;
+  startColumnIndex: number;
+  endColumnIndex: number;
+  format?: CellFormat | null;
+  merge?: MergeMode | null;
+  /**
+   * Columns the merge/unmerge covers, when that differs from the format band.
+   * Defaults to the format band — correct for a row that is not merged yet.
+   */
+  mergeSpan?: { startColumnIndex: number; endColumnIndex: number } | null;
 }): unknown[] {
-  const f = resolveHeadingFormat(format);
   const range = {
     sheetId,
     startRowIndex: gridRow0,
     endRowIndex: gridRow0 + 1,
-    startColumnIndex: 0,
-    // Exclusive bound — the full header width.
-    endColumnIndex: columnCount,
+    startColumnIndex,
+    endColumnIndex,
   };
+  const mergeRange = mergeSpan
+    ? {
+        sheetId,
+        startRowIndex: gridRow0,
+        endRowIndex: gridRow0 + 1,
+        startColumnIndex: mergeSpan.startColumnIndex,
+        endColumnIndex: mergeSpan.endColumnIndex,
+      }
+    : range;
 
-  const requests: unknown[] = [
-    {
+  const requests: unknown[] = [];
+
+  // `userEnteredFormat` and its mask are built together, key by key, so they can
+  // never disagree about which properties this request touches.
+  const cellFormat: Record<string, unknown> = {};
+  const textFormat: Record<string, unknown> = {};
+  const fields: string[] = [];
+  const f = format ?? {};
+
+  // Driven by the ONE field table in `sheet-style.ts`, not a hand-written chain
+  // per property. That is what makes `CELL_FORMAT_FIELDS`' promise true: adding
+  // a style property there is enough, and it cannot be accepted by the schema
+  // and offered by the dialog while the writer silently never sends it.
+  for (const spec of CELL_FORMAT_FIELDS) {
+    const value = f[spec.key];
+    if (value === undefined) continue;
+    const target = spec.group === "text" ? textFormat : cellFormat;
+    target[spec.api] = "color" in spec ? hexToRgb(value as string) : value;
+    fields.push(spec.group === "text" ? `textFormat.${spec.api}` : spec.api);
+  }
+
+  if (fields.length > 0) {
+    if (Object.keys(textFormat).length > 0) cellFormat.textFormat = textFormat;
+    requests.push({
       repeatCell: {
         range,
-        cell: {
-          userEnteredFormat: {
-            backgroundColor: hexToRgb(f.backgroundColor),
-            horizontalAlignment: f.align,
-            verticalAlignment: "MIDDLE",
-            textFormat: {
-              bold: f.bold,
-              italic: f.italic,
-              fontSize: f.fontSize,
-              foregroundColor: hexToRgb(f.textColor),
-            },
-          },
-        },
-        fields:
-          "userEnteredFormat(backgroundColor,horizontalAlignment,verticalAlignment,textFormat)",
+        cell: { userEnteredFormat: cellFormat },
+        // Dotted sub-paths are what let a PARTIAL textFormat through: naming
+        // `textFormat` alone would replace the whole object and wipe the
+        // properties this format left unset.
+        fields: `userEnteredFormat(${fields.join(",")})`,
       },
-    },
-  ];
+    });
+  }
 
-  if (columnCount > 1) {
-    requests.push({ mergeCells: { range, mergeType: "MERGE_ALL" } });
+  const mergeWidth = mergeRange.endColumnIndex - mergeRange.startColumnIndex;
+  if (merge === "merge" && mergeWidth > 1) {
+    requests.push({
+      mergeCells: { range: mergeRange, mergeType: "MERGE_ALL" },
+    });
+  } else if (merge === "unmerge" && mergeWidth > 1) {
+    // A one-cell range can hold no merge, so an unmerge over it is pure noise —
+    // and callers pass the row's real merged width here, so a width of 1 means
+    // "this row isn't merged" rather than "unmerge just this cell".
+    requests.push({ unmergeCells: { range: mergeRange } });
   }
 
   return requests;

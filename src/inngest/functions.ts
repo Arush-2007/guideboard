@@ -18,14 +18,14 @@ import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
 import {
   getSheetGrid,
-  headingDataRows,
+  mergedDataRows,
   SHEETS_READ,
   sheetRange,
 } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
-import type { RowScope } from "@/lib/sheet-heading";
+import type { RowScope } from "@/lib/sheets-trigger-options";
 import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
@@ -947,10 +947,10 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           sheetName: poll.sheetName,
           includeMerges: true,
         });
-        // `headingDataRows` keys by DATA-row index (header excluded), while this
+        // `mergedDataRows` keys by DATA-row index (header excluded), while this
         // poller indexes `rows` from the header at 0. Off by exactly one, and
         // silently wrong if conflated — convert once, here.
-        for (const dataRow of headingDataRows(grid.merges).keys()) {
+        for (const dataRow of mergedDataRows(grid.merges).keys()) {
           headingRows.add(dataRow + 1);
         }
       }
