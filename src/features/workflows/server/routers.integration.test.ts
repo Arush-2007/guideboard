@@ -195,6 +195,134 @@ describe("workflows.generateFromPrompt", () => {
 
     expect(await prisma.workflow.count()).toBe(0);
   });
+
+  it("strips a generated reference to a step that can't reach it, and reports it", async () => {
+    // The model wired SLACK under the trigger but had it pull from an AI node
+    // on a different branch. Left alone that renders to "" at run time, and a
+    // poll or webhook can fire this workflow before anyone opens the editor.
+    mockAnthropic(
+      JSON.stringify({
+        name: "Misrouted",
+        nodes: [
+          {
+            id: "n1",
+            type: "MANUAL_TRIGGER",
+            position: { x: 0, y: 0 },
+            data: {},
+          },
+          {
+            id: "n2",
+            type: "AI_TEXT",
+            position: { x: 200, y: 0 },
+            data: { prompt: "summarize" },
+          },
+          {
+            id: "n3",
+            type: "SLACK",
+            position: { x: 400, y: 0 },
+            data: { message: "Result: @<AI_TEXT_1.output>@" },
+          },
+        ],
+        // n2 is a SIBLING of n3, not upstream of it.
+        edges: [
+          { id: "e1", source: "n1", target: "n2" },
+          { id: "e2", source: "n1", target: "n3" },
+        ],
+      }),
+    );
+
+    const { danglingRefs } = await caller.workflows.generateFromPrompt({
+      prompt: "misroute it",
+    });
+
+    expect(danglingRefs).toHaveLength(1);
+    expect(danglingRefs[0]).toMatchObject({
+      nodeId: "n3",
+      refs: [{ ref: "AI_TEXT_1", field: "message" }],
+    });
+
+    // The workflow still exists — the build succeeded — but the dead token is
+    // gone, so the field is empty rather than silently rendering blank.
+    const slack = await prisma.node.findUniqueOrThrow({ where: { id: "n3" } });
+    expect((slack.data as { message: string }).message).toBe("Result: ");
+  });
+
+  it("leaves a correctly wired generated reference intact", async () => {
+    mockAnthropic(
+      JSON.stringify({
+        name: "Wired right",
+        nodes: [
+          {
+            id: "n1",
+            type: "MANUAL_TRIGGER",
+            position: { x: 0, y: 0 },
+            data: {},
+          },
+          {
+            id: "n2",
+            type: "AI_TEXT",
+            position: { x: 200, y: 0 },
+            data: { prompt: "summarize" },
+          },
+          {
+            id: "n3",
+            type: "SLACK",
+            position: { x: 400, y: 0 },
+            data: { message: "Result: @<AI_TEXT_1.output>@" },
+          },
+        ],
+        edges: [
+          { id: "e1", source: "n1", target: "n2" },
+          { id: "e2", source: "n2", target: "n3" },
+        ],
+      }),
+    );
+
+    const { danglingRefs } = await caller.workflows.generateFromPrompt({
+      prompt: "wire it right",
+    });
+
+    expect(danglingRefs).toEqual([]);
+    const slack = await prisma.node.findUniqueOrThrow({ where: { id: "n3" } });
+    expect((slack.data as { message: string }).message).toBe(
+      "Result: @<AI_TEXT_1.output>@",
+    );
+  });
+
+  it("keeps positions and refs through the strip pass", async () => {
+    // The check round-trips node data, so the fields it does NOT carry
+    // (position) and the one it moves in and out of `data` (ref) are the two
+    // things that could be dropped on the way to the row.
+    mockAnthropic(
+      JSON.stringify({
+        name: "Positions",
+        nodes: [
+          {
+            id: "n1",
+            type: "MANUAL_TRIGGER",
+            position: { x: 11, y: 22 },
+            data: {},
+          },
+          {
+            id: "n2",
+            type: "SLACK",
+            position: { x: 333, y: 444 },
+            data: { message: "@<GHOST_1.output>@" },
+          },
+        ],
+        edges: [{ id: "e1", source: "n1", target: "n2" }],
+      }),
+    );
+
+    await caller.workflows.generateFromPrompt({ prompt: "positions" });
+
+    const slack = await prisma.node.findUniqueOrThrow({ where: { id: "n2" } });
+    expect(slack.position).toEqual({ x: 333, y: 444 });
+    expect(slack.ref).toBe("SLACK_1");
+    // The ref lives in the column, never the blob — the strip pass must not
+    // reintroduce the copy it needed for the check.
+    expect(slack.data).not.toHaveProperty("ref");
+  });
 });
 
 describe("workflows.update", () => {

@@ -3,7 +3,12 @@ import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
 import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
-import { NodeType } from "@/generated/prisma";
+import { NodeType, type Prisma } from "@/generated/prisma";
+import {
+  findDanglingRefsByNode,
+  type NodeDanglingRefs,
+  stripDanglingRefsInNodes,
+} from "@/lib/dangling-refs";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
 import {
@@ -129,58 +134,118 @@ export function validateGeneratedWorkflowGraph(
   assertNoEdgeIntoTrigger(nodes, edges);
 }
 
+/** A generated node ready for `Node.createMany`, bar its `workflowId`. */
+type GeneratedNodeRow = {
+  id: string;
+  name: string;
+  type: NodeType;
+  ref: string | null;
+  position: { x: number; y: number };
+  data: Prisma.InputJsonObject;
+};
+
+/**
+ * Turns a generated graph into node rows: assigns refs, rewrites the references
+ * the model wrote, then detects and strips the ones that dangle.
+ *
+ * Pure, and separate from the transaction, because the ORDER of those three
+ * steps is the whole correctness argument and belongs somewhere it can be
+ * tested without a database:
+ *
+ *   1. Assign refs. Shared with `workflows.update` via `resolveNodeRefs` rather
+ *      than re-derived — `@@unique([workflowId, ref])` has exactly two write
+ *      paths and both go through one door. A generated node carries no
+ *      `data.ref` today so every ref is minted, but if the model ever emits one
+ *      it is deduped instead of aborting the transaction on a constraint error.
+ *   2. Rewrite legacy `<type>_<id>` references to those refs.
+ *   3. Only now check for dangling references. Checking BEFORE the rewrite
+ *      would condemn the whole graph: a legacy key names something no node
+ *      publishes under that name any more. The ref also has to be put back onto
+ *      `data` for the check — that is where `readNodeRef` looks when working out
+ *      what each node publishes — and stripped again on the way to the column,
+ *      which owns it.
+ */
+export function prepareGeneratedNodes(parsed: GeneratedWorkflow): {
+  rows: GeneratedNodeRow[];
+  danglingRefs: NodeDanglingRefs[];
+} {
+  const { refByNodeId } = resolveNodeRefs(parsed.nodes);
+
+  const legacyKeyToRef = new Map<string, string>();
+  for (const node of parsed.nodes) {
+    const ref = refByNodeId.get(node.id);
+    if (ref) legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
+  }
+
+  const checkable = parsed.nodes.map((node) => {
+    const ref = refByNodeId.get(node.id) ?? null;
+    const data = JSON.parse(
+      rewriteRefsInJson(
+        JSON.stringify(stripRefFromData(node.data)),
+        legacyKeyToRef,
+      ),
+    ) as Record<string, unknown>;
+    return {
+      id: node.id,
+      type: node.type,
+      position: node.position,
+      // The ref rides in `data` for the check only; the column owns it.
+      data: { ...data, ref },
+    };
+  });
+
+  const danglingRefs = findDanglingRefsByNode(checkable, parsed.edges);
+  const cleaned = stripDanglingRefsInNodes(checkable, danglingRefs);
+
+  return {
+    danglingRefs,
+    rows: cleaned.map((node) => ({
+      id: node.id,
+      name: node.type,
+      type: node.type as NodeType,
+      ref: refByNodeId.get(node.id) ?? null,
+      position: node.position,
+      // Same invariant as `workflows.update`: the ref lives in the column, not
+      // the blob, so it can't drift from it. The cast is safe by construction —
+      // this blob round-tripped through JSON above.
+      data: stripRefFromData(node.data) as Prisma.InputJsonObject,
+    })),
+  };
+}
+
 /**
  * Persists a validated generated workflow (workflow + nodes + connections) in
- * a single transaction, then syncs its trigger poll rows. Returns the new
- * workflow id.
+ * a single transaction, then syncs its trigger poll rows.
+ *
+ * Returns the new workflow id, plus any DANGLING references the generated graph
+ * held — config naming a step that cannot reach it. The AI builder's prompt
+ * actively teaches the model `@<REF.path>@`, so it can and does wire a
+ * referencing node under the wrong parent; unlike an editor save, nothing human
+ * is looking at the canvas here, and a webhook or poll trigger can fire the
+ * workflow before anyone opens it.
+ *
+ * They are STRIPPED rather than kept. A dead token renders to the empty string,
+ * so the run would succeed and quietly write blanks; an empty REQUIRED field
+ * fails the node's schema at `parseNodeConfig`, so the run stops loudly instead.
+ * Callers surface the returned list — see the conversational router, which names
+ * the cleared fields in its reply.
  */
 export async function persistGeneratedWorkflow(
   userId: string,
   parsed: GeneratedWorkflow,
-): Promise<{ workflowId: string }> {
+): Promise<{ workflowId: string; danglingRefs: NodeDanglingRefs[] }> {
+  let danglingRefs: NodeDanglingRefs[] = [];
+
+  const { rows, danglingRefs: found } = prepareGeneratedNodes(parsed);
+  danglingRefs = found;
+
   const workflow = await prisma.$transaction(async (tx) => {
     const wf = await tx.workflow.create({
       data: { name: parsed.name, userId },
     });
 
-    // Assign a frozen ref to each ref-eligible node, then rewrite any legacy
-    // `<type>_<id>` references the model emitted to the new refs, so generated
-    // references resolve against the ref-keyed context.
-    //
-    // Shares `resolveNodeRefs` with `workflows.update` rather than re-deriving
-    // the numbering here: `@@unique([workflowId, ref])` has exactly two write
-    // paths and both go through one door, the same way `assertNoEdgeIntoTrigger`
-    // guards the edge invariant for both. A generated node carries no `data.ref`
-    // today so every ref is minted, but if the model ever emits one it is now
-    // deduped instead of aborting the transaction on a constraint error.
-    const { refByNodeId: nodeRefById } = resolveNodeRefs(parsed.nodes);
-
-    const legacyKeyToRef = new Map<string, string>();
-    for (const node of parsed.nodes) {
-      const ref = nodeRefById.get(node.id);
-      if (ref) {
-        legacyKeyToRef.set(legacyOutputKey(node.type, node.id), ref);
-      }
-    }
-
     await tx.node.createMany({
-      data: parsed.nodes.map((node) => ({
-        id: node.id,
-        workflowId: wf.id,
-        name: node.type,
-        type: node.type as NodeType,
-        ref: nodeRefById.get(node.id) ?? null,
-        position: node.position,
-        // Same invariant as `workflows.update`: the ref lives in the column, not
-        // the blob. `stripRefFromData` is a no-op for the model's own output
-        // today, but keeps both write paths enforcing it identically.
-        data: JSON.parse(
-          rewriteRefsInJson(
-            JSON.stringify(stripRefFromData(node.data)),
-            legacyKeyToRef,
-          ),
-        ),
-      })),
+      data: rows.map((row) => ({ ...row, workflowId: wf.id })),
     });
 
     if (parsed.edges.length > 0) {
@@ -200,7 +265,7 @@ export async function persistGeneratedWorkflow(
 
   await syncTriggerPollsForWorkflow(userId, workflow.id, parsed.nodes);
 
-  return { workflowId: workflow.id };
+  return { workflowId: workflow.id, danglingRefs };
 }
 
 /** Node shape needed for poll syncing — works for both generated and edited nodes. */
