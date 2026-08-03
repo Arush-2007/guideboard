@@ -272,7 +272,15 @@ export const MAX_SEGMENT_NODES = Math.min(
  * the inference and there is nothing to run inline.
  */
 const inlineStep = {
-  run: async (_id: string, fn: () => unknown) => fn(),
+  // Trailing input is forwarded, matching `flushingStep` and real `step.run`.
+  // Dropping it would hand an executor `undefined` for arguments it declared,
+  // and only when its node happened to be batched — a failure that appears in
+  // the hardest place to attribute it.
+  run: async (
+    _id: string,
+    fn: (...input: unknown[]) => unknown,
+    ...input: unknown[]
+  ) => fn(...input),
   ai: {
     wrap: async (
       _id: string,
