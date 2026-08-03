@@ -64,9 +64,12 @@ export type NodeOutputDescriptor =
 // so the retired `insert_row_adjacent` action is normalized here too (mirroring
 // coerceLegacySheetsAction in node-schemas.ts), or a node saved before the merge
 // would lose its output fields until re-saved.
-const isLegacyInsert = (data: Record<string, unknown> | null | undefined) =>
-  (data?.action as string | undefined) === "insert_row_adjacent";
-const sheetsAction = (data: Record<string, unknown> | null | undefined) =>
+export const isLegacyInsert = (
+  data: Record<string, unknown> | null | undefined,
+) => (data?.action as string | undefined) === "insert_row_adjacent";
+export const sheetsAction = (
+  data: Record<string, unknown> | null | undefined,
+) =>
   isLegacyInsert(data)
     ? "append_row"
     : ((data?.action as string | undefined) ?? "append_row");
@@ -89,7 +92,7 @@ const isSheetsStyledAppend = (
 // group/anchor fields a plain bottom append does not. A legacy insert node was
 // ALWAYS an under-append (either insertUnder value), so it qualifies regardless
 // of `position`, which it predates.
-const isSheetsAppendUnder = (
+export const isSheetsAppendUnder = (
   data: Record<string, unknown> | null | undefined,
 ) =>
   isLegacyInsert(data) ||

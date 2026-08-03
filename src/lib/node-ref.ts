@@ -358,6 +358,33 @@ function mapRefTokens(
   });
 }
 
+/** One `@<path>@` token, split the way the rewriters split it. */
+export type RefToken = {
+  /** The producing node's ref — the path's first dot-segment (`AI_TEXT_1`). */
+  ref: string;
+  /** The whole path as written (`AI_TEXT_1.output`), rest of the path intact. */
+  path: string;
+};
+
+/**
+ * Every `@<path>@` token in a template, in order — the READ-ONLY member of the
+ * `mapRefTokens` family.
+ *
+ * Shares that walk with the two rewriters rather than re-matching the tokens
+ * itself, so "the first dot-segment identifies the producing node" is asserted in
+ * exactly one place. A reader that disagreed with the rewriters about which part
+ * of a path is the ref would report one reference as dead and then strip a
+ * different one. The mapped string is discarded; only the visit matters.
+ */
+export function refTokensIn(template: string): RefToken[] {
+  const tokens: RefToken[] = [];
+  mapRefTokens(template, (first, rest) => {
+    if (first) tokens.push({ ref: first, path: [first, ...rest].join(".") });
+    return null;
+  });
+  return tokens;
+}
+
 /**
  * Rewrites `@<oldRef>@` / `@<oldRef.path>@` placeholders in a single template
  * string to use `newRef`, preserving the rest of the path verbatim.
@@ -377,12 +404,33 @@ export function renameRefInTemplate(
  * whole token with the empty string). Used when the producing nodes are deleted:
  * the reference is already dead, and blanking it stops a later node that reclaims
  * the same ref number from silently inheriting the dangling reference.
+ *
+ * Removes by REF, so it takes out every value of that step at once. That is
+ * right for a deleted node and wrong for anything narrower — see
+ * {@link removePathsInTemplate}.
  */
 export function removeRefsInTemplate(
   template: string,
   refs: ReadonlySet<string>,
 ): string {
   return mapRefTokens(template, (first) => (refs.has(first) ? "" : null));
+}
+
+/**
+ * Removes every `@<path>@` placeholder whose WHOLE path is in `paths`.
+ *
+ * The narrow counterpart to {@link removeRefsInTemplate}: a step can be
+ * perfectly reachable and still have one value go missing (a renamed sheet
+ * column), so blanking every token that merely shares its ref would destroy the
+ * fields that still work. What is removed has to be exactly what was reported.
+ */
+export function removePathsInTemplate(
+  template: string,
+  paths: ReadonlySet<string>,
+): string {
+  return mapRefTokens(template, (first, rest) =>
+    paths.has([first, ...rest].join(".")) ? "" : null,
+  );
 }
 
 /**
