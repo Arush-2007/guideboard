@@ -4,9 +4,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { createId } from "@paralleldrive/cuid2";
 import { useQuery } from "@tanstack/react-query";
 import { useReactFlow } from "@xyflow/react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { useDanglingRefGuard } from "@/components/dangling-ref-guard";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { FieldMapping } from "@/components/field-mapping";
 import {
@@ -754,20 +755,26 @@ export const GoogleSheetsActionDialog = ({
   // picker group, so a column can be filled from the row above it. It is not an
   // upstream node's output, so it can't come from getUpstreamFields — hence the
   // picker's `extraGroups` seam.
-  const anchorGroups: PickerExtraGroup[] =
-    headers.length > 0
-      ? [
-          {
-            // The picker heads the panel with this group's name, so each field
-            // is just the column — no "(row above)" suffix repeating it.
-            label: "Row above",
-            fields: headers.map((h) => ({
-              fieldLabel: h,
-              insertText: `@<${anchorRowPath(h)}>@`,
-            })),
-          },
-        ]
-      : [];
+  // Memoized because this is handed to every mapped column's picker as a prop,
+  // and a fresh array each render would defeat their source-list memos on every
+  // keystroke in this dialog — of which there are dozens open at once.
+  const anchorGroups: PickerExtraGroup[] = useMemo(
+    () =>
+      headers.length > 0
+        ? [
+            {
+              // The picker heads the panel with this group's name, so each field
+              // is just the column — no "(row above)" suffix repeating it.
+              label: "Row above",
+              fields: headers.map((h) => {
+                const path = anchorRowPath(h);
+                return { fieldLabel: h, path, insertText: `@<${path}>@` };
+              }),
+            },
+          ]
+        : [],
+    [headers],
+  );
 
   // A column is "required" when its "may be blank" toggle is off.
   const setRequired = (header: string, required: boolean) => {
@@ -866,6 +873,16 @@ export const GoogleSheetsActionDialog = ({
     onOpenChange(false);
   };
 
+  // Guards the raw FORM VALUES — `form.handleSubmit(guard.save)` runs the guard
+  // first and `handleSubmit` (which builds the payload) only once it passes.
+  //
+  // ⚠️ That makes one agreement load-bearing: this dialog deletes the keys the
+  // chosen action doesn't use from the payload, and `inactiveFieldsForNode`
+  // (config/node-references.ts) skips the SAME keys during the check. The guard
+  // sees them still present, so if the two lists drift the check will warn about
+  // a field this dialog is about to drop. Change them together.
+  const guard = useDanglingRefGuard({ currentNodeId, onSave: handleSubmit });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -877,7 +894,7 @@ export const GoogleSheetsActionDialog = ({
         </DialogHeader>
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(handleSubmit)}
+            onSubmit={form.handleSubmit(guard.save)}
             className="mt-4 space-y-6"
           >
             <FormField
@@ -1649,6 +1666,7 @@ export const GoogleSheetsActionDialog = ({
             </DialogFooter>
           </form>
         </Form>
+        {guard.dialog}
       </DialogContent>
     </Dialog>
   );

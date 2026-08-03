@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { useDanglingRefGuard } from "@/components/dangling-ref-guard";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
@@ -97,6 +98,8 @@ export const AtsActionDialog = ({
     onOpenChange(false);
   };
 
+  const guard = useDanglingRefGuard({ currentNodeId, onSave: handleSubmit });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh]">
@@ -109,7 +112,7 @@ export const AtsActionDialog = ({
         </DialogHeader>
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(handleSubmit)}
+            onSubmit={form.handleSubmit(guard.save)}
             className="mt-4 space-y-5"
           >
             <div className="grid grid-cols-2 gap-4">
@@ -324,6 +327,7 @@ export const AtsActionDialog = ({
             </DialogFooter>
           </form>
         </Form>
+        {guard.dialog}
       </DialogContent>
     </Dialog>
   );

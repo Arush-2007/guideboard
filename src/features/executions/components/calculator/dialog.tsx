@@ -5,6 +5,7 @@ import { Delete } from "lucide-react";
 import { useEffect, useMemo, useRef } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { useDanglingRefGuard } from "@/components/dangling-ref-guard";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
@@ -251,6 +252,8 @@ export const CalculatorDialog = ({
     onOpenChange(false);
   };
 
+  const guard = useDanglingRefGuard({ currentNodeId, onSave: handleSubmit });
+
   // `min-w-0 px-1` for the same reason as the function row: a `whitespace-nowrap`
   // Button at default `px-4` cannot shrink inside its grid cell.
   const keyClass = "h-12 min-w-0 px-1 text-base font-medium";
@@ -268,7 +271,7 @@ export const CalculatorDialog = ({
 
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(handleSubmit)}
+            onSubmit={form.handleSubmit(guard.save)}
             /* `min-w-0` is load-bearing. DialogContent's scroll wrapper is a
                `grid`, whose auto column takes its minimum from this item's
                min-content width. Left at the default `min-width: auto`, this
@@ -459,6 +462,12 @@ export const CalculatorDialog = ({
                 onSelect={(token) => insert(token, trigger.takeTrigger())}
                 open={trigger.pickerOpen}
                 onOpenChange={trigger.handlePickerOpenChange}
+                // The expression display takes `@<` like any other field, so
+                // typing narrows this panel too. No `attachedTo`: the picker is
+                // a KEY on the keypad here, and the display it filters for is a
+                // separate control — so it keeps its button, and the keyboard
+                // stays with the display.
+                query={trigger.query}
                 className={cn(keyClass, "size-full")}
               />
               <Button
@@ -485,6 +494,7 @@ export const CalculatorDialog = ({
             </DialogFooter>
           </form>
         </Form>
+        {guard.dialog}
       </DialogContent>
     </Dialog>
   );
