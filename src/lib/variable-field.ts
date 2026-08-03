@@ -13,33 +13,90 @@ import { PLACEHOLDER_RE } from "@/lib/template-token";
  */
 export const PICKER_TRIGGER = "@<";
 
-export type TriggerRange = { start: number; end: number };
+export type TriggerRange = {
+  start: number;
+  end: number;
+  /**
+   * What has been typed since the `@<`, which the picker narrows itself by.
+   * Empty the instant the trigger is typed, and it grows as the user keeps
+   * going: `@<OG_S` carries "OG_S".
+   */
+  query: string;
+};
 
 /**
- * The range of a `@<` sitting immediately before the caret, or null.
+ * Characters that end the search for an unfinished reference.
  *
- * Deliberately anchored to the caret rather than searching the whole value: an
- * already-written `@<AI_TEXT_1.output>@` further along the line is a finished
- * token, not an invitation to open the picker.
+ * `>` and `@` are the token's own closing punctuation — past either of them the
+ * reference is finished, not being typed.
+ *
+ * WHITESPACE ends it too, and that is the rule that keeps an abandoned `@<` from
+ * claiming the rest of the sentence. Because the search runs BACKWARDS from the
+ * caret, without it "Hi @< team" reads as a live query of " team": the panel
+ * would go on filtering while the user writes prose, ↑/↓/Enter would stay
+ * captured (so a textarea would stop accepting newlines), and a pick would
+ * overwrite from the stray `@<` onwards — deleting the words typed after it.
+ *
+ * A path may legitimately CONTAIN a space (`anchorRow.Job No` — `sanitizeHeaderKey`
+ * strips only dots), and this does not stop such a field being reached: matching
+ * normalizes separators away, so `jobno` and `job` both still find `Job No`. The
+ * user never has to type the space, and typing one means they have moved on.
+ */
+const NOT_IN_PATH = /[>@\s]/;
+
+/**
+ * The unfinished `@<…` the caret currently sits inside, with everything typed
+ * since it, or null.
+ *
+ * Anchored to the caret rather than searching the whole value: an already-written
+ * `@<AI_TEXT_1.output>@` further along the line is a finished token, not an
+ * invitation to open the picker. `end` is the caret, so the range covers the
+ * `@<` AND the query — which is what a pick must replace. Replacing only the two
+ * trigger characters would leave the half-typed name behind
+ * (`@<og_s@<OG_Sheets.Job No>@`).
  */
 export function triggerRangeBefore(
   value: string,
   caret: number | null | undefined,
 ): TriggerRange | null {
   if (caret == null || caret < PICKER_TRIGGER.length) return null;
-  const start = caret - PICKER_TRIGGER.length;
-  return value.slice(start, caret) === PICKER_TRIGGER
-    ? { start, end: caret }
-    : null;
+  // Searching BACKWARDS from the caret finds the nearest opener, so a second
+  // reference being typed after a finished one attaches to its own `@<`.
+  const start = value.lastIndexOf(
+    PICKER_TRIGGER,
+    caret - PICKER_TRIGGER.length,
+  );
+  if (start < 0) return null;
+  const query = value.slice(start + PICKER_TRIGGER.length, caret);
+  if (NOT_IN_PATH.test(query)) return null;
+  return { start, end: caret, query };
+}
+
+/** Whether a recorded trigger still describes an unfinished `@<…` in `value`. */
+function stillOpenIn(
+  value: string,
+  trigger: TriggerRange | null,
+): trigger is TriggerRange {
+  if (trigger === null || trigger.end > value.length) return false;
+  const opener = value.slice(
+    trigger.start,
+    trigger.start + PICKER_TRIGGER.length,
+  );
+  if (opener !== PICKER_TRIGGER) return false;
+  const query = value.slice(trigger.start + PICKER_TRIGGER.length, trigger.end);
+  return !NOT_IN_PATH.test(query);
 }
 
 /**
  * Writes a picked token into a value, and says where the caret lands.
  *
- * A pick lands in one of two places: over the `@<` that summoned the picker, or
- * at the caret when the picker was opened from its button. The trigger is
- * re-checked rather than trusted — the value can have moved on since it was
- * recorded, and replacing the wrong two characters would eat the user's text.
+ * A pick lands in one of two places: over the whole `@<…` being typed, or at the
+ * caret when the picker was opened from its button. The trigger is re-checked
+ * against the CURRENT value rather than trusted — it was recorded on an earlier
+ * keystroke, and a range that no longer holds what it claims would eat the
+ * user's text. Re-deriving it from the recorded `start` (rather than comparing
+ * the whole slice) is what lets the range legitimately cover a query that has
+ * grown since.
  */
 export function applyPickedToken(
   value: string,
@@ -47,10 +104,7 @@ export function applyPickedToken(
   selection: { start: number; end: number },
   trigger: TriggerRange | null,
 ): { value: string; caret: number } {
-  const range =
-    trigger && value.slice(trigger.start, trigger.end) === PICKER_TRIGGER
-      ? trigger
-      : selection;
+  const range = stillOpenIn(value, trigger) ? trigger : selection;
   return {
     value: value.slice(0, range.start) + token + value.slice(range.end),
     caret: range.start + token.length,

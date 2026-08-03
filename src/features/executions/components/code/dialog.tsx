@@ -1,7 +1,7 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
 import { EditableNodeTitle } from "@/components/editable-node-title";
@@ -68,6 +68,14 @@ export const CodeDialog = ({
   });
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // The editor and its picker, as one region: clicks inside it (including
+  // dragging the textarea's resize handle) must not dismiss the panel.
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  // Writing code is writing a value like any other field, so the panel comes up
+  // on focus here too. It can't ride on `useVariableField` like the other
+  // fields: this control holds JavaScript, so the picker runs in `bare` mode and
+  // every pick goes through `insertVariable` below to become `input.<path>`.
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     if (open) {
@@ -124,48 +132,51 @@ export const CodeDialog = ({
             onSubmit={form.handleSubmit(handleSubmit)}
             className="mt-4 min-w-0 space-y-4"
           >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground text-sm">
-                Insert a value from an earlier step:
-              </span>
-              {/* `bare` so the picker yields a dotted path we turn into
-                  `input.<path>`, rather than a `@<path>@` template token that
-                  would be invalid inside JavaScript. */}
-              <VariablePicker
-                currentNodeId={currentNodeId}
-                workflowId={workflowId}
-                currentValue={code}
-                onSelect={insertVariable}
-                bare
-              />
-            </div>
-
             <FormField
               control={form.control}
               name="code"
               render={({ field }) => (
                 <FormItem className="min-w-0">
-                  <FormControl>
-                    <Textarea
-                      {...field}
-                      ref={(el) => {
-                        field.ref(el);
-                        textareaRef.current = el;
-                      }}
-                      placeholder={EXAMPLE_CODE}
-                      autoComplete="off"
-                      autoCorrect="off"
-                      autoCapitalize="off"
-                      spellCheck={false}
-                      rows={12}
-                      className={cn(
-                        "min-h-[16rem] resize-y font-mono text-sm",
-                        // Long lines scroll inside the box instead of widening
-                        // the dialog.
-                        "whitespace-pre overflow-auto",
-                      )}
+                  {/* The wrapper sits OUTSIDE <FormControl> so the control's
+                      aria wiring still lands on the textarea itself rather than
+                      on a div. */}
+                  <div ref={editorRef} className="min-w-0">
+                    <FormControl>
+                      <Textarea
+                        {...field}
+                        ref={(el) => {
+                          field.ref(el);
+                          textareaRef.current = el;
+                        }}
+                        onFocus={() => setPickerOpen(true)}
+                        placeholder={EXAMPLE_CODE}
+                        autoComplete="off"
+                        autoCorrect="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
+                        rows={12}
+                        className={cn(
+                          "min-h-[16rem] resize-y font-mono text-sm",
+                          // Long lines scroll inside the box instead of widening
+                          // the dialog.
+                          "whitespace-pre overflow-auto",
+                        )}
+                      />
+                    </FormControl>
+                    {/* `bare` so the picker yields a dotted path we turn into
+                        `input.<path>`, rather than a `@<path>@` template token
+                        that would be invalid inside JavaScript. */}
+                    <VariablePicker
+                      currentNodeId={currentNodeId}
+                      workflowId={workflowId}
+                      currentValue={code}
+                      onSelect={insertVariable}
+                      open={pickerOpen}
+                      onOpenChange={setPickerOpen}
+                      attachedTo={editorRef}
+                      bare
                     />
-                  </FormControl>
+                  </div>
                   <FormMessage />
                 </FormItem>
               )}
