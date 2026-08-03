@@ -41,8 +41,12 @@ export const NavGuardDialog = ({ workflowId }: { workflowId: string }) => {
   const handleSaveAndLeave = async () => {
     setIsSaving(true);
     try {
-      await save();
-      go();
+      // Navigate only on a save that actually happened. `save()` resolves
+      // `false` when the user backs out of the dangling-reference warning it
+      // now raises — treating that as success would push the route anyway and
+      // discard every unsaved change, which is the exact outcome this dialog
+      // exists to prevent.
+      if (await save()) go();
     } catch {
       // Save failed (a toast is already shown by the mutation). Keep the dialog
       // open so the user doesn't lose work by navigating away on a failed save.
