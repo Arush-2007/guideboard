@@ -44,6 +44,7 @@ import {
   remainingAfter,
   resolveChainSeed,
 } from "./fan-out";
+import { resolveWorkflowRetries } from "./retry-policy";
 import {
   type FanOutDispatcher,
   type NodeRecorder,
@@ -484,7 +485,10 @@ async function sendWorkflowFailureEmail({
 export const executeWorkflow = inngest.createFunction(
   {
     id: "execute-workflow",
-    retries: process.env.NODE_ENV === "production" ? 3 : 0,
+    // Dev retries once rather than not at all — see `resolveWorkflowRetries`
+    // for why zero made every transient network fault look like a workflow bug.
+    // Override with INNGEST_RETRIES.
+    retries: resolveWorkflowRetries(),
     // Serialize runs of the same workflow: at most one execution in flight per
     // workflowId. Stops same-workflow triggers (e.g. a form submission and a
     // hand-edit) from interleaving and racing on shared external state, and
