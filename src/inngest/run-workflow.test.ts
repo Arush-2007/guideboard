@@ -48,6 +48,7 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
         return fanOut(
           { ...context, [outputKey]: { fannedOut: items.length } },
           items,
+          data?.onItemFailure as "continue" | "stop" | undefined,
         );
       }
       if (data?.rewriteSeed) {
@@ -323,6 +324,7 @@ const collectDispatcher = (opts?: { reject?: boolean }) => {
     outputKey: string;
     context: WorkflowContext;
     items: unknown[];
+    onItemFailure?: "continue" | "stop";
   }[] = [];
   return {
     dispatcher: {
@@ -331,6 +333,7 @@ const collectDispatcher = (opts?: { reject?: boolean }) => {
         outputKey: string;
         context: WorkflowContext;
         items: unknown[];
+        onItemFailure?: "continue" | "stop";
       }) => {
         calls.push(args);
         if (opts?.reject) throw new Error("dispatch boom");
@@ -375,6 +378,49 @@ describe("runWorkflowNodes fan-out", () => {
 
     // Run resolves with the fan-out node's context (its own summary output set).
     expect(result.ai_text_fan).toEqual({ fannedOut: 2 });
+  });
+
+  it("passes the node's item-failure policy through to the dispatcher", async () => {
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("trigger"),
+        node("fan", { fanOut: [{ x: 1 }], onItemFailure: "stop" }),
+      ],
+      connections: [edge("trigger", "fan")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    // The engine never re-reads node config to decide what a failed item does —
+    // the executor resolved it and the outcome carries it here.
+    expect(calls[0].onItemFailure).toBe("stop");
+  });
+
+  it("leaves the policy undefined when the node does not set one", async () => {
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    await runWorkflowNodes({
+      sortedNodes: [trigger("trigger"), node("fan", { fanOut: [{ x: 1 }] })],
+      connections: [edge("trigger", "fan")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    // Undefined, not "continue" — the default is applied once, by the real
+    // dispatcher, so there is a single owner of it.
+    expect(calls[0].onItemFailure).toBeUndefined();
   });
 
   it("throws (and records the node FAILED) when no dispatcher is wired in", async () => {

@@ -3,6 +3,7 @@ import { fanOut, type WorkflowContext } from "@/features/executions/types";
 import { isFanOutItem } from "@/inngest/fan-out";
 import {
   DEFAULT_MAX_FAN_OUT_ITEMS,
+  type MultiMatchConfig,
   type MultiMatchMode,
 } from "@/lib/multi-match";
 
@@ -69,8 +70,8 @@ export function assertNoForeignFanOut(
  * plain "s" (e.g. "row").
  */
 export function applyMultiMatchPolicy({
+  config,
   mode,
-  maxItems,
   items,
   totalCount,
   context,
@@ -78,8 +79,20 @@ export function applyMultiMatchPolicy({
   output,
   itemNoun = "item",
 }: {
-  mode: MultiMatchMode | undefined;
-  maxItems: number | undefined;
+  /**
+   * The node's multi-match config slice, passed WHOLE rather than destructured
+   * into scalar arguments. That is what keeps a new fan-out setting a change to
+   * `multiMatchConfigFields` alone: spreading the fields out meant adding
+   * `onItemFailure` required an identical edit at every call site in every
+   * fan-out executor, and missing one silently fell back to the default.
+   */
+  config: MultiMatchConfig;
+  /**
+   * Overrides `config.onMultipleMatches` for a node whose mode is implied by
+   * another field rather than chosen — the Sheets "insert under each match"
+   * append is always "each". Omit to use the config's own mode.
+   */
+  mode?: MultiMatchMode;
   items: unknown[];
   /**
    * True match count when `items` is a truncated view (e.g. the Sheets node
@@ -92,7 +105,8 @@ export function applyMultiMatchPolicy({
   output: Record<string, unknown>;
   itemNoun?: string;
 }) {
-  const resolvedMode: MultiMatchMode = mode ?? "first";
+  const resolvedMode: MultiMatchMode =
+    mode ?? config.onMultipleMatches ?? "first";
 
   const trueCount = totalCount ?? items.length;
   if (resolvedMode === "error" && trueCount > 1) {
@@ -105,13 +119,14 @@ export function applyMultiMatchPolicy({
 
   if (resolvedMode === "each") {
     assertNoForeignFanOut(context, outputKey);
-    assertFanOutCap(items.length, maxItems, itemNoun);
+    assertFanOutCap(items.length, config.maxFanOutItems, itemNoun);
 
     // Zero items fans out zero children — the engine activates no outgoing
     // edge, so everything after this node is recorded SKIPPED in this run.
     return fanOut(
       { ...context, [outputKey]: { ...output, fannedOut: items.length } },
       items,
+      config.onItemFailure,
     );
   }
 

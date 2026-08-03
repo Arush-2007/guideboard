@@ -36,7 +36,7 @@ import {
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import {
   MAX_FAN_OUT_ITEMS_LIMIT,
-  type MultiMatchMode,
+  type MultiMatchConfig,
   readFanOutSeed,
   selectSingleMatch,
 } from "@/lib/multi-match";
@@ -113,12 +113,10 @@ type GoogleSheetsActionData = {
   // write case requires at least one. A condition may name MERGED_ROW_COLUMN to
   // select rows whose cells are joined.
   conditions?: RowMatchCondition[];
-  // Multi-match policy for find_rows / update_row (see src/lib/multi-match.ts).
-  // A non-bottom append has none — for it, several matches are a GROUP, not
-  // candidates to choose between, so `position` decides where the row lands
-  // instead. It still honours the fan-out cap in "under_each" mode.
-  onMultipleMatches?: MultiMatchMode;
-  maxFanOutItems?: number;
+  // NOTE: the multi-match keys (onMultipleMatches / maxFanOutItems /
+  // onItemFailure) are NOT listed here — they arrive via the
+  // `& MultiMatchConfig` intersection below, so this type can never drift from
+  // the schema fragment that defines them.
   // style_cells + append_row: the formatting to apply. Every property is
   // optional and unset means "leave it alone" — see `cellFormatSchema`.
   cellFormat?: CellFormat;
@@ -138,7 +136,7 @@ type GoogleSheetsActionData = {
   // bottom-most ("last"), or every matched row ("all", the default). Its own key
   // — styling does not use the shared `onMultipleMatches` fan-out policy.
   onMultipleStyleMatches?: StyleMatchMode;
-};
+} & MultiMatchConfig;
 
 const ERROR_PREFIX = "Google Sheets Action";
 
@@ -1326,8 +1324,10 @@ export const googleSheetsActionExecutor: NodeExecutor<
       const outcome =
         insertUnder === "each_row" && placed.matchCount > 0
           ? applyMultiMatchPolicy({
+              config,
+              // This append's mode is implied by `position`, not chosen — an
+              // "under each match" insert always fans out.
               mode: "each",
-              maxItems: config.maxFanOutItems,
               items,
               context,
               outputKey,
@@ -1709,8 +1709,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
       // target above, so `writes` already holds just that one row.
       const items = planned.writes.map((w) => w.rowByHeader);
       const outcome = applyMultiMatchPolicy({
-        mode: config.onMultipleMatches,
-        maxItems: config.maxFanOutItems,
+        config,
         items,
         context,
         outputKey,
@@ -1902,8 +1901,7 @@ export const googleSheetsActionExecutor: NodeExecutor<
         // the children via `items`.
         const rows = Array.isArray(output.rows) ? output.rows : [];
         const policyOutcome = applyMultiMatchPolicy({
-          mode: config.onMultipleMatches,
-          maxItems: config.maxFanOutItems,
+          config,
           items: rows,
           totalCount: matchCount,
           context: result,

@@ -14,6 +14,7 @@ import { directPublish } from "@/inngest/direct-publish";
 import { isFanOutItem } from "@/inngest/fan-out";
 import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
 import { logger } from "@/lib/logger";
+import type { OnItemFailure } from "@/lib/multi-match";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 
 /**
@@ -124,6 +125,8 @@ export interface FanOutDispatcher {
     outputKey: string;
     context: WorkflowContext;
     items: unknown[];
+    /** Policy for a failed item; undefined means the default, "continue". */
+    onItemFailure?: OnItemFailure;
   }): Promise<void>;
 }
 
@@ -671,6 +674,7 @@ export async function runWorkflowNodes({
           outputKey,
           context: after,
           items: result.items,
+          onItemFailure: result.onItemFailure,
         });
 
         pending.push({

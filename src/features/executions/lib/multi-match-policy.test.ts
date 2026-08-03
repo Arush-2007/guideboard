@@ -7,19 +7,28 @@ const outputKey = "GOOGLE_SHEETS_ACTION_1";
 const output = { matchCount: 2, rows: [{ n: "a" }, { n: "b" }] };
 const context = { upstream: { x: 1 } };
 
+type ApplyArgs = Parameters<typeof applyMultiMatchPolicy>[0];
+
+/**
+ * `config` is spread rather than replaced, so a case that overrides one setting
+ * (e.g. just `maxFanOutItems`) keeps the others at their defaults.
+ */
 const apply = (
-  overrides: Partial<Parameters<typeof applyMultiMatchPolicy>[0]> = {},
-) =>
-  applyMultiMatchPolicy({
-    mode: undefined,
-    maxItems: undefined,
+  overrides: Partial<Omit<ApplyArgs, "config">> & {
+    config?: Partial<ApplyArgs["config"]>;
+  } = {},
+) => {
+  const { config, ...rest } = overrides;
+  return applyMultiMatchPolicy({
     items: output.rows,
     context,
     outputKey,
     output,
     itemNoun: "row",
-    ...overrides,
+    ...rest,
+    config: { ...config },
   });
+};
 
 describe("applyMultiMatchPolicy — first (default)", () => {
   it("returns the normal output under the node's key, keeping the context", () => {
@@ -75,6 +84,24 @@ describe("applyMultiMatchPolicy — error", () => {
   });
 });
 
+describe("applyMultiMatchPolicy — mode resolution", () => {
+  it("takes the mode from config when no override is given", () => {
+    // The primary route: the node's saved `onMultipleMatches`.
+    const result = apply({ config: { onMultipleMatches: "each" } });
+    expect(isFanOut(result)).toBe(true);
+  });
+
+  it("lets an explicit mode override config, for nodes whose mode is implied", () => {
+    // The Sheets "insert under each match" append is always "each" regardless
+    // of what `onMultipleMatches` happens to hold from another action.
+    const result = apply({
+      mode: "each",
+      config: { onMultipleMatches: "first" },
+    });
+    expect(isFanOut(result)).toBe(true);
+  });
+});
+
 describe("applyMultiMatchPolicy — each", () => {
   it("returns a fan-out outcome: one item per match, summary under the key", () => {
     const result = apply({ mode: "each" });
@@ -85,6 +112,20 @@ describe("applyMultiMatchPolicy — each", () => {
       ...context,
       [outputKey]: { ...output, fannedOut: 2 },
     });
+  });
+
+  it("carries the item-failure policy onto the outcome for the engine", () => {
+    const result = apply({ mode: "each", config: { onItemFailure: "stop" } });
+    if (!isFanOut(result)) throw new Error("unreachable");
+    expect(result.onItemFailure).toBe("stop");
+  });
+
+  it("leaves the item-failure policy undefined when config sets none", () => {
+    // The default is applied once, by the engine's dispatcher — the policy
+    // module does not bake one in, so there is a single owner of it.
+    const result = apply({ mode: "each" });
+    if (!isFanOut(result)) throw new Error("unreachable");
+    expect(result.onItemFailure).toBeUndefined();
   });
 
   it("fans out zero children on an empty list (downstream skipped)", () => {
@@ -101,15 +142,17 @@ describe("applyMultiMatchPolicy — each", () => {
     );
   });
 
-  it("enforces the cap (default 100, override via maxItems)", () => {
+  it("enforces the cap (default 100, override via config.maxFanOutItems)", () => {
     const many = Array.from({ length: 101 }, (_, i) => ({ i }));
     expect(() => apply({ mode: "each", items: many })).toThrow(
       NonRetriableError,
     );
     expect(() =>
-      apply({ mode: "each", items: many, maxItems: 101 }),
+      apply({ mode: "each", items: many, config: { maxFanOutItems: 101 } }),
     ).not.toThrow();
-    expect(() => apply({ mode: "each", maxItems: 1 })).toThrow(/Max rows/);
+    expect(() =>
+      apply({ mode: "each", config: { maxFanOutItems: 1 } }),
+    ).toThrow(/Max rows/);
   });
 
   it("rejects nested fan-out (a foreign per-item seed in the context)", () => {

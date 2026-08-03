@@ -1,5 +1,6 @@
 import { isSheetsAppendUnder, sheetsAction } from "@/config/node-outputs";
 import { NodeType } from "@/generated/prisma";
+import { MULTI_MATCH_CONFIG_KEYS } from "@/lib/multi-match";
 import { ANCHOR_ROW_KEY } from "@/lib/sheet-headers";
 
 /**
@@ -124,7 +125,9 @@ const nodeInactiveFields: Partial<Record<NodeType, InactiveFields>> = {
       off.push("styleColumns", "onMultipleStyleMatches");
     }
     if (action !== "find_rows" && action !== "update_row") {
-      off.push("onMultipleMatches", "maxFanOutItems");
+      // Spread, never hand-listed: the fragment owns which keys exist, so a new
+      // fan-out setting can't silently miss this list (see MULTI_MATCH_CONFIG_KEYS).
+      off.push(...MULTI_MATCH_CONFIG_KEYS);
     }
     return off;
   },

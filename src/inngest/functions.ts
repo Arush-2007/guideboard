@@ -28,11 +28,22 @@ import {
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { HTTP_TIMEOUT, http, rethrowTimeout } from "@/lib/http";
 import { logger } from "@/lib/logger";
+import { DEFAULT_ON_ITEM_FAILURE } from "@/lib/multi-match";
 import type { RowScope } from "@/lib/sheets-trigger-options";
 import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
-import { planFanOutDispatches } from "./fan-out";
+import {
+  buildFanOutSeed,
+  FAN_OUT_CHAIN_INLINE_LIMIT_BYTES,
+  type FanOutChain,
+  type FanOutChainBlob,
+  fanOutItemIdempotencyKey,
+  planChainAdvance,
+  planFanOutChain,
+  remainingAfter,
+  resolveChainSeed,
+} from "./fan-out";
 import {
   type FanOutDispatcher,
   type NodeRecorder,
@@ -276,13 +287,20 @@ function createPrismaNodeRecorder({
 }
 
 /**
- * Inngest/blob-backed FanOutDispatcher: turns a fan-out node's items into one
- * child sub-execution each — a replay-from-node run of the fan-out node +
- * descendants, seeded with the per-item payload. All sends happen inside ONE
- * `step.run` so a retried step re-emits every item; the children's own
- * `check-idempotency` step then dedupes on the per-item `idempotencyKey`. Safe
- * because same-workflow runs serialize under `executeWorkflow`'s concurrency
- * limit, so no duplicate child can slip through concurrently.
+ * Inngest/blob-backed FanOutDispatcher: starts a fan-out node's CHAIN of child
+ * sub-executions — each child a replay-from-node run of the fan-out node +
+ * descendants, seeded with one item.
+ *
+ * Only item 0 is sent here. Each child dispatches the next as it finishes (see
+ * `advanceFanOutChain`), which is what makes children run in item order: Inngest
+ * gives no ordering guarantee across separate runs, so the previous
+ * dispatch-all-at-once landed N events effectively tied and they ran shuffled.
+ * Chaining costs no throughput — `executeWorkflow`'s `concurrency: { limit: 1 }`
+ * already serialized them — and no extra billed steps, because the advance rides
+ * inside the child's existing `update-execution` step.
+ *
+ * The send happens inside a `step.run` so a retry re-emits it; the child's own
+ * `check-idempotency` step then dedupes on the per-item `idempotencyKey`.
  */
 function createFanOutDispatcher({
   step,
@@ -294,56 +312,127 @@ function createFanOutDispatcher({
   workflowId: string;
 }): FanOutDispatcher {
   return {
-    async dispatch({ nodeId, outputKey, context, items }) {
+    async dispatch({ nodeId, outputKey, context, items, onItemFailure }) {
       await step.run(`fan-out:${nodeId}`, async () => {
-        const plans = planFanOutDispatches({
+        const planned = planFanOutChain({
           items,
           context,
           outputKey,
           executionId,
           nodeId,
+          onItemFailure: onItemFailure ?? DEFAULT_ON_ITEM_FAILURE,
         });
 
-        // Sequential so an oversized-but-unconfigured item throws before later
-        // sends fire, and so retries re-walk the same order deterministically.
-        for (const plan of plans) {
-          if (plan.oversized) {
-            if (!isBlobConfigured()) {
-              throw new NonRetriableError(
-                `Fan-out item ${plan.index} is too large to send inline and ` +
-                  "blob storage (R2) is not configured — set R2_ACCOUNT_ID, " +
-                  "R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_BUCKET so " +
-                  "oversized item contexts can be offloaded instead of " +
-                  "exceeding the Inngest event size limit.",
-              );
-            }
-            await putBlob({
-              key: plan.blobKey,
-              bytes: Buffer.from(JSON.stringify(plan.seeded)),
-              contentType: "application/json",
-            });
-            await sendWorkflowExecution({
-              workflowId,
-              initialDataBlobKey: plan.blobKey,
-              replayFromNodeId: nodeId,
-              replayOfExecutionId: executionId,
-              idempotencyKey: plan.idempotencyKey,
-            });
-          } else {
-            await sendWorkflowExecution({
-              workflowId,
-              initialData: plan.seeded,
-              replayFromNodeId: nodeId,
-              replayOfExecutionId: executionId,
-              idempotencyKey: plan.idempotencyKey,
-            });
+        // No items — nothing to chain. The engine has already activated no
+        // outgoing edge, so the downstream sub-graph is recorded SKIPPED.
+        if (!planned) return { dispatched: 0 };
+
+        // One blob for the WHOLE chain (not one per item, as the previous
+        // dispatch-all design needed), written once and read by each child.
+        if (planned.oversized) {
+          if (!isBlobConfigured()) {
+            throw new NonRetriableError(
+              `This fan-out's ${items.length} items are too large to send ` +
+                "inline and blob storage (R2) is not configured — set " +
+                "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and " +
+                "R2_BUCKET so the item list can be offloaded instead of " +
+                "exceeding the Inngest event size limit.",
+            );
           }
+          await putBlob({
+            key: planned.blobKey,
+            bytes: Buffer.from(JSON.stringify(planned.blob)),
+            contentType: "application/json",
+          });
         }
 
-        return { dispatched: plans.length };
+        await sendWorkflowExecution({
+          workflowId,
+          replayFromNodeId: nodeId,
+          replayOfExecutionId: executionId,
+          idempotencyKey: fanOutItemIdempotencyKey(executionId, nodeId, 0),
+          fanOutChain: planned.chain,
+        });
+
+        return { dispatched: 1, total: items.length };
       });
     },
   };
+}
+
+/**
+ * The sentence appended to a failed run's error when a fan-out was cut short.
+ *
+ * Items that never start leave no rows of their own, so the run that dropped
+ * them is the only place the truncation can be reported — without this, "why
+ * did the last N items never run?" has no answer anywhere in the UI. Empty
+ * when nothing was stranded, so callers can append unconditionally.
+ */
+function strandedNote(count: number, because: string): string {
+  if (count <= 0) return "";
+  return (
+    `\n\nThe remaining ${count} item${count === 1 ? "" : "s"} of this ` +
+    `fan-out were not started, because ${because}.`
+  );
+}
+
+/**
+ * Reads a JSON blob, turning any failure into a NonRetriableError that names
+ * what could not be loaded. A missing or corrupt blob is a data problem no
+ * retry resolves, and both callers (a run's stored context snapshot, and a
+ * fan-out chain's item list) want identical handling — so the wrapping lives
+ * here rather than being spelled out at each call site.
+ */
+async function hydrateBlobJson<T>(key: string, what: string): Promise<T> {
+  try {
+    return (await getBlobJson(key)) as T;
+  } catch (err) {
+    throw new NonRetriableError(
+      `Failed to load the ${what} (${key}): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+/**
+ * Hands a fan-out chain on to its next item. Called from BOTH the success path
+ * (inside `update-execution`) and `onFailure` — a failed item must still
+ * advance when the policy is "continue", or one bad item silently drops every
+ * remaining one. A double advance is harmless: the next child's idempotency key
+ * dedupes it.
+ *
+ * Returns the number of items that will never start, which is non-zero only
+ * when a "stop" policy cut the chain short.
+ */
+async function advanceFanOutChain({
+  chain,
+  workflowId,
+  failed,
+}: {
+  chain: FanOutChain;
+  workflowId: string;
+  failed: boolean;
+}): Promise<{ abandoned: number }> {
+  if (failed && chain.onItemFailure === "stop") {
+    return { abandoned: remainingAfter(chain) };
+  }
+
+  const next = planChainAdvance(chain);
+  if (!next) return { abandoned: 0 };
+
+  await sendWorkflowExecution({
+    workflowId,
+    replayFromNodeId: chain.nodeId,
+    // Lineage points at the ORIGINAL parent run, not the sibling that happened
+    // to dispatch this one — every child of a fan-out is a child of the run
+    // that fanned out, however the chain physically reached it.
+    replayOfExecutionId: chain.executionId,
+    idempotencyKey: next.idempotencyKey,
+    fanOutChain: next.chain,
+  });
+
+  return { abandoned: 0 };
 }
 
 /**
@@ -405,13 +494,52 @@ export const executeWorkflow = inngest.createFunction(
     onFailure: async ({ event }) => {
       const inngestEventId = event.data.event.id;
       const platformError = event.data.error.message;
+      const { workflowId, fanOutChain } = event.data.event.data as {
+        workflowId?: string;
+        fanOutChain?: FanOutChain;
+      };
 
       // Did ANY node get as far as recording? Zero rows means the run never
       // reached the engine's own failure path — see `resolveFailureCause`.
       const recordedNodes = await prisma.nodeExecution.count({
         where: { execution: { inngestEventId } },
       });
-      const error = resolveFailureCause(recordedNodes, platformError);
+      let error = resolveFailureCause(recordedNodes, platformError);
+
+      // The failed half of the fan-out chain. This is load-bearing: a child
+      // that fails is still the only thing holding the chain, so under the
+      // default "continue" policy it MUST hand on, or one bad item silently
+      // drops every item after it.
+      //
+      // Best-effort, like the email below — a send failure must never stop the
+      // run from being recorded FAILED. Ordered before the update so a "stop"
+      // can name the abandoned items in the same write.
+      if (fanOutChain && workflowId) {
+        try {
+          const { abandoned } = await advanceFanOutChain({
+            chain: fanOutChain,
+            workflowId,
+            failed: true,
+          });
+          error += strandedNote(
+            abandoned,
+            "this step is set to stop the run when an item fails",
+          );
+        } catch (err) {
+          logger.error("Failed to advance fan-out chain after a failure", err, {
+            inngestEventId,
+            nodeId: fanOutChain.nodeId,
+            index: fanOutChain.index,
+          });
+          // The chain dies here — nothing else holds it. Same note, different
+          // cause, so the user still learns the run was truncated.
+          error += strandedNote(
+            remainingAfter(fanOutChain),
+            "this run could not hand the chain on. Re-run the workflow for " +
+              "the items after this one",
+          );
+        }
+      }
 
       const execution = await prisma.execution.update({
         where: { inngestEventId },
@@ -478,6 +606,7 @@ export const executeWorkflow = inngest.createFunction(
       idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,
+      fanOutChain,
     } = event.data as {
       workflowId?: string;
       // Keep this loose because this JSON is stored directly in Prisma.
@@ -489,6 +618,10 @@ export const executeWorkflow = inngest.createFunction(
       // Replay-from-node: see runWorkflowNodes / sendWorkflowExecution.
       replayFromNodeId?: string;
       replayOfExecutionId?: string;
+      // Fan-out chain link: this run processes item `index` and dispatches the
+      // next when it finishes. Its seed is DERIVED from the chain rather than
+      // passed as initialData. See src/inngest/fan-out.ts.
+      fanOutChain?: FanOutChain;
     };
 
     if (!inngestEventId || !workflowId) {
@@ -508,6 +641,11 @@ export const executeWorkflow = inngest.createFunction(
       });
 
       if (existing) {
+        // Deliberately NO fan-out advance here. A duplicate is a re-send of a
+        // link the original run already owns, and that original advances the
+        // chain itself (on success or through onFailure). Advancing from here
+        // too would race a sibling that is still running, which is exactly the
+        // out-of-order dispatch chaining exists to prevent.
         return {
           skipped: true,
           reason: "duplicate",
@@ -516,25 +654,123 @@ export const executeWorkflow = inngest.createFunction(
       }
     }
 
-    const { id: executionId } = await step.run("create-execution", async () => {
-      return prisma.execution.create({
-        data: {
-          workflowId,
-          inngestEventId,
-          idempotencyKey: idempotencyKey ?? null,
-          // Persist the trigger payload (or, for a replay, the seeded snapshot)
-          // so the run can be re-dispatched verbatim. Blob-seeded runs store a
-          // small reference instead of the oversized payload; `rerun` resolves
-          // it back to `initialDataBlobKey`.
-          input: (initialDataBlobKey
-            ? { __blobRef: initialDataBlobKey }
-            : (inlineInitialData ?? {})) as Prisma.InputJsonValue,
-          // Link a replay back to its origin run; null for ordinary runs.
-          replayOfId: replayOfExecutionId ?? null,
-        },
-        select: { id: true },
-      });
-    });
+    // Creates the run's row and resolves the context it starts from. A fan-out
+    // child DERIVES its seed from the chain descriptor rather than receiving it
+    // as `initialData`, which is what lets each link carry only the items still
+    // to do instead of a pre-built seed per item.
+    //
+    // Folded into this one step on purpose: the derivation is needed here
+    // anyway (the row persists the seed as `input`, which is what `rerun`
+    // replays), so chaining costs no extra billed Inngest step per child.
+    // An INLINE chain carries its own payload, so the seed is a pure function
+    // of event data. Derived out here, NOT returned from the step below:
+    // Inngest memoizes step output into run state and re-ships it on every
+    // later invocation, so returning the seed would put a full copy of the
+    // context on the wire once per step boundary — on top of the event that
+    // already carries it. Recomputing a shallow spread per invocation is far
+    // cheaper than transmitting it.
+    const inlineChainSeed =
+      fanOutChain && !fanOutChain.chainBlobKey
+        ? buildFanOutSeed({
+            ...resolveChainSeed(fanOutChain),
+            outputKey: fanOutChain.outputKey,
+            index: fanOutChain.index,
+            total: fanOutChain.total,
+          })
+        : undefined;
+
+    const { id: executionId, chainSeed: hydratedChainSeed } = await step.run(
+      "create-execution",
+      async (): Promise<{
+        id: string;
+        chainSeed?: Record<string, unknown>;
+      }> => {
+        // Ordinary (non-chain) run: unchanged.
+        if (!fanOutChain) {
+          const created = await prisma.execution.create({
+            data: {
+              workflowId,
+              inngestEventId,
+              idempotencyKey: idempotencyKey ?? null,
+              // Persist the trigger payload (or, for a replay, the seeded
+              // snapshot) so the run can be re-dispatched verbatim. Blob-seeded
+              // runs store a small reference instead of the oversized payload;
+              // `rerun` resolves it back to `initialDataBlobKey`.
+              input: (initialDataBlobKey
+                ? { __blobRef: initialDataBlobKey }
+                : (inlineInitialData ?? {})) as Prisma.InputJsonValue,
+              // Link a replay back to its origin run; null for ordinary runs.
+              replayOfId: replayOfExecutionId ?? null,
+            },
+            select: { id: true },
+          });
+          return { id: created.id };
+        }
+
+        // upsert, not create, for every chain child: the oversized branch below
+        // has a SECOND failable write after the row exists, and Inngest re-runs
+        // the whole callback on retry. A plain create would then hit the
+        // `inngestEventId` unique constraint and fail identically on every
+        // attempt, turning a transient DB blip into a permanently dead fan-out
+        // item. Re-finding the row it already made is the recovery.
+        const created = await prisma.execution.upsert({
+          where: { inngestEventId },
+          create: {
+            workflowId,
+            inngestEventId,
+            idempotencyKey: idempotencyKey ?? null,
+            // The inline seed is known already and is provably under the event
+            // budget, so it is stored verbatim in ONE write — no clamp (it
+            // could never fire) and no backfill.
+            input: (inlineChainSeed ?? {}) as Prisma.InputJsonValue,
+            replayOfId: replayOfExecutionId ?? null,
+          },
+          update: {},
+          select: { id: true },
+        });
+
+        if (inlineChainSeed) return { id: created.id };
+
+        // Oversized chain: the item list lives in a blob. The row was created
+        // BEFORE this read for the same reason `hydrate-initial-data` runs after
+        // create-execution — a hydration failure has to land on a *visible*
+        // FAILED run, and onFailure updates by `inngestEventId`, so the row must
+        // already exist. Hence the second write below, on this path only.
+        const blob = await hydrateBlobJson<FanOutChainBlob>(
+          fanOutChain.chainBlobKey as string,
+          "fan-out item list",
+        );
+
+        const seed = buildFanOutSeed({
+          ...resolveChainSeed(fanOutChain, blob),
+          outputKey: fanOutChain.outputKey,
+          index: fanOutChain.index,
+          total: fanOutChain.total,
+        });
+
+        // Clamped, not blob-referenced: a chain goes to a blob because the
+        // whole ITEM LIST is large, which says nothing about one item's seed —
+        // 1000 small rows produce a big list and small seeds. Budgeted against
+        // the CHAIN's inline limit rather than `clampJson`'s 32 KB default, so
+        // a seed in the 32-128 KB band persists intact; storing a truncation
+        // marker there would make `rerun` re-dispatch the workflow with
+        // `{__truncated}` as its context.
+        await prisma.execution.update({
+          where: { id: created.id },
+          data: {
+            input: clampJson(
+              seed,
+              FAN_OUT_CHAIN_INLINE_LIMIT_BYTES,
+            ) as Prisma.InputJsonValue,
+          },
+          select: { id: true },
+        });
+
+        return { id: created.id, chainSeed: seed };
+      },
+    );
+
+    const chainSeed = inlineChainSeed ?? hydratedChainSeed;
 
     // Hydrate a blob-stored seed context. Runs AFTER create-execution so a
     // missing/unreadable blob fails a *visible* run (onFailure marks the row
@@ -542,22 +778,18 @@ export const executeWorkflow = inngest.createFunction(
     // itself throw and the failure would be invisible. Step outputs already
     // carry full contexts between nodes, so pulling the snapshot inside a step
     // adds no new size bound. A bad blob is a data problem a retry won't fix.
-    const initialData: Record<string, unknown> | undefined = initialDataBlobKey
-      ? await step.run("hydrate-initial-data", async () => {
-          try {
-            return (await getBlobJson(initialDataBlobKey)) as Record<
-              string,
-              unknown
-            >;
-          } catch (err) {
-            throw new NonRetriableError(
-              `Failed to load the stored context snapshot (${initialDataBlobKey}): ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
-        })
-      : inlineInitialData;
+    // A fan-out child's seed is already resolved (derived inline above, or
+    // hydrated inside create-execution), so there is nothing left to fetch.
+    const initialData: Record<string, unknown> | undefined =
+      chainSeed ??
+      (initialDataBlobKey
+        ? await step.run("hydrate-initial-data", () =>
+            hydrateBlobJson<Record<string, unknown>>(
+              initialDataBlobKey,
+              "stored context snapshot",
+            ),
+          )
+        : inlineInitialData);
 
     const { sortedNodes, connections, userId } = await step.run(
       "prepare-workflow",
@@ -604,7 +836,7 @@ export const executeWorkflow = inngest.createFunction(
     });
 
     await step.run("update-execution", async () => {
-      return prisma.execution.update({
+      await prisma.execution.update({
         where: { inngestEventId, workflowId },
         data: {
           status: ExecutionStatus.SUCCESS,
@@ -612,6 +844,25 @@ export const executeWorkflow = inngest.createFunction(
           output: context as Prisma.InputJsonObject,
         },
       });
+
+      // Hand the fan-out chain to its next item. Deliberately inside THIS step
+      // rather than one of its own: Inngest bills per step, and a dedicated
+      // advance step would add one per child for no behavioural gain. Safe on
+      // retry — the update above is idempotent and the send below is deduped by
+      // the next item's idempotency key.
+      //
+      // The failed-item counterpart lives in onFailure; between them, every
+      // terminal outcome of a child advances the chain (or deliberately ends
+      // it), so it can never stall silently.
+      if (fanOutChain) {
+        await advanceFanOutChain({
+          chain: fanOutChain,
+          workflowId,
+          failed: false,
+        });
+      }
+
+      return { advanced: Boolean(fanOutChain) };
     });
 
     return {

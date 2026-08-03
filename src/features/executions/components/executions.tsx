@@ -109,7 +109,7 @@ const formatStatus = (status: ExecutionStatus) => {
  * (cuids carry no colons, so a plain split is unambiguous); `i` is the 0-based
  * item index. Returns the 1-based item number, or null for anything else.
  *
- * Format owner: `planFanOutDispatches` in src/inngest/fan-out.ts — keep the
+ * Format owner: `fanOutItemIdempotencyKey` in src/inngest/fan-out.ts — keep the
  * two in sync (the parser lives here, not there, because that module reaches
  * Buffer/engine code this client bundle must not pull in).
  */

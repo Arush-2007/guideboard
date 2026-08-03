@@ -12,6 +12,7 @@ import { EditableNodeTitle } from "@/components/editable-node-title";
 import { FieldMapping } from "@/components/field-mapping";
 import {
   FanOutCapInput,
+  type FanOutCapProps,
   MultiMatchSelect,
 } from "@/components/multi-match-select";
 import { RowMatchConditions } from "@/components/row-match-conditions";
@@ -47,7 +48,11 @@ import { VariableInput } from "@/components/variable-input";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
 import { NodeType } from "@/generated/prisma";
 import { compareOptionsSchemaFields } from "@/lib/compare-options-schema";
-import { MAX_FAN_OUT_ITEMS_LIMIT, MULTI_MATCH_MODES } from "@/lib/multi-match";
+import {
+  MAX_FAN_OUT_ITEMS_LIMIT,
+  MULTI_MATCH_MODES,
+  ON_ITEM_FAILURE_MODES,
+} from "@/lib/multi-match";
 import { getOutputKeyForNode } from "@/lib/node-ref";
 import {
   ROW_MATCH_OPERATORS,
@@ -130,6 +135,7 @@ const formSchema = z
       .min(1)
       .max(MAX_FAN_OUT_ITEMS_LIMIT)
       .optional(),
+    onItemFailure: z.enum(ON_ITEM_FAILURE_MODES).optional(),
   })
   .superRefine(refineGoogleSheetsAction);
 
@@ -705,6 +711,18 @@ export const GoogleSheetsActionDialog = ({
   const styleColumns = form.watch("styleColumns") ?? [];
   const styleAppendedRow = form.watch("styleAppendedRow") ?? false;
   const isAppending = action === "append_row";
+
+  // Bound once and spread at all three fan-out sites (find_rows, update_row,
+  // and the "insert under each match" append). Hand-wiring each prop per site
+  // meant every new fan-out setting was a three-place edit in this file, where
+  // a missed site silently drops the control.
+  const fanOutCapProps: FanOutCapProps = {
+    itemNoun: "row",
+    maxItems: form.watch("maxFanOutItems"),
+    onMaxItemsChange: (n) => form.setValue("maxFanOutItems", n),
+    onItemFailure: form.watch("onItemFailure"),
+    onItemFailureChange: (m) => form.setValue("onItemFailure", m),
+  };
   // An append that MERGES writes one cell, not a mapped row — so the whole
   // column-mapping block is replaced by a single text field. See `mergedText`.
   const mergingAppend =
@@ -1125,13 +1143,7 @@ export const GoogleSheetsActionDialog = ({
                           </div>
 
                           {position === "under_each" ? (
-                            <FanOutCapInput
-                              itemNoun="row"
-                              maxItems={form.watch("maxFanOutItems")}
-                              onMaxItemsChange={(n) =>
-                                form.setValue("maxFanOutItems", n)
-                              }
-                            />
+                            <FanOutCapInput {...fanOutCapProps} />
                           ) : null}
                         </>
                       ) : null}
@@ -1344,14 +1356,10 @@ export const GoogleSheetsActionDialog = ({
                       />
                     </div>
                     <MultiMatchSelect
-                      itemNoun="row"
+                      {...fanOutCapProps}
                       mode={form.watch("onMultipleMatches")}
                       onModeChange={(m) =>
                         form.setValue("onMultipleMatches", m)
-                      }
-                      maxItems={form.watch("maxFanOutItems")}
-                      onMaxItemsChange={(n) =>
-                        form.setValue("maxFanOutItems", n)
                       }
                     />
                   </div>
@@ -1600,14 +1608,10 @@ export const GoogleSheetsActionDialog = ({
 
                     <div className="space-y-2">
                       <MultiMatchSelect
-                        itemNoun="row"
+                        {...fanOutCapProps}
                         mode={form.watch("onMultipleMatches")}
                         onModeChange={(m) =>
                           form.setValue("onMultipleMatches", m)
-                        }
-                        maxItems={form.watch("maxFanOutItems")}
-                        onMaxItemsChange={(n) =>
-                          form.setValue("maxFanOutItems", n)
                         }
                       />
                       {form.watch("onMultipleMatches") === "each" ? (

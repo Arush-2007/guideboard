@@ -21,8 +21,15 @@ import { type FanOutItemSeed, isFanOutItem } from "@/inngest/fan-out";
  *  3. Pick the single result it acts on with `selectSingleMatch(...)` (that is
  *     what makes "last" differ from "first"), then end the list-producing path
  *     with `applyMultiMatchPolicy(...)` instead of returning the output
- *     directly.
- *  4. Drop `<MultiMatchSelect>` into its dialog.
+ *     directly — passing `onItemFailure: config.onItemFailure` through.
+ *  4. Drop `<MultiMatchSelect>` into its dialog (or `<FanOutCapInput>` alone if
+ *     the node always fans out and never chooses between first/each/error).
+ *
+ * Everything else is free. ORDERING in particular is not a per-node concern:
+ * the engine chains child runs so items are processed in list order for every
+ * fan-out node, present and future (see src/inngest/fan-out.ts). So is the
+ * `onItemFailure` control, which `<FanOutCapInput>` renders wherever the cap is
+ * offered.
  */
 
 export const MULTI_MATCH_MODES = ["first", "last", "each", "error"] as const;
@@ -60,6 +67,24 @@ export function selectSingleMatch<T>(
   return mode === "last" ? matches[matches.length - 1] : matches[0];
 }
 
+export const ON_ITEM_FAILURE_MODES = ["continue", "stop"] as const;
+
+/**
+ * What a FAILED item does to the rest of a fan-out ("each" only).
+ *
+ * - "continue" (default): the failed item is recorded FAILED and the chain
+ *   hands on to the next one. This is what fan-out has always done — children
+ *   used to be dispatched independently, so one failing never stopped the
+ *   others — which makes it the back-compat-safe default.
+ * - "stop": the remaining items never start. Because they then leave no trace
+ *   of their own, the engine appends a sentence naming the count to the failed
+ *   run's error, so "why did rows 8-50 never run?" is answerable from the run
+ *   that stopped them.
+ */
+export type OnItemFailure = (typeof ON_ITEM_FAILURE_MODES)[number];
+
+export const DEFAULT_ON_ITEM_FAILURE: OnItemFailure = "continue";
+
 export const DEFAULT_MAX_FAN_OUT_ITEMS = 100;
 /** Hard upper bound on the "each" cap — shared by server schema, form, UI. */
 export const MAX_FAN_OUT_ITEMS_LIMIT = 1000;
@@ -84,7 +109,34 @@ export const multiMatchConfigFields = {
     .min(1)
     .max(MAX_FAN_OUT_ITEMS_LIMIT)
     .optional(),
+  /** Whether a failed item stops the rest of the fan-out ("each" only). */
+  onItemFailure: z.enum(ON_ITEM_FAILURE_MODES).optional(),
 };
+
+/**
+ * The fragment's key names, DERIVED rather than hand-listed.
+ *
+ * Consumers that need to name every multi-match key — today
+ * `nodeInactiveFields` in `src/config/node-references.ts`, which declares them
+ * inactive for actions that don't fan out — must spread this instead of typing
+ * the strings. A hand-copied list is a silent declaration site: adding
+ * `onItemFailure` to the fragment compiled clean while leaving that list stale,
+ * so the new key was reported as a dangling reference on every non-fan-out
+ * Sheets action.
+ */
+export const MULTI_MATCH_CONFIG_KEYS = Object.keys(
+  multiMatchConfigFields,
+) as (keyof typeof multiMatchConfigFields)[];
+
+/**
+ * The config slice a fan-out node carries. Nodes intersect this into their own
+ * data type (`type FooData = { … } & MultiMatchConfig`) and
+ * `applyMultiMatchPolicy` takes it whole, so adding a fan-out setting is a
+ * change to THIS fragment only — not to every executor call site.
+ */
+export type MultiMatchConfig = z.infer<
+  z.ZodObject<typeof multiMatchConfigFields>
+>;
 
 /**
  * The per-item seed the engine's dispatcher planted under `outputKey`, or null

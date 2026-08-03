@@ -2,6 +2,7 @@ import { createId } from "@paralleldrive/cuid2";
 import toposort from "toposort";
 import type { Connection, Node } from "@/generated/prisma";
 import { inngest } from "./client";
+import type { FanOutChain } from "./fan-out";
 
 export const topologicalSort = (
   nodes: Node[],
@@ -61,6 +62,12 @@ type SendWorkflowExecutionInput = {
   // links the new run back to the origin for lineage. Both omitted on normal runs.
   replayFromNodeId?: string;
   replayOfExecutionId?: string;
+  // Fan-out chain link: this run is item `chain.index` of a fan-out, and is
+  // responsible for dispatching the next one when it finishes. Carries its own
+  // seed source, so `initialData` is derived from it rather than passed in.
+  // See src/inngest/fan-out.ts for why children are chained instead of all
+  // being dispatched up front.
+  fanOutChain?: FanOutChain;
 };
 
 /**
@@ -82,6 +89,7 @@ export const sendWorkflowExecution = async ({
   idempotencyKey,
   replayFromNodeId,
   replayOfExecutionId,
+  fanOutChain,
 }: SendWorkflowExecutionInput) => {
   return inngest.send({
     name: "workflows/execute.workflow",
@@ -92,6 +100,7 @@ export const sendWorkflowExecution = async ({
       idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,
+      fanOutChain,
     },
     id: createId(),
   });

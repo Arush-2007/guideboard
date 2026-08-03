@@ -151,6 +151,18 @@ export const executionsRouter = createTRPCRouter({
         );
       }
 
+      // Refuse a truncation marker rather than dispatching it as the context —
+      // the same guard `replayFromNode` already applies. Re-running from a
+      // marker is silently destructive: every `@<REF.path>@` renders blank
+      // while each node still performs its real side effect, so the run looks
+      // like it worked and writes empty values.
+      if (!blobRef && isClampedMarker(execution.input)) {
+        throw new Error(
+          "This run's input was too large to store inline, so re-running it " +
+            "would use incomplete data. Trigger the workflow again instead.",
+        );
+      }
+
       await sendWorkflowExecution({
         workflowId: execution.workflowId,
         ...(blobRef
