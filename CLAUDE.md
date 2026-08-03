@@ -41,12 +41,16 @@ Three are typed as a total `Record<NodeType, ...>`, so missing one is a **compil
 2. **`src/config/node-schemas.ts`** — maps `NodeType` → a Zod schema validating that node's `data` JSON. `parseNodeConfig(type, data)` is the single validation entry point, called by executors at runtime. Schemas are `.passthrough()` by default; field names must match the dialog forms exactly.
 3. **`src/features/executions/lib/executor-registry.ts`** — maps `NodeType` → its server-side `NodeExecutor`. `getExecutor(type)` throws if a type is unregistered.
 
-Four more are **partial** — an array, a `Set`, or a `Partial<Record<...>>` — so omitting one compiles cleanly and passes the test suite while shipping a node that is broken in the UI. There is no compiler backstop here; these have to be done from the checklist:
+Five more are **partial** — an array, a `Set`, or a `Partial<Record<...>>` — so omitting one compiles cleanly and passes the test suite while shipping a node that is broken in the UI. There is no compiler backstop here; these have to be done from the checklist:
 
 4. **`src/config/node-options.ts`** — label, description and icon. **Without this the node cannot be added from the node selector at all.** Brand icons come from the integrations registry; Lucide icons for utility nodes are imported here.
 5. **`src/config/node-outputs.ts`** — the fields the node writes into `context`. **Without this the node's output never appears in the variable picker, so no downstream node can reference it** — the node runs, but nothing can consume its result.
 6. **`src/lib/node-output-summary.ts`** — the one-line "what happened" summary for the execution page's Friendly view. Returning `null`, or having no entry, falls back to the raw output table.
 7. **`src/features/executions/lib/node-status-registry.ts`** — the `STATUS_EMITTING_NODE_TYPES` allowlist, for nodes whose executor publishes realtime status (see below).
+8. **`src/config/node-references.ts`** — how the node names OTHER steps in its own config, read by the dangling-reference detector (`src/lib/dangling-refs.ts`). Two maps, both needed only by unusual nodes:
+   - `nodeSelfRoots` — for a node that injects a context key for its own field templates (one no upstream node produces, offered via the picker's `extraGroups` prop). Today: the Sheets append's `anchorRow`. **Without it the node's own valid config is reported as dangling** — a badge that won't clear, and a save warning whose "Remove and save" erases the working field.
+   - `nodeInactiveFields` — for a node whose dialog has a MODE selector and so keeps the other mode's fields populated (Sheets `action`, Excel `operation`, Record Lookup `source`, Notion `action`). Declares which keys the current mode never reads, so a dead reference in one isn't reported. **Without it a `find_rows` node warns about the column mappings it kept from being an append.**
+   - `UNCHECKED_NODE_TYPES` — node types skipped entirely. Today: the Code node, whose field is a program rather than a template; see `isRefCheckedNodeType` for why guessing at JavaScript references is worse than not warning.
 
 `src/config/node-kinds.ts` (`TRIGGER_NODE_TYPES`) needs an entry **only for triggers**; `node-kinds.test.ts` asserts it matches the `_TRIGGER`-suffixed enum members exactly, so a trigger left out fails the build. The conversational builder needs nothing — its allowlist derives from `Object.values(NodeType)` (`src/lib/workflow-persistence.ts`).
 
