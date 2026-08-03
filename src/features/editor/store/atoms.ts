@@ -2,6 +2,7 @@ import type { ReactFlowInstance } from "@xyflow/react";
 import { atom } from "jotai";
 import type { NodeStatus } from "@/components/react-flow/node-status-indicator";
 import type { NodeType } from "@/generated/prisma";
+import type { DanglingRef, NodeDanglingRefs } from "@/lib/dangling-refs";
 
 // The CURRENTLY MOUNTED editor's React Flow instance, published by `onInit` and
 // retracted on unmount. It lives here rather than behind `useReactFlow()`
@@ -100,3 +101,25 @@ export const invalidNodeConfigAtom = atom<Record<string, string[]>>({});
 // button. A half-wired canvas is a normal intermediate state while building, and
 // the engine already tolerates orphans.
 export const unrunnableNodesAtom = atom<Record<string, string>>({});
+
+// Shared map of nodeId -> that node's DANGLING references (config naming a step
+// that can't reach it), present ONLY for affected nodes. Written solely by
+// <DanglingRefValidator>, which derives it from the React Flow store via
+// `findDanglingRefsByNode`. Each node reads only its own entry via
+// useDanglingRefs(nodeId), so wiring one edge re-renders just the nodes whose
+// state flipped.
+//
+// Advisory, like `unrunnableNodesAtom`: it does not gate Execute. Its job is to
+// make the problem VISIBLE the moment a duplicate lands, which is well before
+// the workflow save that also warns about it (see `useSaveEditorWorkflow`).
+export const danglingRefsAtom = atom<Record<string, DanglingRef[]>>({});
+
+// The save currently held open by the dangling-reference warning, or null. The
+// save path parks its decision callback here and awaits it; <DanglingSaveDialog>
+// (mounted once in the editor) renders the warning and calls `decide`. Same
+// shape of hand-off as `navGuardTargetAtom` above.
+export type DanglingSavePrompt = {
+  found: NodeDanglingRefs[];
+  decide: (choice: "cancel" | "as-is" | "remove") => void;
+};
+export const danglingSavePromptAtom = atom<DanglingSavePrompt | null>(null);

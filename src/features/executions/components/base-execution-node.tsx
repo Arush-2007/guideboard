@@ -7,6 +7,7 @@ import { memo, type ReactNode } from "react";
 import { BaseHandle } from "@/components/react-flow/base-handle";
 import { BaseNode, BaseNodeContent } from "@/components/react-flow/base-node";
 import { CannotRunBadge } from "@/components/react-flow/cannot-run-badge";
+import { DanglingRefsBadge } from "@/components/react-flow/dangling-refs-badge";
 import { NeedsConfigBadge } from "@/components/react-flow/needs-config-badge";
 import { NodeFailureBadge } from "@/components/react-flow/node-failure-badge";
 import {
@@ -90,6 +91,7 @@ export const BaseExecutionNode = memo(
           >
             <NeedsConfigBadge nodeId={id} />
             <CannotRunBadge nodeId={id} />
+            <DanglingRefsBadge nodeId={id} />
             {status === "error" ? <NodeFailureBadge nodeId={id} /> : null}
             <BaseNodeContent className="size-full items-center justify-center p-0">
               {typeof Icon === "string" ? (
