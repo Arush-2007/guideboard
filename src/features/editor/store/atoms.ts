@@ -118,8 +118,15 @@ export const danglingRefsAtom = atom<Record<string, DanglingRef[]>>({});
 // save path parks its decision callback here and awaits it; <DanglingSaveDialog>
 // (mounted once in the editor) renders the warning and calls `decide`. Same
 // shape of hand-off as `navGuardTargetAtom` above.
+/** How a held-open save ends. Named so the save path and the dialog share it. */
+export type SaveChoice = "cancel" | "as-is" | "remove";
 export type DanglingSavePrompt = {
   found: NodeDanglingRefs[];
-  decide: (choice: "cancel" | "as-is" | "remove") => void;
+  /**
+   * Ends the wait. Idempotent — several parties can reach it (the dialog, a
+   * save that displaces this prompt, the editor unmounting), and only the first
+   * answer counts. See `useSaveEditorWorkflow`.
+   */
+  decide: (choice: SaveChoice) => void;
 };
 export const danglingSavePromptAtom = atom<DanglingSavePrompt | null>(null);
