@@ -26,15 +26,18 @@ const {
   fetchMediaResultMock,
   putBlobMock,
   isBlobConfiguredMock,
+  isMediaConvertConfiguredMock,
 } = vi.hoisted(() => ({
   createMediaJobMock: vi.fn(),
   fetchMediaResultMock: vi.fn(),
   putBlobMock: vi.fn(),
   isBlobConfiguredMock: vi.fn(() => true),
+  isMediaConvertConfiguredMock: vi.fn(() => true),
 }));
 vi.mock("@/lib/media-convert", () => ({
   createMediaJob: createMediaJobMock,
   fetchMediaResult: fetchMediaResultMock,
+  isMediaConvertConfigured: isMediaConvertConfiguredMock,
 }));
 vi.mock("@/lib/blob", () => ({
   isBlobConfigured: isBlobConfiguredMock,
@@ -93,6 +96,8 @@ beforeEach(() => {
   putBlobMock.mockReset();
   isBlobConfiguredMock.mockReset();
   isBlobConfiguredMock.mockReturnValue(true);
+  isMediaConvertConfiguredMock.mockReset();
+  isMediaConvertConfiguredMock.mockReturnValue(true);
   vi.stubEnv("CLOUDCONVERT_API_KEY", "cc-key");
   publishedStatuses = [];
 });
@@ -251,8 +256,12 @@ describe("convertExecutor", () => {
     );
   });
 
-  it("fails (non-retriably) when CLOUDCONVERT_API_KEY is missing", async () => {
-    vi.stubEnv("CLOUDCONVERT_API_KEY", "");
+  it("fails (non-retriably) when CloudConvert is not configured", async () => {
+    // Driven through the shared probe, not the raw env var — whether a value
+    // counts as configured (unset, blank, or an unedited placeholder) is
+    // `isMediaConvertConfigured`'s business and is tested at that boundary in
+    // media-convert.test.ts.
+    isMediaConvertConfiguredMock.mockReturnValue(false);
 
     await expect(
       run({ to: "png", from: "jpg", input: "https://x/a.jpg" }),

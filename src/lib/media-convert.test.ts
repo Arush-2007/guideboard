@@ -47,6 +47,13 @@ describe("isMediaConvertConfigured", () => {
     vi.stubEnv("CLOUDCONVERT_API_KEY", "");
     expect(isMediaConvertConfigured()).toBe(false);
   });
+
+  it("treats the unedited .env.example placeholder as not configured", () => {
+    // Non-empty, so a bare truthiness check passed it and a fake key went to
+    // the provider instead of the clean "not configured" path.
+    vi.stubEnv("CLOUDCONVERT_API_KEY", "your-cloudconvert-api-key");
+    expect(isMediaConvertConfigured()).toBe(false);
+  });
 });
 
 describe("convertMedia (URL source)", () => {

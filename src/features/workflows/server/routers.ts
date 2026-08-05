@@ -5,6 +5,7 @@ import { PAGINATION } from "@/config/constants";
 import type { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
+import { env } from "@/lib/env";
 import { isTimeout, timeoutSignal } from "@/lib/http";
 import { logger } from "@/lib/logger";
 import {
@@ -107,7 +108,7 @@ export const workflowsRouter = createTRPCRouter({
   generateFromPrompt: premiumProcedure
     .input(z.object({ prompt: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+      const apiKey = env(process.env.ANTHROPIC_API_KEY);
       if (!apiKey) {
         throw new TRPCError({
           code: "BAD_REQUEST",

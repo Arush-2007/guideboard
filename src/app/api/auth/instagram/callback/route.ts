@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
+import { env } from "@/lib/env";
 import { HTTP_TIMEOUT, http } from "@/lib/http";
 
 type ShortLivedTokenResponse = {
@@ -46,9 +47,9 @@ export async function GET(request: Request) {
     return failRedirect(request);
   }
 
-  const clientId = process.env.INSTAGRAM_APP_ID;
-  const clientSecret = process.env.INSTAGRAM_APP_SECRET;
-  const redirectUri = process.env.INSTAGRAM_REDIRECT_URI;
+  const clientId = env(process.env.INSTAGRAM_APP_ID);
+  const clientSecret = env(process.env.INSTAGRAM_APP_SECRET);
+  const redirectUri = env(process.env.INSTAGRAM_REDIRECT_URI);
 
   if (!clientId || !clientSecret || !redirectUri) {
     return failRedirect(request);

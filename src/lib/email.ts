@@ -1,13 +1,17 @@
 import "server-only";
 import { Resend } from "resend";
+import { env } from "@/lib/env";
 
-const apiKey = process.env.RESEND_API_KEY;
+// `env(...)` so the unedited `re_your_resend_api_key` placeholder reads as
+// absent — `resend` stays null and callers get the clear "not configured"
+// error, rather than a rejected send at delivery time.
+const apiKey = env(process.env.RESEND_API_KEY);
 
 // Resend's shared sandbox sender works without a verified domain, but it can
 // only deliver to the email that owns the Resend account. Set EMAIL_FROM to a
 // verified-domain address for real delivery.
 const fromAddress =
-  process.env.EMAIL_FROM ?? "Guideboard <onboarding@resend.dev>";
+  env(process.env.EMAIL_FROM) ?? "Guideboard <onboarding@resend.dev>";
 
 const resend = apiKey ? new Resend(apiKey) : null;
 

@@ -3,6 +3,7 @@ import z from "zod";
 import type { Prisma } from "@/generated/prisma";
 import { describeStrippedRefs } from "@/lib/dangling-refs";
 import prisma from "@/lib/db";
+import { env } from "@/lib/env";
 import { isTimeout, timeoutSignal } from "@/lib/http";
 import {
   generatedWorkflowSchema,
@@ -233,7 +234,7 @@ export const conversationsRouter = createTRPCRouter({
         },
       });
 
-      const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+      const apiKey = env(process.env.ANTHROPIC_API_KEY);
       if (!apiKey) {
         throw new TRPCError({
           code: "BAD_REQUEST",

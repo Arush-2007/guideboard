@@ -100,6 +100,33 @@ describe("isBlobConfigured", () => {
     vi.stubEnv("R2_BUCKET", "");
     expect(isBlobConfigured()).toBe(false);
   });
+
+  it("is false for a value copied straight from .env.example", () => {
+    // Regression: placeholders are non-empty, so a bare truthiness check passed
+    // them and the endpoint became
+    // `https://your-cloudflare-account-id.r2.cloudflarestorage.com`, which
+    // Cloudflare has no certificate for — surfacing as an opaque
+    // `SSL alert number 40` that named no host.
+    vi.stubEnv("R2_ACCOUNT_ID", "your-cloudflare-account-id");
+    expect(isBlobConfigured()).toBe(false);
+  });
+
+  it("catches a placeholder in any of the four vars, and tolerates whitespace", () => {
+    for (const key of [
+      "R2_ACCESS_KEY_ID",
+      "R2_SECRET_ACCESS_KEY",
+      "R2_BUCKET",
+    ]) {
+      vi.stubEnv(key, "  your-r2-thing  ");
+      expect(isBlobConfigured()).toBe(false);
+      vi.stubEnv(key, CONFIGURED_ENV[key]);
+    }
+  });
+
+  it("does not reject a real credential that merely contains 'your'", () => {
+    vi.stubEnv("R2_BUCKET", "yourcompany-prod-assets");
+    expect(isBlobConfigured()).toBe(true);
+  });
 });
 
 describe("putBlob", () => {

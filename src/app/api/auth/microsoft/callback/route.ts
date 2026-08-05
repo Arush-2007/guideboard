@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
+import { env } from "@/lib/env";
 import { HTTP_TIMEOUT, http } from "@/lib/http";
 import { logger } from "@/lib/logger";
 import { MICROSOFT_SCOPES, MICROSOFT_TOKEN_URL } from "@/lib/microsoft-token";
@@ -47,9 +48,9 @@ export async function GET(request: Request) {
     return failRedirect(request, oauthError);
   }
 
-  const clientId = process.env.MICROSOFT_CLIENT_ID;
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
-  const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+  const clientId = env(process.env.MICROSOFT_CLIENT_ID);
+  const clientSecret = env(process.env.MICROSOFT_CLIENT_SECRET);
+  const redirectUri = env(process.env.MICROSOFT_REDIRECT_URI);
 
   if (!clientId || !clientSecret || !redirectUri) {
     return failRedirect(request);

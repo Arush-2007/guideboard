@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createId } from "@paralleldrive/cuid2";
+import { env, hasEnv, requireEnv } from "./env";
 
 /**
  * Blob storage primitive, backed by Cloudflare R2 (S3-compatible API). Binary
@@ -50,13 +51,21 @@ type R2Config = {
 /** Default lifetime for signed GET URLs when no public base URL is configured. */
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
 
-/** Whether R2 is configured — lets callers degrade gracefully without throwing. */
+/**
+ * Whether R2 is configured — lets callers degrade gracefully without throwing.
+ *
+ * Placeholders are rejected, not just blanks: an unedited `R2_ACCOUNT_ID`
+ * becomes part of the endpoint hostname, so it fails as an unresolvable TLS
+ * handshake rather than as "not configured". Both this probe and the throw in
+ * `readConfig` use the same predicate, so a caller that skips the probe cannot
+ * slip a placeholder past it either.
+ */
 export const isBlobConfigured = (): boolean =>
-  Boolean(
-    process.env.R2_ACCOUNT_ID &&
-      process.env.R2_ACCESS_KEY_ID &&
-      process.env.R2_SECRET_ACCESS_KEY &&
-      process.env.R2_BUCKET,
+  hasEnv(
+    process.env.R2_ACCOUNT_ID,
+    process.env.R2_ACCESS_KEY_ID,
+    process.env.R2_SECRET_ACCESS_KEY,
+    process.env.R2_BUCKET,
   );
 
 /**
@@ -64,24 +73,25 @@ export const isBlobConfigured = (): boolean =>
  * throwing a clear, actionable error when unset. The client itself is memoized.
  */
 function readConfig(): R2Config {
-  const accountId = process.env.R2_ACCOUNT_ID;
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  const bucket = process.env.R2_BUCKET;
-
-  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
+  // Same definition of "configured" as `isBlobConfigured`, so a caller that
+  // skips the probe cannot slip a placeholder past this either.
+  if (!isBlobConfigured()) {
     throw new Error(
       "Blob storage is not configured — set R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, " +
-        "R2_SECRET_ACCESS_KEY, and R2_BUCKET in your .env.",
+        "R2_SECRET_ACCESS_KEY, and R2_BUCKET in your .env to real values " +
+        "(the placeholders from .env.example do not count).",
     );
   }
 
   return {
-    accountId,
-    accessKeyId,
-    secretAccessKey,
-    bucket,
-    publicBaseUrl: process.env.R2_PUBLIC_BASE_URL || undefined,
+    accountId: requireEnv(process.env.R2_ACCOUNT_ID, "R2_ACCOUNT_ID"),
+    accessKeyId: requireEnv(process.env.R2_ACCESS_KEY_ID, "R2_ACCESS_KEY_ID"),
+    secretAccessKey: requireEnv(
+      process.env.R2_SECRET_ACCESS_KEY,
+      "R2_SECRET_ACCESS_KEY",
+    ),
+    bucket: requireEnv(process.env.R2_BUCKET, "R2_BUCKET"),
+    publicBaseUrl: env(process.env.R2_PUBLIC_BASE_URL),
   };
 }
 

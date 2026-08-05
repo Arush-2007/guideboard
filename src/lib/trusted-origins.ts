@@ -1,3 +1,5 @@
+import { env } from "@/lib/env";
+
 /**
  * The origins allowed to make state-changing requests to this deployment.
  *
@@ -14,8 +16,11 @@ export const trustedOrigins = (): string[] =>
     process.env.NODE_ENV === "development"
       ? "http://localhost:3000"
       : undefined,
-    process.env.NEXT_PUBLIC_APP_URL,
-    process.env.NGROK_URL,
+    // Through `env(...)`: an unedited `https://your-ngrok-domain.ngrok-free.app`
+    // would otherwise be TRUSTED as an origin — a placeholder in this list is a
+    // security question, not just a broken integration.
+    env(process.env.NEXT_PUBLIC_APP_URL),
+    env(process.env.NGROK_URL),
   ].filter((origin): origin is string => Boolean(origin));
 
 /**

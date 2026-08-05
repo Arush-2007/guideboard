@@ -5,6 +5,7 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import prisma from "@/lib/db";
 import { encrypt } from "@/lib/encryption";
+import { env } from "@/lib/env";
 import { HTTP_TIMEOUT, http } from "@/lib/http";
 import { logger } from "@/lib/logger";
 
@@ -46,9 +47,9 @@ export async function GET(request: Request) {
     return failRedirect(request);
   }
 
-  const clientId = process.env.YOUTUBE_CLIENT_ID;
-  const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
-  const redirectUri = process.env.YOUTUBE_REDIRECT_URI;
+  const clientId = env(process.env.YOUTUBE_CLIENT_ID);
+  const clientSecret = env(process.env.YOUTUBE_CLIENT_SECRET);
+  const redirectUri = env(process.env.YOUTUBE_REDIRECT_URI);
 
   if (!clientId || !clientSecret || !redirectUri) {
     return failRedirect(request);
