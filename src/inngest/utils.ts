@@ -1,8 +1,8 @@
 import { createId } from "@paralleldrive/cuid2";
 import toposort from "toposort";
+import type { WorkflowExecutionPayload } from "@/execution/payload";
 import type { Connection, Node } from "@/generated/prisma";
 import { inngest } from "./client";
-import type { FanOutChain } from "./fan-out";
 
 export const topologicalSort = (
   nodes: Node[],
@@ -48,33 +48,14 @@ export const topologicalSort = (
   return sorted;
 };
 
-type SendWorkflowExecutionInput = {
+/**
+ * The event payload, which is `WorkflowExecutionPayload` plus the workflow it
+ * targets. The fields and their reasoning live in `src/execution/payload.ts`,
+ * declared once so this input and `WorkflowJob.payload` (which holds
+ * `workflowId` in its own column) cannot drift as the shape grows.
+ */
+type SendWorkflowExecutionInput = WorkflowExecutionPayload & {
   workflowId: string;
-  initialData?: Record<string, unknown>;
-  // R2 key of a stored context snapshot to seed the run with, instead of an
-  // inline `initialData`. Used when the snapshot exceeded the inline clamp —
-  // an oversized payload must not ride the Inngest event (event size limits),
-  // so `executeWorkflow` hydrates it from blob storage inside a step.
-  initialDataBlobKey?: string;
-  // Seed the run from a stored `NodeInputSnapshot` instead of an inline
-  // `initialData`. Same reason as `initialDataBlobKey` above and NOT
-  // interchangeable with passing the row's contents: a snapshot exists only
-  // because the input passed the 32 KB clamp, and may be up to
-  // `NODE_INPUT_SNAPSHOT_MAX_BYTES` (4 MB) — far past Inngest's event ceiling.
-  // Only this small reference travels; `executeWorkflow` reads the row.
-  initialDataSnapshot?: { executionId: string; nodeId: string };
-  idempotencyKey?: string;
-  // Replay-from-node: run only this node + its descendants, seeding the context
-  // from `initialData` (the node's recorded input snapshot). `replayOfExecutionId`
-  // links the new run back to the origin for lineage. Both omitted on normal runs.
-  replayFromNodeId?: string;
-  replayOfExecutionId?: string;
-  // Fan-out chain link: this run is item `chain.index` of a fan-out, and is
-  // responsible for dispatching the next one when it finishes. Carries its own
-  // seed source, so `initialData` is derived from it rather than passed in.
-  // See src/inngest/fan-out.ts for why children are chained instead of all
-  // being dispatched up front.
-  fanOutChain?: FanOutChain;
 };
 
 /**
