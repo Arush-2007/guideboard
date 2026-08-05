@@ -9,7 +9,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
-import { verifyTypeformWebhookSignature } from "@/lib/webhook-verify";
+import { verifyWebhookRequest } from "@/lib/webhook-verify";
 
 type TypeformAnswer = {
   type?: string;
@@ -58,29 +58,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const signingSecret = process.env.TYPEFORM_WEBHOOK_SECRET;
-    if (!signingSecret) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "TYPEFORM_WEBHOOK_SECRET is not configured. Add it to your environment to verify webhooks.",
-        },
-        { status: 503 },
-      );
-    }
-
     const rawBody = await request.text();
-    const typeformSignature = request.headers.get("typeform-signature");
 
-    if (
-      !verifyTypeformWebhookSignature(rawBody, typeformSignature, signingSecret)
-    ) {
-      return NextResponse.json(
-        { success: false, error: "Invalid Typeform signature" },
-        { status: 400 },
-      );
-    }
+    const auth = verifyWebhookRequest({
+      request,
+      rawBody,
+      scheme: { kind: "hmac-sha256", header: "typeform-signature" },
+      secret: process.env.TYPEFORM_WEBHOOK_SECRET,
+      secretName: "TYPEFORM_WEBHOOK_SECRET",
+      // 400, not the default 401: this is the code Typeform has always seen
+      // from us, and a refactor is the wrong moment to change what a provider
+      // observes on failure.
+      invalidStatus: 400,
+      invalidMessage: "Invalid Typeform signature",
+    });
+    if (!auth.ok) return auth.response;
 
     const url = new URL(request.url);
     const workflowId = url.searchParams.get("workflowId");

@@ -7,7 +7,7 @@ import { type NextRequest, NextResponse } from "next/server";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
-import { verifyTelegramWebhookSecretToken } from "@/lib/webhook-verify";
+import { verifyWebhookRequest } from "@/lib/webhook-verify";
 
 export async function POST(request: NextRequest) {
   try {
@@ -18,25 +18,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-    if (!expectedSecret) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "TELEGRAM_WEBHOOK_SECRET is not configured. Add it to your environment to verify webhooks.",
-        },
-        { status: 503 },
-      );
-    }
-
-    const secretHeader = request.headers.get("x-telegram-bot-api-secret-token");
-    if (!verifyTelegramWebhookSecretToken(secretHeader, expectedSecret)) {
-      return NextResponse.json(
-        { success: false, error: "Invalid Telegram webhook secret" },
-        { status: 401 },
-      );
-    }
+    // Telegram offers no body signature, only a static `secret_token` echoed
+    // in a header — so shared-secret is the strongest scheme available here.
+    const auth = verifyWebhookRequest({
+      request,
+      scheme: {
+        kind: "shared-secret",
+        header: "x-telegram-bot-api-secret-token",
+      },
+      secret: process.env.TELEGRAM_WEBHOOK_SECRET,
+      secretName: "TELEGRAM_WEBHOOK_SECRET",
+      invalidMessage: "Invalid Telegram webhook secret",
+    });
+    if (!auth.ok) return auth.response;
 
     const url = new URL(request.url);
     const workflowId = url.searchParams.get("workflowId");

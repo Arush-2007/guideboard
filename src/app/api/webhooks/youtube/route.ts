@@ -4,9 +4,10 @@ import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
+import { env } from "@/lib/env";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
-import { verifyYoutubeWebhookSignature } from "@/lib/webhook-verify";
+import { verifyWebhookRequest } from "@/lib/webhook-verify";
 
 type YoutubeCommentTriggerData = {
   videoId?: string;
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
   const challenge = searchParams.get("hub.challenge");
   const verifyToken = searchParams.get("hub.verify_token");
 
-  const expectedToken = process.env.YOUTUBE_VERIFY_TOKEN;
+  const expectedToken = env(process.env.YOUTUBE_VERIFY_TOKEN);
   if (!expectedToken) {
     return new NextResponse(null, { status: 503 });
   }
@@ -46,29 +47,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const webhookSecret = process.env.YOUTUBE_WEBHOOK_SECRET;
-    if (!webhookSecret) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "YOUTUBE_WEBHOOK_SECRET is not configured. Add it to your environment to verify webhooks.",
-        },
-        { status: 503 },
-      );
-    }
-
     const rawBody = await request.text();
 
-    const signatureHeader = request.headers.get("x-hub-signature");
-    if (
-      !verifyYoutubeWebhookSignature(rawBody, signatureHeader, webhookSecret)
-    ) {
-      return NextResponse.json(
-        { success: false, error: "Invalid YouTube webhook signature" },
-        { status: 401 },
-      );
-    }
+    // SHA1 is PubSubHubbub's choice, not ours — YouTube signs with it and we
+    // must verify what it sends.
+    const auth = verifyWebhookRequest({
+      request,
+      rawBody,
+      scheme: { kind: "hmac-sha1", header: "x-hub-signature" },
+      secret: process.env.YOUTUBE_WEBHOOK_SECRET,
+      secretName: "YOUTUBE_WEBHOOK_SECRET",
+      invalidMessage: "Invalid YouTube webhook signature",
+    });
+    if (!auth.ok) return auth.response;
 
     // Extract videoId from Atom XML feed if present
     // YouTube PubSubHubbub sends: <yt:videoId>VIDEO_ID</yt:videoId>
