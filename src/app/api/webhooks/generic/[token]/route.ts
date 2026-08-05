@@ -17,7 +17,7 @@ import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
-import { verifyGenericWebhookSignature } from "@/lib/webhook-verify";
+import { verifyWebhookRequest } from "@/lib/webhook-verify";
 
 // 1 MB cap — generic webhooks carry small JSON payloads; anything larger is
 // almost certainly abuse and would bloat the persisted Execution.input.
@@ -57,7 +57,7 @@ export async function POST(
 
     const webhook = await prisma.webhookTrigger.findUnique({
       where: { token },
-      select: { workflowId: true, secret: true },
+      select: { workflowId: true, secret: true, requireSignature: true },
     });
     if (!webhook) {
       return NextResponse.json(
@@ -66,21 +66,31 @@ export async function POST(
       );
     }
 
-    // Optional HMAC: enforced only when the caller chooses to sign.
-    const signature = request.headers.get("x-guideboard-signature");
-    if (signature) {
-      const valid = verifyGenericWebhookSignature(
-        rawBody,
-        signature,
-        decrypt(webhook.secret),
-      );
-      if (!valid) {
-        return NextResponse.json(
-          { success: false, error: "Invalid signature" },
-          { status: 401 },
-        );
-      }
-    }
+    // Per-trigger policy, not a global one. Triggers created from 2026-08-04
+    // REQUIRE a signature; rows that predate that keep the opt-in behaviour
+    // their caller was built against, until the user turns it on in the dialog.
+    // See `WebhookTrigger.requireSignature`.
+    //
+    // The secret is per-trigger and comes from the database rather than the
+    // environment, so the seam's unset branch is unreachable — `secretName`
+    // names the column for a message that cannot be produced.
+    const auth = verifyWebhookRequest({
+      request,
+      rawBody,
+      scheme: { kind: "hmac-sha256", header: "x-guideboard-signature" },
+      secret: decrypt(webhook.secret),
+      secretName: "WebhookTrigger.secret",
+      ...(webhook.requireSignature
+        ? {
+            mode: "required" as const,
+            invalidMessage:
+              "This webhook requires a signed request. Send " +
+              "X-Guideboard-Signature as sha256=<HMAC of the raw body> using " +
+              "the signing secret.",
+          }
+        : { mode: "if-present" as const, invalidMessage: "Invalid signature" }),
+    });
+    if (!auth.ok) return auth.response;
 
     // Lenient body: parse JSON when possible, otherwise pass the raw string
     // through so non-JSON callers still work.

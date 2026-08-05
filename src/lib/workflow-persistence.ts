@@ -428,12 +428,20 @@ export async function syncTriggerPollsForWorkflow(
   if (webhookTrigger) {
     await prisma.webhookTrigger.upsert({
       where: { workflowId },
+      // `update` deliberately touches neither the credentials nor
+      // `requireSignature`: an existing integration must keep working exactly
+      // as its caller was built, and the signing setting is the user's to
+      // change from the dialog, not something a workflow save rewrites.
       update: { userId },
       create: {
         userId,
         workflowId,
         token: createId(),
         secret: encrypt(randomBytes(32).toString("hex")),
+        // Secure by default for anything new. Rows that already exist keep the
+        // column default (false), so this cannot break a live webhook — see the
+        // field's comment in the schema.
+        requireSignature: true,
       },
     });
   } else {
