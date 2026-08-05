@@ -75,6 +75,44 @@ describe("availablePaths", () => {
     expect(paths.has("OG_SHEETS.firstRow.Customer Name")).toBe(false);
   });
 
+  it("closes no container for a discovered path with no dot in it", () => {
+    // REGRESSION. `slice(0, lastIndexOf("."))` on a dot-less path like `rows`
+    // returns the path minus its LAST CHARACTER — `row` — and the old
+    // truthiness guard accepted that plausible-looking string as an
+    // authoritative "contents known exhaustively" container.
+    //
+    // A closed container is the ONE thing that can declare a value absent
+    // outright (see `isOfferedPath` step 2), overriding the permissive
+    // root-reachable check. So the harm needs a second node publishing a root
+    // that the chopped string happens to equal — narrow, but the outcome is a
+    // working field erased by "Remove and save", not a warning. Registering a
+    // container derived by removing a character is simply never right.
+    const graph = [
+      { id: "t1", type: NodeType.TELEGRAM_TRIGGER, data: {} },
+      {
+        id: "g1",
+        type: NodeType.GOOGLE_SHEETS_ACTION,
+        data: {
+          ref: "OG_SHEETS",
+          action: "find_rows",
+          discoveredFields: [{ path: "rows", label: "Rows" }],
+        },
+      },
+      { id: "s1", type: NodeType.SLACK, data: { ref: "SLACK_1" } },
+    ];
+    const chain = [
+      { source: "t1", target: "g1" },
+      { source: "g1", target: "s1" },
+    ];
+
+    const available = availablePaths("s1", graph, chain);
+
+    // No container invented from a path that has no parent…
+    expect(available.closed.has("row")).toBe(false);
+    // …and the real path is still offered.
+    expect(available.paths.has("rows")).toBe(true);
+  });
+
   it("offers nothing to a node with no upstream at all (a fresh duplicate)", () => {
     expect(availablePaths("a2", nodes, edges).paths.size).toBe(0);
   });

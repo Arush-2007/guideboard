@@ -292,6 +292,24 @@ model WebhookTrigger {
   workflowId String   @unique
   token      String   @unique
   secret     String
+
+  // Whether an `X-Guideboard-Signature` HMAC is REQUIRED, or merely verified
+  // when the caller chooses to send one.
+  //
+  // Defaults to false so this migration cannot break a live integration: every
+  // row that already exists keeps the opt-in behaviour its caller was built
+  // against. Newly provisioned triggers are created with `true`
+  // (`syncTriggerPollsForWorkflow`), so the secure setting is what a new user
+  // gets without choosing it, and the insecure one is what an existing user
+  // keeps until they opt in.
+  //
+  // Signing matters here in a way it does not for the other webhooks: the
+  // baseline credential is a token in the URL, and URLs leak — into proxy logs,
+  // browser history, referrer headers, and screenshots — in a way a header
+  // never does. A signature also binds the request to its BODY, so a captured
+  // URL alone cannot be replayed with different content.
+  requireSignature Boolean @default(false)
+
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -497,12 +515,64 @@ model Execution {
   replayOf   Execution?  @relation("ExecutionReplays", fields: [replayOfId], references: [id], onDelete: SetNull)
   replays    Execution[] @relation("ExecutionReplays")
 
-  nodeExecutions NodeExecution[]
+  nodeExecutions     NodeExecution[]
+  fanOutSources      FanOutSource[]
+  nodeInputSnapshots NodeInputSnapshot[]
 
   @@unique([workflowId, idempotencyKey])
   @@index([workflowId, startedAt])
   @@index([workflowId, status, startedAt])
   @@index([replayOfId])
+}
+
+// The shared payload of one fan-out: the context every child run starts from,
+// plus the item list children index into. Written ONCE by the parent run and
+// read by each child, which is what keeps a chain link on the wire a
+// fixed-size cursor (~200 bytes) no matter how many items there are.
+//
+// Chaining children to guarantee item order used to make each link carry the
+// items still to do, so an N-item fan-out moved O(N^2) bytes and tipped onto
+// blob storage at a few hundred rows. Storing the payload once makes it O(N).
+//
+// Postgres rather than R2 on purpose: blob storage is optional everywhere else
+// in this codebase (every other caller degrades when it is unset), so making it
+// the only overflow path turned an unconfigured bucket into a dead workflow.
+// The database is already a hard dependency, and the cascade below means
+// `pruneOldExecutions` drops these with their execution — no new GC wiring.
+model FanOutSource {
+  id String @id @default(cuid())
+
+  executionId String
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  // The fan-out node, so two fan-out nodes in one run keep separate lists.
+  nodeId String
+
+  // The parent context MINUS the fan-out node's own summary output, which each
+  // child overwrites with its per-item seed on arrival. See `carriedContext`.
+  context Json
+
+  items FanOutItem[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([executionId, nodeId])
+}
+
+// One fan-out item. A row apiece, not one JSON array on FanOutSource, so a
+// child reads ONLY its own item: with an array, every one of N children would
+// transfer and parse the whole list, putting the O(N^2) term straight back —
+// in the database instead of on the wire. The composite primary key is the
+// lookup index.
+model FanOutItem {
+  sourceId String
+  source   FanOutSource @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  // 0-based cursor, matching `FanOutChain.index`.
+  index Int
+  item  Json
+
+  @@id([sourceId, index])
 }
 
 // Per-node record of a single run. Node identity is denormalized (plain nodeId
@@ -526,8 +596,12 @@ model NodeExecution {
   status     NodeExecutionStatus @default(RUNNING)
   input      Json?
   output     Json?
-  // R2 key of the full (unclamped) input snapshot; set only when `input` was
-  // replaced by a clampJson truncation marker. Enables lossless replay-from-node.
+  // LEGACY. R2 key of the full (unclamped) input snapshot, back when blob
+  // storage was the only place one could live. No longer written — full
+  // snapshots go to `NodeInputSnapshot` — but still READ by `replayFromNode`
+  // so rows written before the cutover stay replayable. Retention is 30 days,
+  // so this column and its read path can be dropped a month after the change
+  // ships; nothing will reference it by then.
   inputBlobKey String?
   error      String?             @db.Text
   errorStack String?             @db.Text
@@ -544,12 +618,45 @@ model NodeExecution {
   //
   // Deliberately NOT keyed on `sequence`: a node runs at most once per
   // execution today, which is what makes (executionId, nodeId) the natural
-  // identity. A future loops feature would have to add it here AND to the
-  // replay-snapshot blob key, which carries the same assumption.
+  // identity. A future loops feature would have to add it here AND to
+  // `NodeInputSnapshot`, which is keyed on the same pair.
   @@unique([executionId, nodeId])
   @@index([executionId, sequence])
   // On-demand canvas failure lookup: latest FAILED run for a given node
   // (executions.getLatestNodeFailure) filters by nodeId, so it needs its own
   // index — the composite above is keyed on executionId and can't serve it.
   @@index([nodeId])
+}
+
+// The full, unclamped input a node received, kept so `replayFromNode` can seed a
+// replay with real data. Written only when `NodeExecution.input` had to be
+// replaced by a `clampJson` truncation marker — replaying FROM a marker is
+// silently destructive (every `@<REF.path>@` renders blank while each node still
+// performs its real side effect), so the choice is a true snapshot or an honest
+// refusal.
+//
+// A SEPARATE TABLE rather than a column on NodeExecution, and that is the whole
+// design: the execution detail page loads node rows with `include: {}`, which
+// selects every scalar column. A wide `input` column there is exactly what the
+// 32 KB clamp exists to prevent, so re-adding the payload as a sibling column
+// would reintroduce the cost the clamp was paying to avoid. Here it is read
+// only by the one query that replays.
+//
+// Postgres rather than R2 (which this replaces) for the reason `FanOutSource`
+// gives: blob storage is optional everywhere else in this codebase, so making
+// it the only home for a snapshot meant an unconfigured bucket silently and
+// permanently destroyed the ability to replay. The database is not optional.
+model NodeInputSnapshot {
+  executionId String
+  execution   Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  // Keyed to match `NodeExecution`'s own identity, so the snapshot is found by
+  // primary key from the same pair the replay already has.
+  nodeId String
+
+  input Json
+
+  createdAt DateTime @default(now())
+
+  @@id([executionId, nodeId])
 }

@@ -70,6 +70,43 @@ export function isRefCheckedNodeType(type: string | null | undefined): boolean {
 }
 
 /**
+ * Node types whose context reads CANNOT be enumerated from `@<path>@` tokens.
+ *
+ * Deliberately a separate set from `UNCHECKED_NODE_TYPES`, even though both
+ * contain exactly the Code node today, because they answer different questions
+ * and one of them is load-bearing for DATA rather than for warnings:
+ *
+ * - `UNCHECKED_NODE_TYPES` asks "should the canvas badge this node?" and is
+ *   argued on UX grounds — warnings that fire unpredictably on working code are
+ *   worse than no warnings.
+ * - This set asks "if I scan this node's config for `@<path>@`, have I found
+ *   everything it can read?" — and the answer for a PROGRAM is no, because it
+ *   receives the whole context as `input` and reaches into it with ordinary
+ *   JavaScript, including destructuring, aliasing and computed access.
+ *
+ * Collapsing them would couple the two in the direction that fails unsafely.
+ * Teaching the dangling-ref detector to handle Code (a real JS scan, say) would
+ * remove it from `UNCHECKED_NODE_TYPES` — and a shared predicate would then
+ * tell `planDroppableKeys` that a Code node's references are fully enumerable.
+ * It would find zero tokens in a program, conclude every upstream key is
+ * unreachable, and hand every fan-out child an empty context: no error, every
+ * reference blank, every side effect still firing. A UI improvement would
+ * silently corrupt engine data, edited from a file whose author has no reason
+ * to look at the engine.
+ */
+const OPAQUE_CONTEXT_READERS: ReadonlySet<string> = new Set([NodeType.CODE]);
+
+/**
+ * Whether every context value this node type can read is discoverable by
+ * scanning its config for `@<path>@` tokens. Consumed by the fan-out
+ * carried-context pruner (`src/inngest/carried-context.ts`), which must carry
+ * the WHOLE context for anything that returns false.
+ */
+export function hasEnumerableRefs(type: string | null | undefined): boolean {
+  return !type || !OPAQUE_CONTEXT_READERS.has(type);
+}
+
+/**
  * Config keys a node IGNORES for its current settings.
  *
  * A dialog with a mode selector keeps every mode's fields populated so each

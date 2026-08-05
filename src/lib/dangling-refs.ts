@@ -145,8 +145,16 @@ function addPublishedPaths(into: MutableReachable, node: GraphNode): void {
     const root = row.path.split(".", 1)[0];
     if (root) into.roots.add(root);
     if (row.discovered) {
-      const parent = row.path.slice(0, row.path.lastIndexOf("."));
-      if (parent) into.closed.add(parent);
+      // Guarded on the INDEX, not on the resulting string. A dot-less path
+      // (`rows`) gives `lastIndexOf` of -1, and `slice(0, -1)` is the path minus
+      // its LAST CHARACTER — `row` — which is a plausible-looking string, so the
+      // old `if (parent)` check waved it through and registered it as a closed
+      // container. Everything beginning `row.` would then be declared
+      // authoritatively absent: an amber badge that will not clear, and a
+      // "Remove and save" that erases a working field. A single-segment
+      // discovered path simply has no parent to close.
+      const dot = row.path.lastIndexOf(".");
+      if (dot > 0) into.closed.add(row.path.slice(0, dot));
     }
   }
 }
@@ -312,8 +320,14 @@ const EMPTY_REACHABLE: MutableReachable = emptyReachable();
  * every node on every graph change, and rebuilding each config just to look at
  * it made a Sheets node's ~100 mapping and discovered-field objects into that
  * much immediate garbage, per node, per change.
+ *
+ * Exported for `inngest/carried-context.ts`, which asks a different question of
+ * the same trees (which context keys can this sub-graph read?) and must not
+ * disagree with this module about what a config CONTAINS — the two are already
+ * coupled through `isRefCheckedNodeType`, so a second hand-rolled walk could
+ * drift the pruner away from the detector silently.
  */
-function forEachString(
+export function forEachString(
   value: unknown,
   fn: (text: string, key: string) => void,
   key = "",

@@ -22,6 +22,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import type { Execution } from "@/generated/prisma";
 import { ExecutionStatus } from "@/generated/prisma";
+import { parseFanOutItemIndex } from "@/inngest/fan-out";
 import { useSuspenseExecutions } from "../hooks/use-executions";
 import { useExecutionsParams } from "../hooks/use-executions-params";
 
@@ -113,16 +114,10 @@ const formatStatus = (status: ExecutionStatus) => {
  * two in sync (the parser lives here, not there, because that module reaches
  * Buffer/engine code this client bundle must not pull in).
  */
+/** The 1-based item number shown on the badge, or null for a non-fan-out run. */
 const fanOutItemNumber = (idempotencyKey: string | null): number | null => {
-  if (!idempotencyKey) return null;
-  // Located rather than position-indexed, because rows written during the brief
-  // window when scoping was a `wf:<workflowId>:` key prefix (rather than the
-  // unique constraint it is now) carry that prefix ahead of "fanout:".
-  const marker = idempotencyKey.indexOf("fanout:");
-  if (marker === -1) return null;
-  const parts = idempotencyKey.slice(marker).split(":");
-  const index = Number(parts[3]);
-  return parts.length === 4 && Number.isInteger(index) ? index + 1 : null;
+  const index = parseFanOutItemIndex(idempotencyKey);
+  return index === null ? null : index + 1;
 };
 
 /**

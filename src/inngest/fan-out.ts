@@ -3,10 +3,10 @@ import type { OnItemFailure } from "@/lib/multi-match";
 
 /**
  * Fan-out planning, kept pure (no Inngest/Prisma/blob imports) so the seed
- * shape, idempotency keys, blob keys, the oversize decision, and the chain
- * advance are all unit testable in isolation. `executeWorkflow`'s
- * `FanOutDispatcher` calls `planFanOutChain` and then does the actual side
- * effects (blob upload + `sendWorkflowExecution`) with the plan it returns.
+ * shape, idempotency keys, the stored-payload split and the chain advance are
+ * all unit testable in isolation. `executeWorkflow`'s `FanOutDispatcher` calls
+ * `planFanOutChain` and then does the actual side effects (the `FanOutSource`
+ * write + `sendWorkflowExecution`) with the plan it returns.
  *
  * ## Why children are CHAINED rather than dispatched all at once
  *
@@ -22,6 +22,23 @@ import type { OnItemFailure } from "@/lib/multi-match";
  * finishes. Child i+1 is not created until child i is done, which makes ordering
  * structural rather than a matter of scheduler luck. Because the concurrency
  * limit already serialized the children, this costs no throughput whatsoever.
+ *
+ * ## Why a link carries a CURSOR and nothing else
+ *
+ * Chaining is what made payload size the hard part. The first version had each
+ * link carry the shared context plus the items still to do, so link i held
+ * N - i items: an N-item fan-out moved O(N^2) bytes, and a few hundred sheet
+ * rows blew past the Inngest event budget. The escape hatch was to park the
+ * payload in R2 — which made an optional dependency load-bearing, so an
+ * unconfigured bucket killed the run outright.
+ *
+ * Now the parent writes the shared context and the items ONCE, to `FanOutSource`
+ * / `FanOutItem` in Postgres, and a link on the wire is just
+ * `{ nodeId, outputKey, index, total, executionId, onItemFailure }` — a couple
+ * of hundred bytes, the same for item 0 of 5 and item 900 of 1000. The chain is
+ * O(N) in bytes and has no size ceiling to trip over. Postgres rather than R2
+ * because blob storage is optional everywhere else in this codebase, and the
+ * database is not.
  */
 
 /**
@@ -56,46 +73,33 @@ export type FanOutItemSeed = {
 };
 
 /**
- * Inline limit for ONE chain descriptor riding on an Inngest event. Deliberately
- * NOT `DEFAULT_CLAMP_BYTES` (32 KB), which bounds what gets written to Postgres
- * — borrowing a DB clamp for an event budget would push ordinary fan-outs onto
- * blob storage for no reason. Inngest's event ceiling is 512 KB; 128 KB leaves
- * generous headroom while keeping virtually every real fan-out inline.
+ * Clamp applied to a child's seed when it is persisted as `Execution.input`.
+ *
+ * Deliberately NOT `clampJson`'s 32 KB default: `input` is what `rerun` replays
+ * from, so a truncation marker there would re-dispatch the workflow with
+ * `{__truncated}` as its context. 128 KB keeps realistic seeds intact while
+ * still bounding a pathological one. Nothing about this value touches the
+ * event — a link carries only a cursor now.
  */
-export const FAN_OUT_CHAIN_INLINE_LIMIT_BYTES = 131_072;
+export const FAN_OUT_SEED_CLAMP_BYTES = 131_072;
 
 /**
- * Ceiling on what an inline chain may move IN AGGREGATE, across all its links.
+ * Ceiling on the stored payload of one fan-out (shared context + every item).
  *
- * The per-event limit alone does not bound this, and that gap bites hard: an
- * inline chain re-ships the shared context on every one of its N hops, so a
- * 100 KB first link that comfortably passes the per-event check still moves
- * ~100 MB over a 1000-item chain — to carry an item list that would fit in a
- * single blob. The aggregate check is what actually decides "is inline still
- * the cheap option here?", so both must pass.
- *
- * 8 MB is well above any realistic fan-out (a 50-row chain with an 8 KB context
- * is ~0.5 MB) while cutting over to blob storage long before the quadratic term
- * dominates — and blob is one write plus N small reads, which is strictly
- * cheaper past this point.
+ * Not a routing decision — there is only one path now — purely a guard so an
+ * absurd fan-out fails with a sentence the user can act on instead of writing
+ * hundreds of megabytes into Postgres. `MAX_FAN_OUT_ITEMS_LIMIT` (1000) caps the
+ * item COUNT and says nothing about item size; 32 MB across the list allows an
+ * average of ~32 KB per item at that limit, far above the row- and record-shaped
+ * payloads this actually carries.
  */
-export const FAN_OUT_CHAIN_TOTAL_BUDGET_BYTES = 8_388_608;
+export const FAN_OUT_SOURCE_MAX_BYTES = 33_554_432;
 
 /**
- * What one child run carries so it can (a) build its own seed and (b) dispatch
- * the next child. Two shapes, collapsed by `resolveChainSeed`:
- *
- * - INLINE (the common case): `remaining` holds items[index..], so each hop
- *   carries strictly less than the last and the LARGEST payload is the first
- *   one — which is why the oversize decision only has to be made once, by the
- *   parent, in `planFanOutChain`.
- * - BLOB (oversize): `chainBlobKey` points at a single stored
- *   `{ context, items }`, written once by the parent; `index` selects the item.
- *
- * Inline is the default rather than always-blob because blob costs one R2 write
- * plus one R2 read on the critical path of EVERY child run. Inline is the
- * faster path exactly where it applies; blob takes over exactly where bytes
- * start to matter.
+ * A chain link: which item of which fan-out this child run processes, and what
+ * it needs to hand the chain on. Fixed size — the context and the items live in
+ * `FanOutSource`/`FanOutItem`, keyed by `(executionId, nodeId)`, and `index`
+ * selects this child's item from them.
  */
 export type FanOutChain = {
   /** The fan-out node, replayed-from in every child run. */
@@ -106,20 +110,14 @@ export type FanOutChain = {
   index: number;
   /** Total item count, surfaced to the user as `total` on the seed. */
   total: number;
-  /** The parent run, for per-item idempotency keys and lineage. */
+  /** The parent run: half the `FanOutSource` key, and the lineage target. */
   executionId: string;
   /** Whether a failed item stops the chain or lets it continue. */
   onItemFailure: OnItemFailure;
-  /** Inline shape: the shared parent context. */
-  context?: WorkflowContext;
-  /** Inline shape: items[index..] — shrinks by one each hop. */
-  remaining?: unknown[];
-  /** Blob shape: key of a stored `{ context, items }`. */
-  chainBlobKey?: string;
 };
 
-/** What a chain blob holds — written once by the parent, read by each child. */
-export type FanOutChainBlob = {
+/** The shared payload a chain's children read, written once by the parent. */
+export type FanOutSource = {
   context: WorkflowContext;
   items: unknown[];
 };
@@ -142,19 +140,39 @@ export function fanOutItemIdempotencyKey(
   nodeId: string,
   index: number,
 ): string {
-  return `fanout:${executionId}:${nodeId}:${index}`;
+  return `${fanOutChildKeyPrefix(executionId, nodeId)}${index}`;
 }
 
 /**
- * Blob key for a chain's stored `{ context, items }`. Sits under the existing
- * `replay-contexts/${executionId}/` prefix on purpose: `pruneOldExecutions`'s
- * blob GC drops that whole prefix, so this needs zero new retention wiring.
+ * The key prefix shared by every child of one fan-out — for finding them all.
+ * Derived from the same template as the key itself so a query and a key can
+ * never disagree about the format.
  */
-export function fanOutChainBlobKey(
+export function fanOutChildKeyPrefix(
   executionId: string,
   nodeId: string,
 ): string {
-  return `replay-contexts/${executionId}/fan-out/${nodeId}/chain.json`;
+  return `fanout:${executionId}:${nodeId}:`;
+}
+
+/**
+ * The 0-based item index in a child's idempotency key, or `null` if it is not
+ * a fan-out key.
+ *
+ * LOCATES `fanout:` rather than indexing by position: rows written during the
+ * brief window when workflow scoping was a `wf:<workflowId>:` key PREFIX (it is
+ * now the `@@unique([workflowId, idempotencyKey])` constraint) carry that
+ * prefix ahead of `fanout:`, so `split(":")[3]` reads the wrong segment on
+ * them. Kept beside the builder as the format's only parser — the lineage badge
+ * in `executions.tsx` and `scripts/verify-fan-out.ts` both route through here.
+ */
+export function parseFanOutItemIndex(key: string | null): number | null {
+  if (!key) return null;
+  const marker = key.indexOf("fanout:");
+  if (marker === -1) return null;
+  const parts = key.slice(marker).split(":");
+  const index = Number(parts[3]);
+  return parts.length === 4 && Number.isInteger(index) ? index : null;
 }
 
 /**
@@ -187,15 +205,33 @@ export function buildFanOutSeed({
 }
 
 /**
- * Plans the FIRST link of a chain: the descriptor for item 0, plus whether the
- * whole chain has to be parked in a blob instead of riding inline.
+ * The context a fan-out actually needs to store: everything EXCEPT the fan-out
+ * node's own summary output.
  *
- * The oversize check runs on the inline descriptor for item 0, which is the
- * biggest one the chain will ever produce (`remaining` only shrinks), so one
- * measurement settles BOTH budgets for every hop: the per-event limit, and the
- * aggregate the chain will move across all N links. A serialization failure
- * (e.g. a BigInt in the context) also counts as oversized so we never throw
- * here and the dispatcher routes it to a blob.
+ * `buildFanOutSeed` overwrites `outputKey` with the per-item seed on arrival,
+ * so whatever sat there is discarded by every child without being read — the
+ * node's own executor short-circuits on the SEED (`readFanOutSeed`), never on
+ * the summary. Keeping it is therefore provably dead weight, and it is not
+ * small: a 156-row Sheets `find_rows` summary is ~75 KB of `rows` and
+ * `columnValues`, duplicating the item list it was fanning out over.
+ */
+function carriedContext(
+  context: WorkflowContext,
+  outputKey: string,
+): WorkflowContext {
+  if (!(outputKey in context)) return context;
+  const { [outputKey]: _ownSummary, ...rest } = context;
+  return rest;
+}
+
+/**
+ * Plans a fan-out: the payload to store once, and the link for item 0.
+ *
+ * `sourceBytes` is what the stored payload serializes to, measured here (where
+ * the shared context has already been stripped) and enforced by the caller
+ * against `FAN_OUT_SOURCE_MAX_BYTES` — the throw is the caller's because it
+ * wants a `NonRetriableError`, and this module stays free of Inngest imports.
+ * It costs one pass over data the caller is about to write anyway.
  *
  * Returns `null` for an empty item list — there is no chain to start.
  */
@@ -206,8 +242,6 @@ export function planFanOutChain({
   executionId,
   nodeId,
   onItemFailure,
-  inlineLimitBytes = FAN_OUT_CHAIN_INLINE_LIMIT_BYTES,
-  totalBudgetBytes = FAN_OUT_CHAIN_TOTAL_BUDGET_BYTES,
 }: {
   items: unknown[];
   context: WorkflowContext;
@@ -215,73 +249,37 @@ export function planFanOutChain({
   executionId: string;
   nodeId: string;
   onItemFailure: OnItemFailure;
-  inlineLimitBytes?: number;
-  totalBudgetBytes?: number;
-}): {
-  chain: FanOutChain;
-  oversized: boolean;
-  blobKey: string;
-  blob: FanOutChainBlob;
-} | null {
+}): { chain: FanOutChain; source: FanOutSource; sourceBytes: number } | null {
   if (items.length === 0) return null;
 
-  const head = {
-    nodeId,
-    outputKey,
-    index: 0,
-    total: items.length,
-    executionId,
-    onItemFailure,
+  const source: FanOutSource = {
+    context: carriedContext(context, outputKey),
+    items,
   };
-  const inline: FanOutChain = { ...head, context, remaining: items };
 
-  let oversized: boolean;
+  let sourceBytes: number;
   try {
-    const firstLink = Buffer.byteLength(JSON.stringify(inline), "utf8");
-    // BOTH budgets. The first link is the largest (`remaining` only shrinks),
-    // so one measurement settles the per-event check for every hop — but the
-    // chain re-ships that payload N times, and only the aggregate check
-    // catches a link that is individually fine yet ruinous in bulk.
-    // `firstLink * total` overestimates (later links are smaller) by roughly
-    // 2x, which is the right direction for a safety ceiling.
-    oversized =
-      firstLink > inlineLimitBytes ||
-      firstLink * items.length > totalBudgetBytes;
+    sourceBytes = Buffer.byteLength(JSON.stringify(source), "utf8");
   } catch {
-    // Unserializable (cycles, BigInt, …) — can't ride the event inline, so
-    // treat as oversized and let the dispatcher route it through a blob.
-    oversized = true;
+    // Unserializable (cycles, BigInt, …). It cannot be stored as JSON either,
+    // so it fails the same guard rather than needing its own return channel —
+    // infinity exceeds any budget. The caller words the two cases differently,
+    // since "over the size limit" would be a lie about this one.
+    sourceBytes = Number.POSITIVE_INFINITY;
   }
-
-  const blobKey = fanOutChainBlobKey(executionId, nodeId);
 
   return {
-    chain: oversized ? { ...head, chainBlobKey: blobKey } : inline,
-    oversized,
-    blobKey,
-    blob: { context, items },
+    chain: {
+      nodeId,
+      outputKey,
+      index: 0,
+      total: items.length,
+      executionId,
+      onItemFailure,
+    },
+    source,
+    sourceBytes,
   };
-}
-
-/**
- * Collapses either chain shape down to the one `(context, item)` pair this
- * child needs. `blob` is the hydrated `chainBlobKey` payload and is required
- * for — and only for — the blob shape.
- */
-export function resolveChainSeed(
-  chain: FanOutChain,
-  blob?: FanOutChainBlob | null,
-): { context: WorkflowContext; item: unknown } {
-  if (chain.chainBlobKey) {
-    if (!blob) {
-      throw new Error(
-        `Fan-out chain references blob ${chain.chainBlobKey} but no payload was hydrated`,
-      );
-    }
-    return { context: blob.context, item: blob.items[chain.index] };
-  }
-  // Inline: `remaining` is items[index..], so this child's item is its head.
-  return { context: chain.context ?? {}, item: (chain.remaining ?? [])[0] };
 }
 
 /**
@@ -302,14 +300,7 @@ export function planChainAdvance(
   const nextIndex = chain.index + 1;
 
   return {
-    chain: {
-      ...chain,
-      index: nextIndex,
-      // Inline only: drop the item this run consumed, so each hop carries
-      // strictly less than the last. Undefined on the blob shape, where the
-      // cursor alone selects the item.
-      ...(chain.remaining ? { remaining: chain.remaining.slice(1) } : {}),
-    },
+    chain: { ...chain, index: nextIndex },
     idempotencyKey: fanOutItemIdempotencyKey(
       chain.executionId,
       chain.nodeId,

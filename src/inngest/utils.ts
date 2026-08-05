@@ -56,6 +56,13 @@ type SendWorkflowExecutionInput = {
   // an oversized payload must not ride the Inngest event (event size limits),
   // so `executeWorkflow` hydrates it from blob storage inside a step.
   initialDataBlobKey?: string;
+  // Seed the run from a stored `NodeInputSnapshot` instead of an inline
+  // `initialData`. Same reason as `initialDataBlobKey` above and NOT
+  // interchangeable with passing the row's contents: a snapshot exists only
+  // because the input passed the 32 KB clamp, and may be up to
+  // `NODE_INPUT_SNAPSHOT_MAX_BYTES` (4 MB) — far past Inngest's event ceiling.
+  // Only this small reference travels; `executeWorkflow` reads the row.
+  initialDataSnapshot?: { executionId: string; nodeId: string };
   idempotencyKey?: string;
   // Replay-from-node: run only this node + its descendants, seeding the context
   // from `initialData` (the node's recorded input snapshot). `replayOfExecutionId`
@@ -86,6 +93,7 @@ export const sendWorkflowExecution = async ({
   workflowId,
   initialData,
   initialDataBlobKey,
+  initialDataSnapshot,
   idempotencyKey,
   replayFromNodeId,
   replayOfExecutionId,
@@ -97,6 +105,7 @@ export const sendWorkflowExecution = async ({
       workflowId,
       initialData: initialData ?? {},
       initialDataBlobKey,
+      initialDataSnapshot,
       idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,

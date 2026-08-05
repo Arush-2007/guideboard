@@ -3,6 +3,11 @@ import {
   buildFailureEmail,
   resolveFailureCause,
 } from "@/features/executions/lib/failure-email";
+import {
+  planNodeInputSnapshots,
+  readNodeInputSnapshot,
+  storeNodeInputSnapshots,
+} from "@/features/executions/lib/node-input-snapshot";
 import type { StepTools } from "@/features/executions/types";
 import {
   ExecutionStatus,
@@ -10,13 +15,8 @@ import {
   NodeType,
   type Prisma,
 } from "@/generated/prisma";
-import {
-  deleteBlobsByPrefix,
-  getBlobJson,
-  isBlobConfigured,
-  putBlob,
-} from "@/lib/blob";
-import { clampJson, isClampedMarker } from "@/lib/clamp-json";
+import { deleteBlobsByPrefix, getBlobJson, isBlobConfigured } from "@/lib/blob";
+import { clampJson } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { sendEmail } from "@/lib/email";
 import {
@@ -35,15 +35,15 @@ import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { inngest } from "./client";
 import {
   buildFanOutSeed,
-  FAN_OUT_CHAIN_INLINE_LIMIT_BYTES,
+  FAN_OUT_SEED_CLAMP_BYTES,
+  FAN_OUT_SOURCE_MAX_BYTES,
   type FanOutChain,
-  type FanOutChainBlob,
   fanOutItemIdempotencyKey,
   planChainAdvance,
   planFanOutChain,
   remainingAfter,
-  resolveChainSeed,
 } from "./fan-out";
+import { readFanOutSource, storeFanOutSource } from "./fan-out-store";
 import { resolveWorkflowRetries } from "./retry-policy";
 import {
   type FanOutDispatcher,
@@ -115,7 +115,7 @@ const GMAIL_READ = {
  *     deferred. The record carries the moment the engine OBSERVED the node
  *     settle, so flush time never leaks into the data.
  */
-function createPrismaNodeRecorder({
+export function createPrismaNodeRecorder({
   executionId,
 }: {
   executionId: string;
@@ -179,10 +179,17 @@ function createPrismaNodeRecorder({
         const completedAt = record.completedAt;
         const startedAt = new Date(completedAt.getTime() - record.durationMs);
 
-        // Clamped ONCE and carried to the blob pass below. It was previously
-        // recomputed there just to test `isClampedMarker`, which meant a second
-        // full serialization of every node's context — on the run's critical
-        // path, since this flush runs inside a step the run is waiting on.
+        // `undefined` for a SKIPPED node, because the ENGINE omits `input` on
+        // those records — see `NodeRecord.input`. `clampJson(undefined)`
+        // returns null, so the column is left unset and the serialization never
+        // happens: a branchy workflow records ~37 skipped nodes per run, and
+        // walking each one's whole context cost real time inside a step the run
+        // waits on.
+        //
+        // The ROW still gets written. It is what distinguishes "deliberately
+        // not run" from "never reached because the run died earlier" — the
+        // latter leaves no row at all — and both the skipped panel and replay's
+        // refusal message depend on telling those apart.
         const clampedInput = clampJson(record.input);
 
         const row = {
@@ -198,10 +205,9 @@ function createPrismaNodeRecorder({
                 ? NodeExecutionStatus.SKIPPED
                 : NodeExecutionStatus.SUCCESS,
           input: clampedInput as Prisma.InputJsonValue,
-          // Deliberately null on insert. The R2 upload happens AFTER the row
-          // exists, so a failed upload can never leave a row pointing at an
-          // object that was never stored — replay then refuses cleanly instead
-          // of 404ing. See the second pass below.
+          // Always null now: full snapshots live in `NodeInputSnapshot`, and
+          // this column is read-only legacy kept so rows written before that
+          // cutover stay replayable. See the schema.
           inputBlobKey: null,
           output:
             record.output !== undefined
@@ -247,61 +253,54 @@ function createPrismaNodeRecorder({
         prisma.nodeExecution.createMany({ data: rows, skipDuplicates: true }),
       ]);
 
-      // Oversized contexts: park the full snapshot in R2 so replay-from-node can
-      // seed real data (a truncation marker would silently corrupt the replay),
-      // then point the row at it. Only for rows THIS flush inserted, so a
-      // rebuilt buffer never re-uploads — the objection that sank an earlier
-      // design, where `skipDuplicates` deduped at the database long after the
-      // bytes had already gone over the wire.
+      // Oversized contexts: park the full snapshot so replay-from-node can seed
+      // real data (a truncation marker would silently corrupt the replay).
+      // Only for rows THIS flush inserted, so a rebuilt buffer never re-writes
+      // — the objection that sank an earlier design, where `skipDuplicates`
+      // deduped at the database long after the bytes had already gone over the
+      // wire.
       //
-      // SKIPPED nodes never seed a replay (replayFromNode rejects them), so
-      // their snapshots aren't stored. Best-effort throughout: recording must
-      // never break a run.
-      if (!isBlobConfigured()) return;
-      for (const { record, clampedInput } of prepared) {
-        if (record.status === "SKIPPED") continue;
-        if (!isClampedMarker(clampedInput)) continue;
-
-        const key = `replay-contexts/${executionId}/${record.nodeId}.json`;
-        try {
-          await putBlob({
-            key,
-            bytes: Buffer.from(JSON.stringify(record.input)),
-            contentType: "application/json",
-          });
-          await prisma.nodeExecution.update({
-            where: {
-              executionId_nodeId: { executionId, nodeId: record.nodeId },
-            },
-            data: { inputBlobKey: key },
-            select: { id: true },
-          });
-        } catch (err) {
-          logger.error("Failed to store full input snapshot", err, {
-            executionId,
-            nodeId: record.nodeId,
-          });
-        }
+      // One batched insert, and no early return on unconfigured blob storage:
+      // this used to require R2, so an unset bucket silently and permanently
+      // destroyed the ability to replay any node whose input crossed the 32 KB
+      // clamp. Best-effort still — recording must never break a run — but the
+      // failure is now a real database error worth logging, not a config gap.
+      const snapshots = planNodeInputSnapshots(executionId, prepared);
+      if (snapshots.length === 0) return;
+      try {
+        await storeNodeInputSnapshots(snapshots);
+      } catch (err) {
+        logger.error("Failed to store full input snapshots", err, {
+          executionId,
+          nodeIds: snapshots.map((s) => s.nodeId),
+        });
       }
     },
   };
 }
 
 /**
- * Inngest/blob-backed FanOutDispatcher: starts a fan-out node's CHAIN of child
+ * Postgres-backed FanOutDispatcher: starts a fan-out node's CHAIN of child
  * sub-executions — each child a replay-from-node run of the fan-out node +
  * descendants, seeded with one item.
  *
- * Only item 0 is sent here. Each child dispatches the next as it finishes (see
- * `advanceFanOutChain`), which is what makes children run in item order: Inngest
- * gives no ordering guarantee across separate runs, so the previous
- * dispatch-all-at-once landed N events effectively tied and they ran shuffled.
- * Chaining costs no throughput — `executeWorkflow`'s `concurrency: { limit: 1 }`
- * already serialized them — and no extra billed steps, because the advance rides
- * inside the child's existing `update-execution` step.
+ * Two side effects, both inside one existing step: the shared payload is stored
+ * ONCE (`FanOutSource` + one `FanOutItem` per item), and item 0 is sent. Each
+ * child dispatches the next as it finishes (see `advanceFanOutChain`), which is
+ * what makes children run in item order: Inngest gives no ordering guarantee
+ * across separate runs, so the previous dispatch-all-at-once landed N events
+ * effectively tied and they ran shuffled. Chaining costs no throughput —
+ * `executeWorkflow`'s `concurrency: { limit: 1 }` already serialized them — and
+ * no extra billed steps, because the advance rides inside the child's existing
+ * `update-execution` step.
  *
- * The send happens inside a `step.run` so a retry re-emits it; the child's own
- * `check-idempotency` step then dedupes on the per-item `idempotencyKey`.
+ * Storing the payload rather than putting it on the event is what keeps a link
+ * a fixed-size cursor; see the header of src/inngest/fan-out.ts for why the
+ * carry-the-remaining-items version was O(N^2) and needed R2 to survive.
+ *
+ * Both effects happen inside a `step.run` so a retry re-runs them: the write is
+ * an upsert (+ `skipDuplicates`) and the child's own `check-idempotency` step
+ * dedupes the re-sent event on the per-item `idempotencyKey`.
  */
 function createFanOutDispatcher({
   step,
@@ -328,24 +327,31 @@ function createFanOutDispatcher({
         // outgoing edge, so the downstream sub-graph is recorded SKIPPED.
         if (!planned) return { dispatched: 0 };
 
-        // One blob for the WHOLE chain (not one per item, as the previous
-        // dispatch-all design needed), written once and read by each child.
-        if (planned.oversized) {
-          if (!isBlobConfigured()) {
-            throw new NonRetriableError(
-              `This fan-out's ${items.length} items are too large to send ` +
-                "inline and blob storage (R2) is not configured — set " +
-                "R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and " +
-                "R2_BUCKET so the item list can be offloaded instead of " +
-                "exceeding the Inngest event size limit.",
-            );
-          }
-          await putBlob({
-            key: planned.blobKey,
-            bytes: Buffer.from(JSON.stringify(planned.blob)),
-            contentType: "application/json",
-          });
+        // A guard, not a routing decision: there is one storage path now, so
+        // this only stops an unstorable payload from being written at all.
+        // Infinite bytes is `planFanOutChain`'s signal for "not serializable",
+        // which needs its own sentence — "Infinity MB" tells nobody anything.
+        if (planned.sourceBytes > FAN_OUT_SOURCE_MAX_BYTES) {
+          throw new NonRetriableError(
+            Number.isFinite(planned.sourceBytes)
+              ? `This fan-out's ${items.length} items come to ` +
+                  `${Math.round(planned.sourceBytes / 1_048_576)} MB, over the ` +
+                  `${FAN_OUT_SOURCE_MAX_BYTES / 1_048_576} MB limit for one ` +
+                  "step's item list. Narrow the filter, or select fewer fields " +
+                  "per item."
+              : `This fan-out's ${items.length} items could not be stored ` +
+                  "because something reaching this step is not valid JSON — a " +
+                  "circular reference or a BigInt, most likely.",
+          );
         }
+
+        // Written once for the whole chain, read one item at a time by each
+        // child.
+        await storeFanOutSource({
+          executionId,
+          nodeId,
+          source: planned.source,
+        });
 
         await sendWorkflowExecution({
           workflowId,
@@ -380,9 +386,9 @@ function strandedNote(count: number, because: string): string {
 /**
  * Reads a JSON blob, turning any failure into a NonRetriableError that names
  * what could not be loaded. A missing or corrupt blob is a data problem no
- * retry resolves, and both callers (a run's stored context snapshot, and a
- * fan-out chain's item list) want identical handling — so the wrapping lives
- * here rather than being spelled out at each call site.
+ * retry resolves, so the caller seeding a run from a stored context snapshot
+ * wants exactly this — and the wrapping lives here so the message stays one
+ * sentence rather than a raw S3 error.
  */
 async function hydrateBlobJson<T>(key: string, what: string): Promise<T> {
   try {
@@ -607,6 +613,7 @@ export const executeWorkflow = inngest.createFunction(
       workflowId,
       initialData: inlineInitialData,
       initialDataBlobKey,
+      initialDataSnapshot,
       idempotencyKey,
       replayFromNodeId,
       replayOfExecutionId,
@@ -615,9 +622,12 @@ export const executeWorkflow = inngest.createFunction(
       workflowId?: string;
       // Keep this loose because this JSON is stored directly in Prisma.
       initialData?: any;
-      // Oversized seed contexts travel as a blob key, not inline (event size
-      // limits) — hydrated below inside a step. See sendWorkflowExecution.
+      // LEGACY. Oversized seed contexts used to travel as a blob key, not
+      // inline (event size limits) — hydrated below inside a step.
       initialDataBlobKey?: string;
+      // The current form of the same thing: a reference to a stored
+      // `NodeInputSnapshot`, hydrated below. See sendWorkflowExecution.
+      initialDataSnapshot?: { executionId: string; nodeId: string };
       idempotencyKey?: string;
       // Replay-from-node: see runWorkflowNodes / sendWorkflowExecution.
       replayFromNodeId?: string;
@@ -659,31 +669,23 @@ export const executeWorkflow = inngest.createFunction(
     }
 
     // Creates the run's row and resolves the context it starts from. A fan-out
-    // child DERIVES its seed from the chain descriptor rather than receiving it
-    // as `initialData`, which is what lets each link carry only the items still
-    // to do instead of a pre-built seed per item.
+    // child DERIVES its seed from the chain descriptor plus the payload its
+    // parent stored, rather than receiving it as `initialData` — which is what
+    // lets a link on the wire be a cursor instead of a copy of the data.
     //
     // Folded into this one step on purpose: the derivation is needed here
     // anyway (the row persists the seed as `input`, which is what `rerun`
     // replays), so chaining costs no extra billed Inngest step per child.
-    // An INLINE chain carries its own payload, so the seed is a pure function
-    // of event data. Derived out here, NOT returned from the step below:
-    // Inngest memoizes step output into run state and re-ships it on every
-    // later invocation, so returning the seed would put a full copy of the
-    // context on the wire once per step boundary — on top of the event that
-    // already carries it. Recomputing a shallow spread per invocation is far
-    // cheaper than transmitting it.
-    const inlineChainSeed =
-      fanOutChain && !fanOutChain.chainBlobKey
-        ? buildFanOutSeed({
-            ...resolveChainSeed(fanOutChain),
-            outputKey: fanOutChain.outputKey,
-            index: fanOutChain.index,
-            total: fanOutChain.total,
-          })
-        : undefined;
-
-    const { id: executionId, chainSeed: hydratedChainSeed } = await step.run(
+    //
+    // Returning the seed from a step DOES put it in Inngest's memoized run
+    // state, which is re-shipped at every later step boundary. That is not a
+    // regression to undo by moving the payload back onto the event: the event
+    // is re-shipped per invocation too, and it used to carry the context plus
+    // every REMAINING item, so state now holds strictly less (context + one
+    // item) than the event previously did. Deriving it outside the step is no
+    // longer possible in any case — the payload lives in Postgres, and reading
+    // it outside a step would mean an uncheckpointed query per invocation.
+    const { id: executionId, chainSeed } = await step.run(
       "create-execution",
       async (): Promise<{
         id: string;
@@ -711,60 +713,47 @@ export const executeWorkflow = inngest.createFunction(
           return { id: created.id };
         }
 
-        // upsert, not create, for every chain child: the oversized branch below
-        // has a SECOND failable write after the row exists, and Inngest re-runs
-        // the whole callback on retry. A plain create would then hit the
-        // `inngestEventId` unique constraint and fail identically on every
-        // attempt, turning a transient DB blip into a permanently dead fan-out
-        // item. Re-finding the row it already made is the recovery.
+        // Row FIRST, then the read below: a failed read has to land on a
+        // *visible* FAILED run, and onFailure updates by `inngestEventId`, so
+        // the row must already exist. That is what makes this two writes.
+        //
+        // upsert, not create: with a second failable write after the row
+        // exists, and Inngest re-running the whole callback on retry, a plain
+        // create would hit the `inngestEventId` unique constraint and fail
+        // identically on every attempt — turning a transient DB blip into a
+        // permanently dead fan-out item. Re-finding the row it already made is
+        // the recovery.
         const created = await prisma.execution.upsert({
           where: { inngestEventId },
           create: {
             workflowId,
             inngestEventId,
             idempotencyKey: idempotencyKey ?? null,
-            // The inline seed is known already and is provably under the event
-            // budget, so it is stored verbatim in ONE write — no clamp (it
-            // could never fire) and no backfill.
-            input: (inlineChainSeed ?? {}) as Prisma.InputJsonValue,
+            input: {},
             replayOfId: replayOfExecutionId ?? null,
           },
           update: {},
           select: { id: true },
         });
 
-        if (inlineChainSeed) return { id: created.id };
-
-        // Oversized chain: the item list lives in a blob. The row was created
-        // BEFORE this read for the same reason `hydrate-initial-data` runs after
-        // create-execution — a hydration failure has to land on a *visible*
-        // FAILED run, and onFailure updates by `inngestEventId`, so the row must
-        // already exist. Hence the second write below, on this path only.
-        const blob = await hydrateBlobJson<FanOutChainBlob>(
-          fanOutChain.chainBlobKey as string,
-          "fan-out item list",
-        );
-
         const seed = buildFanOutSeed({
-          ...resolveChainSeed(fanOutChain, blob),
+          ...(await readFanOutSource(fanOutChain)),
           outputKey: fanOutChain.outputKey,
           index: fanOutChain.index,
           total: fanOutChain.total,
         });
 
-        // Clamped, not blob-referenced: a chain goes to a blob because the
-        // whole ITEM LIST is large, which says nothing about one item's seed —
-        // 1000 small rows produce a big list and small seeds. Budgeted against
-        // the CHAIN's inline limit rather than `clampJson`'s 32 KB default, so
-        // a seed in the 32-128 KB band persists intact; storing a truncation
-        // marker there would make `rerun` re-dispatch the workflow with
-        // `{__truncated}` as its context.
+        // Clamped rather than offloaded: a fan-out's item LIST being large says
+        // nothing about one item's seed — 1000 small rows make a big list and
+        // small seeds — so the clamp is the proportionate guard. Budgeted at
+        // `FAN_OUT_SEED_CLAMP_BYTES` rather than `clampJson`'s 32 KB default
+        // because `input` is what `rerun` replays from; see that constant.
         await prisma.execution.update({
           where: { id: created.id },
           data: {
             input: clampJson(
               seed,
-              FAN_OUT_CHAIN_INLINE_LIMIT_BYTES,
+              FAN_OUT_SEED_CLAMP_BYTES,
             ) as Prisma.InputJsonValue,
           },
           select: { id: true },
@@ -774,26 +763,58 @@ export const executeWorkflow = inngest.createFunction(
       },
     );
 
-    const chainSeed = inlineChainSeed ?? hydratedChainSeed;
-
-    // Hydrate a blob-stored seed context. Runs AFTER create-execution so a
-    // missing/unreadable blob fails a *visible* run (onFailure marks the row
+    // Hydrate a seed context that travelled as a REFERENCE rather than inline,
+    // because it was too large for the event. Runs AFTER create-execution so a
+    // missing/unreadable snapshot fails a *visible* run (onFailure marks the row
     // FAILED); before the row exists, onFailure's update-by-eventId would
     // itself throw and the failure would be invisible. Step outputs already
     // carry full contexts between nodes, so pulling the snapshot inside a step
-    // adds no new size bound. A bad blob is a data problem a retry won't fix.
-    // A fan-out child's seed is already resolved (derived inline above, or
-    // hydrated inside create-execution), so there is nothing left to fetch.
-    const initialData: Record<string, unknown> | undefined =
-      chainSeed ??
-      (initialDataBlobKey
-        ? await step.run("hydrate-initial-data", () =>
-            hydrateBlobJson<Record<string, unknown>>(
-              initialDataBlobKey,
-              "stored context snapshot",
-            ),
-          )
-        : inlineInitialData);
+    // adds no new size bound. A missing one is a data problem a retry won't fix.
+    // A fan-out child's seed is already resolved inside create-execution, so
+    // there is nothing left to fetch.
+    //
+    // Written as four early returns rather than one nested expression so each
+    // source is independently readable — and independently DELETABLE: the
+    // legacy blob arm is scheduled to go once every run predating the Postgres
+    // cutover has aged out (see `NodeInputSnapshot`), and it should lift out in
+    // one cut rather than have to be unpicked from the middle of a ternary.
+    const resolveInitialData = async (): Promise<
+      Record<string, unknown> | undefined
+    > => {
+      if (chainSeed) return chainSeed;
+
+      if (initialDataSnapshot) {
+        return step.run("hydrate-initial-data", async () => {
+          const stored = await readNodeInputSnapshot(
+            initialDataSnapshot.executionId,
+            initialDataSnapshot.nodeId,
+          );
+          if (!stored) {
+            throw new NonRetriableError(
+              "The stored input snapshot for this replay " +
+                `(node ${initialDataSnapshot.nodeId} of execution ` +
+                `${initialDataSnapshot.executionId}) no longer exists. ` +
+                "Re-run the whole workflow instead.",
+            );
+          }
+          return stored as Record<string, unknown>;
+        });
+      }
+
+      // LEGACY: runs recorded before snapshots moved to Postgres.
+      if (initialDataBlobKey) {
+        return step.run("hydrate-initial-data", () =>
+          hydrateBlobJson<Record<string, unknown>>(
+            initialDataBlobKey,
+            "stored context snapshot",
+          ),
+        );
+      }
+
+      return inlineInitialData;
+    };
+
+    const initialData = await resolveInitialData();
 
     const { sortedNodes, connections, userId } = await step.run(
       "prepare-workflow",
@@ -1523,6 +1544,11 @@ export const pruneOldExecutions = inngest.createFunction(
         let deleted = 0;
         for (const execution of prunable) {
           const prefixes = [
+            // LEGACY, and self-draining: nothing writes `replay-contexts/`
+            // any more (full node inputs go to `NodeInputSnapshot`, fan-out
+            // item lists to `FanOutSource`). Kept until every run predating
+            // that cutover has aged past the 30-day cutoff — after which this
+            // prefix, `inputBlobKey`, and its read path all go together.
             `replay-contexts/${execution.id}/`,
             `conversions/${execution.workflow.userId}/${execution.id}/`,
           ];

@@ -10,6 +10,11 @@ import {
   type WorkflowContext,
 } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
+import {
+  type DroppableKeys,
+  planDroppableKeys,
+  pruneCarriedContext,
+} from "@/inngest/carried-context";
 import { directPublish } from "@/inngest/direct-publish";
 import { isFanOutItem } from "@/inngest/fan-out";
 import { MAX_STEP_BUDGET_MS, STEP_OVERHEAD_MS } from "@/lib/http-budget";
@@ -58,8 +63,18 @@ export interface NodeRecord {
   nodeName: string;
   sequence: number;
   status: "SUCCESS" | "FAILED" | "SKIPPED";
-  /** Context the node received. */
-  input: WorkflowContext;
+  /**
+   * Context the node received — absent on SKIPPED, because a node that never
+   * ran received nothing. What flowed PAST it is not its input, and no reader
+   * can use it: `replayFromNode` refuses a SKIPPED node outright, and the
+   * `<SkippedNodes>` panel renders only id/type/name.
+   *
+   * Optional HERE rather than dropped by each recorder, so the type states the
+   * fact once and every implementation inherits it. Storing it was measurably
+   * the largest thing in `NodeExecution`: 74% of rows and 80% of all stored
+   * input bytes belonged to nodes that did not run.
+   */
+  input?: WorkflowContext;
   /** New keys the node added; present on success only. */
   output?: WorkflowContext;
   /** Present on failure only. */
@@ -523,6 +538,28 @@ export async function runWorkflowNodes({
     ? forwardReachableFrom(replayFromNodeId, connections)
     : null;
 
+  /**
+   * Which context keys a fan-out from `nodeId` may drop, computed once.
+   *
+   * Purely a function of the static graph — the node set a child runs is
+   * `forwardReachableFrom(nodeId)`, the same set `replaySlice` above is built
+   * from — so it is safe to cache for the life of the run, and wasteful not to:
+   * this sits in the handler body that Inngest re-executes at every step
+   * boundary.
+   */
+  const droppableKeysCache = new Map<string, DroppableKeys>();
+  const droppableKeysFor = (nodeId: string): DroppableKeys => {
+    const cached = droppableKeysCache.get(nodeId);
+    if (cached !== undefined) return cached;
+    const reachableIds = forwardReachableFrom(nodeId, connections);
+    const planned = planDroppableKeys(
+      sortedNodes.filter((n) => reachableIds.has(n.id)),
+      sortedNodes,
+    );
+    droppableKeysCache.set(nodeId, planned);
+    return planned;
+  };
+
   // Index incoming connections per node so reachability is O(edges), not O(n²).
   const incomingByNode = new Map<string, ExecutableConnection[]>();
   for (const conn of connections) {
@@ -567,19 +604,20 @@ export async function runWorkflowNodes({
       nodeType: node.type as NodeType,
       nodeName: node.name,
       sequence,
-      input: before,
+    };
+    /** The SKIPPED record: no `input`, because the node never received one. */
+    const skipped = {
+      ...base,
+      status: "SKIPPED" as const,
+      durationMs: 0,
+      completedAt: new Date(),
     };
 
     // Replay: a node outside the replay slice already ran upstream — skip it
     // (its output is in the seeded context). Checked before reachability so the
     // original trigger/roots don't re-fire on a replay.
     if (replaySlice && !replaySlice.has(node.id)) {
-      pending.push({
-        ...base,
-        status: "SKIPPED",
-        durationMs: 0,
-        completedAt: new Date(),
-      });
+      pending.push(skipped);
       return;
     }
 
@@ -601,12 +639,7 @@ export async function runWorkflowNodes({
       incoming.some(isEdgeActive);
 
     if (!reachable) {
-      pending.push({
-        ...base,
-        status: "SKIPPED",
-        durationMs: 0,
-        completedAt: new Date(),
-      });
+      pending.push(skipped);
       return;
     }
 
@@ -666,19 +699,46 @@ export async function runWorkflowNodes({
           );
         }
 
+        // Anything the children cannot reference is dead weight in a context
+        // carried to all N of them, so drop it.
+        //
+        // The node set is EXACT, not an estimate: a child is dispatched with
+        // `replayFromNodeId = node.id`, and its `replaySlice` above is this same
+        // `forwardReachableFrom(node.id, connections)` — which is checked before
+        // reachability, so a child runs precisely these nodes and records every
+        // other one SKIPPED. Whatever this call returns is therefore the literal
+        // list of nodes that will read the carried context. (Branch activation
+        // is deliberately ignored here for the same reason it is there: which
+        // branch a child takes is not known until it runs, so every descendant
+        // must be assumed live.)
+        //
+        // Pruned on the dispatched copy ONLY — `context` below stays whole,
+        // because it is what this run returns as its own output and what the
+        // execution page renders. Only keys attributable to a node's output are
+        // ever candidates, and any sub-graph that cannot be read exhaustively
+        // drops nothing at all; see `carried-context.ts`.
+        // Memoized per node: the answer depends only on the STATIC graph, and
+        // Inngest re-executes this handler body at every later step boundary —
+        // so without the cache the reachability walk and both config scans
+        // re-ran on every invocation after the fan-out, to recompute a value
+        // that cannot have changed, while the dispatch below sat memoized and
+        // did nothing.
+        const carried = pruneCarriedContext(after, droppableKeysFor(node.id));
+
         // Dispatch BEFORE recording SUCCESS so a dispatch failure is caught
         // below and the node is recorded FAILED (and the run fails) instead of
         // being falsely marked successful with its children never sent.
         await fanOutDispatcher.dispatch({
           nodeId: node.id,
           outputKey,
-          context: after,
+          context: carried,
           items: result.items,
           onItemFailure: result.onItemFailure,
         });
 
         pending.push({
           ...base,
+          input: before,
           status: "SUCCESS",
           output: newKeysDiff(before, after),
           durationMs: Date.now() - startedAt,
@@ -701,6 +761,7 @@ export async function runWorkflowNodes({
 
       pending.push({
         ...base,
+        input: before,
         status: "SUCCESS",
         output: newKeysDiff(before, after),
         durationMs: Date.now() - startedAt,
@@ -711,6 +772,7 @@ export async function runWorkflowNodes({
     } catch (error) {
       pending.push({
         ...base,
+        input: before,
         status: "FAILED",
         error,
         durationMs: Date.now() - startedAt,

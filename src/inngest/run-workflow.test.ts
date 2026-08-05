@@ -67,7 +67,28 @@ const { runWorkflowNodes, MAX_SEGMENT_NODES, WORST_INLINE_NODE_MS } =
 const step = { run: async (_n: string, fn: () => unknown) => fn() } as any;
 const publish = (async () => {}) as any;
 
-type N = { id: string; type: any; name: string; data: unknown };
+type N = {
+  id: string;
+  type: any;
+  name: string;
+  data: unknown;
+  ref?: string | null;
+};
+
+/**
+ * A node whose context key is ATTRIBUTABLE to it — `ref` set, so
+ * `getOutputKeyForNode` returns the same key the fake executor writes under
+ * (`[nodeId]`). Real executors always write under their `outputKey`; the plain
+ * `node()`/`trigger()` helpers below predate refs and write a key that matches
+ * no node, which the carried-context prune (correctly) refuses to touch.
+ */
+const refNode = (id: string, data?: unknown, type = "AI_TEXT"): N => ({
+  id,
+  type,
+  name: id,
+  data,
+  ref: id,
+});
 const node = (id: string, data?: unknown): N => ({
   id,
   type: "AI_TEXT",
@@ -352,7 +373,9 @@ describe("runWorkflowNodes fan-out", () => {
       sortedNodes: [
         trigger("trigger"),
         node("fan", { fanOut: [{ x: 1 }, { x: 2 }] }),
-        node("child"),
+        // References the fan-out node's own output, so the carried context is
+        // expected to retain it — see the pruning tests below.
+        node("child", { message: "@<ai_text_fan.fannedOut>@" }),
       ],
       connections: [edge("trigger", "fan"), edge("fan", "child")],
       userId: "u",
@@ -378,6 +401,152 @@ describe("runWorkflowNodes fan-out", () => {
 
     // Run resolves with the fan-out node's context (its own summary output set).
     expect(result.ai_text_fan).toEqual({ fannedOut: 2 });
+  });
+
+  it("prunes context the children cannot reference from the DISPATCHED copy", async () => {
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    // `trigger` writes `{ trigger: true }` under its own output key; the
+    // fan-out node writes its own summary. Nothing downstream of the fan-out
+    // names either, so neither can be read by a child and both are dead weight
+    // in a context copied to all N.
+    const result = await runWorkflowNodes({
+      sortedNodes: [
+        refNode("trigger", undefined, "MANUAL_TRIGGER"),
+        node("fan", { fanOut: [{ x: 1 }] }),
+        node("child", { message: "no references here" }),
+      ],
+      connections: [edge("trigger", "fan"), edge("fan", "child")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    expect(calls[0].context).toEqual({});
+
+    // …and the run's OWN context is untouched. It is what this execution
+    // returns and what the execution page renders, so the prune must not reach
+    // it — only the copy handed to the dispatcher.
+    expect(result.trigger).toBe(true);
+    expect(result.ai_text_fan).toEqual({ fannedOut: 1 });
+  });
+
+  it("keeps an upstream value a descendant references", async () => {
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("trigger"),
+        node("fan", { fanOut: [{ x: 1 }] }),
+        node("child", { message: "Hello @<trigger.name>@" }),
+      ],
+      connections: [edge("trigger", "fan"), edge("fan", "child")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    expect(calls[0].context.trigger).toBe(true);
+  });
+
+  it("carries EVERYTHING when a Code node sits downstream of the fan-out", async () => {
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    // A Code node reads the whole context as `input` with arbitrary JavaScript,
+    // so nothing may be dropped. Pruning here would blank values silently — the
+    // run would still succeed and still write, just with empty data.
+    await runWorkflowNodes({
+      sortedNodes: [
+        trigger("trigger"),
+        node("fan", { fanOut: [{ x: 1 }] }),
+        { id: "code", type: "CODE", name: "code", data: { code: "return {}" } },
+      ],
+      connections: [edge("trigger", "fan"), edge("fan", "code")],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    expect(calls[0].context.trigger).toBe(true);
+    expect(calls[0].context.ai_text_fan).toEqual({ fannedOut: 1 });
+  });
+
+  it("ignores references in nodes that are NOT descendants of the fan-out", async () => {
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    // `sibling` names `trigger`, but it hangs off the trigger rather than the
+    // fan-out, so no child run will ever execute it. Its references must not
+    // keep a value alive in every child's context.
+    await runWorkflowNodes({
+      sortedNodes: [
+        refNode("trigger", undefined, "MANUAL_TRIGGER"),
+        node("fan", { fanOut: [{ x: 1 }] }),
+        node("child", { message: "static" }),
+        node("sibling", { message: "@<trigger.name>@" }),
+      ],
+      connections: [
+        edge("trigger", "fan"),
+        edge("fan", "child"),
+        edge("trigger", "sibling"),
+      ],
+      userId: "u",
+      executionId: "exec_test",
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    expect(calls[0].context).toEqual({});
+  });
+
+  it("never prunes a context key that belongs to no node", async () => {
+    // REGRESSION. Webhook routes seed trigger payloads straight into the
+    // context root (`commentId`, `commentText`, … — see
+    // api/webhooks/instagram/route.ts), and several executors read them with
+    // plain property access instead of a template (`context.commentText` in
+    // ai-reply-generator; `context.commentId` in the Instagram/YouTube reply
+    // nodes). They appear in no node config, so scanning `@<>@` tokens cannot
+    // see them — an earlier keep-list version of the prune dropped all of them,
+    // which would have had the reply node greet "someone" and then throw.
+    const { recorder } = collect();
+    const { dispatcher, calls } = collectDispatcher();
+
+    await runWorkflowNodes({
+      sortedNodes: [
+        refNode("trigger", undefined, "MANUAL_TRIGGER"),
+        node("fan", { fanOut: [{ x: 1 }] }),
+        node("child", { message: "static" }),
+      ],
+      connections: [edge("trigger", "fan"), edge("fan", "child")],
+      userId: "u",
+      executionId: "exec_test",
+      // Seeded like a webhook does: keys owned by no node in the graph.
+      initialData: { commentId: "c1", commentText: "hi", commenterName: "Ada" },
+      step,
+      publish,
+      recorder,
+      fanOutDispatcher: dispatcher,
+    });
+
+    expect(calls[0].context.commentId).toBe("c1");
+    expect(calls[0].context.commentText).toBe("hi");
+    expect(calls[0].context.commenterName).toBe("Ada");
+    // …while the attributable, unreferenced trigger output is still dropped.
+    expect(calls[0].context.trigger).toBeUndefined();
   });
 
   it("passes the node's item-failure policy through to the dispatcher", async () => {

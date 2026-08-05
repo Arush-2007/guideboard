@@ -30,6 +30,7 @@ import type { StepTools } from "@/features/executions/types";
 import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
+import { createPrismaNodeRecorder } from "./functions";
 import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
 import { topologicalSort } from "./utils";
 
@@ -696,5 +697,91 @@ describe("execution idempotency scoping", () => {
     expect(
       await prisma.execution.count({ where: { workflowId: workflow.id } }),
     ).toBe(2);
+  });
+});
+
+describe("createPrismaNodeRecorder — what a SKIPPED row stores", () => {
+  /**
+   * A settled-node record as the ENGINE hands one to the recorder — which is
+   * why a SKIPPED record carries no `input` at all. See `NodeRecord.input`: a
+   * node that never ran received nothing, and what flowed past it is not its
+   * input. Constructing one WITH an input here would test a shape the engine
+   * cannot produce.
+   */
+  const record = (
+    nodeId: string,
+    status: "SUCCESS" | "SKIPPED",
+    input: Record<string, unknown>,
+  ) => ({
+    nodeId,
+    nodeType: NodeType.HTTP_REQUEST,
+    nodeName: nodeId,
+    sequence: 1,
+    status,
+    ...(status === "SKIPPED" ? {} : { input }),
+    durationMs: 0,
+    completedAt: new Date(),
+  });
+
+  const newExecution = async () => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Recorder rows", userId },
+    });
+    const execution = await prisma.execution.create({
+      data: {
+        workflowId: workflow.id,
+        inngestEventId: `evt_${Math.random()}`,
+      },
+    });
+    return execution.id;
+  };
+
+  // The context that flows PAST a skipped node — big, and read by nothing.
+  const context = {
+    OG_SHEETS: { rows: Array.from({ length: 200 }, (_, i) => i) },
+  };
+
+  it("stores no input for a skipped node, and the real input for one that ran", async () => {
+    const executionId = await newExecution();
+
+    await createPrismaNodeRecorder({ executionId }).flush([
+      record("ran", "SUCCESS", context),
+      record("skipped", "SKIPPED", context),
+    ] as never);
+
+    const rows = await prisma.nodeExecution.findMany({
+      where: { executionId },
+      select: { nodeId: true, status: true, input: true },
+      orderBy: { nodeId: "asc" },
+    });
+
+    const ran = rows.find((r) => r.nodeId === "ran");
+    const skipped = rows.find((r) => r.nodeId === "skipped");
+
+    // The row still exists — it is what tells "deliberately not run" apart from
+    // "never reached", and the skipped panel and replay refusal both need it.
+    expect(skipped?.status).toBe("SKIPPED");
+    // …but carries none of the context that merely flowed past it.
+    expect(skipped?.input).toBeNull();
+
+    // A node that actually ran is unaffected.
+    expect(ran?.input).toEqual(context);
+  });
+
+  it("keeps the skipped row cheap regardless of how large the context is", async () => {
+    const executionId = await newExecution();
+    const huge = { blob: "x".repeat(500_000) };
+
+    await createPrismaNodeRecorder({ executionId }).flush([
+      record("skipped", "SKIPPED", huge),
+    ] as never);
+
+    const row = await prisma.nodeExecution.findFirstOrThrow({
+      where: { executionId },
+      select: { input: true },
+    });
+    // Not a truncation marker either — nothing is stored at all, so there is
+    // no serialization of the context on the run's critical path.
+    expect(row.input).toBeNull();
   });
 });
