@@ -85,6 +85,25 @@ A node may narrow this. The Calculator (`components/calculator/executor.ts`) rej
 
 **Polling triggers:** Gmail, Google Sheets, and YouTube comment triggers are not webhooks — they're driven by one cron Inngest function, `pollTriggers` (every 5 min), which lists all three providers' `*Poll` rows in a single step and fans out a `polls/<provider>.check` event per row. The per-poll work (external API calls, workflow dispatch) lives in the matching `handle*Poll` function, each with its own retries and concurrency cap, and emits workflow executions with idempotency keys. Keep the dispatchers combined: a cron tick is billed whether or not it finds work, so splitting them back into one function (or one step) per provider triples the cost of an idle install for identical behaviour. Schedule triggers have their own dispatcher, `pollSchedules`, whose cron is `SCHEDULE_POLL_CRON` (default every minute). `pruneOldExecutions` deletes executions older than 30 days. Every one of these is registered in `src/app/api/inngest/route.ts` — new Inngest functions must be added there to be served.
 
+### Oversized payloads go to Postgres, not blob storage
+
+Two things the engine must not lose are too big for an Inngest event or for an inline column, and both live in Postgres:
+
+- **`NodeInputSnapshot`** — a node's full input when `clampJson` had to reduce `NodeExecution.input` to a truncation marker. Replay-from-node seeds from this; without it, replaying a marker renders every reference blank while each node still performs its side effect.
+- **`FanOutSource` / `FanOutItem`** — a fan-out's shared context and one row per item, written once by the parent and read one item at a time by each child. This is what keeps a chain link on the wire a fixed-size cursor instead of O(N²) bytes.
+
+Both cascade-delete from `Execution`, so `pruneOldExecutions` covers them with no new GC wiring.
+
+**Blob storage (R2) is optional; the database is not.** Every other R2 consumer degrades when it is unset — avatar upload becomes a feature flag, signed-URL refresh no-ops, the convert node refuses one action. These two used R2 and therefore silently lost data when it was unconfigured. `NodeExecution.inputBlobKey` and the `replay-contexts/` prune prefix are read-only legacy, deletable once every run predating the cutover has aged past the 30-day retention (from 2026-09-04).
+
+A SKIPPED node's record carries **no** `input` (`NodeRecord.input` is optional) — a node that never ran received nothing, and no reader can use it.
+
+### Production configuration is checked at boot
+
+`assertProductionConfig` (`src/lib/production-config.ts`), called from `src/instrumentation.ts`, refuses to start a **production** server when a security-critical secret is unset or still an `.env.example` placeholder. Dev is unaffected, so a fresh clone still runs on an unedited `.env`.
+
+⚠️ Its list is hand-maintained with no compiler backstop — the same hazard as the partial node registries above — and the same knowledge also lives in `.env.example` and `DEPLOYMENT.md`. Adding a security-critical secret means editing all three.
+
 ### API layer (tRPC)
 
 tRPC v11 with superjson. Routers are composed in `src/trpc/routers/_app.ts` from per-feature routers under `src/features/*/server/routers.ts`. `src/trpc/init.ts` defines `protectedProcedure` (requires a Better Auth session, attaches `ctx.auth`). `premiumProcedure` is currently an alias for `protectedProcedure` (Polar billing is disabled). Server components prefetch via `src/trpc/server.tsx`; client uses TanStack Query via `src/trpc/client.tsx`.
@@ -97,7 +116,11 @@ Third-party secrets (API keys, OAuth tokens) are encrypted at rest with `cryptr`
 
 ### Webhooks
 
-Inbound webhooks are Next route handlers under `src/app/api/webhooks/<provider>/`. Each verifies a provider-specific shared secret/signature (see `src/lib/webhook-verify.ts` and the `*_WEBHOOK_SECRET` / `*_VERIFY_TOKEN` env vars in `.env.example`), then calls `sendWorkflowExecution`.
+Inbound webhooks are Next route handlers under `src/app/api/webhooks/<provider>/`. Each verifies a provider-specific shared secret/signature (see the `*_WEBHOOK_SECRET` / `*_VERIFY_TOKEN` env vars in `.env.example`), then calls `sendWorkflowExecution`.
+
+**A route must authenticate through `verifyWebhookRequest` (`src/lib/webhook-verify.ts`) and never inline.** That function is the module's only export, and it owns the decision an unset secret implies: 503, never "allow". Deciding that per-route is what let one endpoint drift open — it skipped verification entirely when its secret was unset, which stopped being survivable the moment `env()` began (correctly) collapsing `.env.example` placeholders to `undefined`. Pass `scheme` (`shared-secret` / `hmac-sha256` / `hmac-sha1`), the secret as a literal `process.env.X`, and `secretName`; override `invalidStatus` only to preserve a status a provider already observes (Instagram 403, Typeform 400).
+
+The generic webhook (`generic/[token]`) is per-trigger rather than env-configured: an unguessable cuid2 token is the baseline credential, and `WebhookTrigger.requireSignature` decides whether an `X-Guideboard-Signature` HMAC is required. New triggers are provisioned with it `true`; rows predating the column keep `false` so live integrations don't break.
 
 ### Conversational builder
 
