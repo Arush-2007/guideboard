@@ -24,10 +24,42 @@ export const webhookRouter = createTRPCRouter({
     .query(async ({ ctx, input }) => {
       const row = await prisma.webhookTrigger.findFirst({
         where: { workflowId: input.workflowId, userId: ctx.auth.user.id },
-        select: { token: true, secret: true },
+        select: { token: true, secret: true, requireSignature: true },
       });
       if (!row) return null;
-      return { token: row.token, secret: decrypt(row.secret) };
+      return {
+        token: row.token,
+        secret: decrypt(row.secret),
+        requireSignature: row.requireSignature,
+      };
+    }),
+
+  // Turns signature enforcement on or off for this workflow's webhook.
+  //
+  // Both directions are legitimate. Turning it ON is the recommendation, but a
+  // user whose sender genuinely cannot compute an HMAC — a no-code form tool, a
+  // device posting fixed JSON — must be able to turn it back off rather than be
+  // locked out of their own integration. The URL token remains the baseline in
+  // that case, which is what every existing row already relies on.
+  setRequireSignature: protectedProcedure
+    .input(z.object({ workflowId: z.string(), requireSignature: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      // Scoped by userId in the WHERE, not checked afterwards, so another
+      // user's row can never be the one updated.
+      const { count } = await prisma.webhookTrigger.updateMany({
+        where: { workflowId: input.workflowId, userId: ctx.auth.user.id },
+        data: { requireSignature: input.requireSignature },
+      });
+
+      if (count === 0) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message:
+            "No webhook for this workflow yet — save the workflow first.",
+        });
+      }
+
+      return { requireSignature: input.requireSignature };
     }),
 
   // Rotates the token + secret, invalidating the old URL. Returns the new pair.

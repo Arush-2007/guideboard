@@ -5,6 +5,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { useEffect } from "react";
 import { useFieldArray, useForm } from "react-hook-form";
 import z from "zod";
+import { useDanglingRefGuard } from "@/components/dangling-ref-guard";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import {
   MatchingOptions,
@@ -172,6 +173,8 @@ export const CandidateScoringDialog = ({
     onOpenChange(false);
   };
 
+  const guard = useDanglingRefGuard({ currentNodeId, onSave: handleSubmit });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] sm:max-w-2xl">
@@ -185,7 +188,7 @@ export const CandidateScoringDialog = ({
         </DialogHeader>
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(handleSubmit)}
+            onSubmit={form.handleSubmit(guard.save)}
             className="mt-4 space-y-6"
           >
             <FormField
@@ -517,6 +520,7 @@ export const CandidateScoringDialog = ({
             </DialogFooter>
           </form>
         </Form>
+        {guard.dialog}
       </DialogContent>
     </Dialog>
   );

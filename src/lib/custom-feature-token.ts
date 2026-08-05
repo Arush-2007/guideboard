@@ -21,9 +21,27 @@ export type CustomFeatureToken = {
   params: Record<string, string>;
 };
 
+/**
+ * The opening of every custom-feature token, owned here with the rest of the
+ * grammar so no consumer has to re-spell it. If this moves, everything that
+ * recognises these tokens moves with it.
+ */
+const CUSTOM_FEATURE_PREFIX = "custom:";
+
 // Anchored: the ENTIRE (trimmed) value must be the token, so a mapping that
 // merely contains a token (mixed with other text) is NOT treated as a feature.
 const CUSTOM_TOKEN_RE = /^@<custom:([a-zA-Z0-9_]+)(?:\?([^>]*))?>@$/;
+
+/**
+ * Whether a reference names a custom feature rather than an upstream node's
+ * output — i.e. whether it is the node's own behaviour, not data flowing in.
+ *
+ * Takes the REF (a token's first dot-segment, `custom:serialNumber`), not a
+ * whole token, so callers walking references can ask without re-wrapping.
+ */
+export function isCustomFeatureRef(ref: string): boolean {
+  return ref.startsWith(CUSTOM_FEATURE_PREFIX);
+}
 
 export function encodeCustomFeatureToken(
   featureId: string,

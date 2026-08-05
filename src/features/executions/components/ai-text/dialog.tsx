@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useEffect, useRef } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { useDanglingRefGuard } from "@/components/dangling-ref-guard";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { Button } from "@/components/ui/button";
 import {
@@ -128,6 +129,8 @@ export const AiTextDialog = ({
     onOpenChange(false);
   };
 
+  const guard = useDanglingRefGuard({ currentNodeId, onSave: handleSubmit });
+
   const credentialLabel =
     provider === "openai"
       ? "OPENAI"
@@ -159,7 +162,7 @@ export const AiTextDialog = ({
         </DialogHeader>
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(handleSubmit)}
+            onSubmit={form.handleSubmit(guard.save)}
             className="space-y-8 mt-4"
           >
             <FormField
@@ -305,6 +308,7 @@ export const AiTextDialog = ({
             </DialogFooter>
           </form>
         </Form>
+        {guard.dialog}
       </DialogContent>
     </Dialog>
   );

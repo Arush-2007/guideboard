@@ -1,5 +1,6 @@
 import "server-only";
 import { FORMAT_META, type Format } from "@/lib/conversions";
+import { hasEnv, requireEnv } from "@/lib/env";
 import { assertWithinTransferLimit } from "@/lib/file-limits";
 import { rethrowTimeout, timeoutSignal } from "@/lib/http";
 
@@ -70,18 +71,21 @@ type CloudConvertJob = {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function getApiKey(): string {
-  const key = process.env.CLOUDCONVERT_API_KEY;
-  if (!key) {
-    throw new Error(
-      "CloudConvert is not configured — set CLOUDCONVERT_API_KEY in your .env.",
-    );
-  }
-  return key;
+  return requireEnv(
+    process.env.CLOUDCONVERT_API_KEY,
+    "CLOUDCONVERT_API_KEY",
+    "CloudConvert",
+  );
 }
 
-/** Whether media conversions are available (provider key present). */
+/**
+ * Whether media conversions are available. Rejects the unedited
+ * `your-cloudconvert-api-key` placeholder as well as an absent key, so an
+ * untouched `.env` reports "not configured" instead of sending a fake key to
+ * CloudConvert and surfacing whatever it answers with.
+ */
 export const isMediaConvertConfigured = (): boolean =>
-  Boolean(process.env.CLOUDCONVERT_API_KEY);
+  hasEnv(process.env.CLOUDCONVERT_API_KEY);
 
 async function ccRequest<T>(
   path: string,

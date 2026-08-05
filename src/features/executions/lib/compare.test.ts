@@ -85,7 +85,9 @@ describe("evaluateCondition", () => {
       expect(
         evaluateCondition("equals", "RJ-09 AB 1234", "rj09ab1234", opts),
       ).toBe(true);
-      expect(evaluateCondition("contains", "a - b - c", "abc", opts)).toBe(true);
+      expect(evaluateCondition("contains", "a - b - c", "abc", opts)).toBe(
+        true,
+      );
     });
 
     it("a needle that strips to empty is a no-match, not a tautology", () => {

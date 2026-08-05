@@ -69,6 +69,8 @@ const marker = { __truncated: true, bytes: 99_999, preview: "{…" };
 const createRunWithNode = async (nodeInput: {
   input: object;
   inputBlobKey?: string | null;
+  /** A full snapshot in `NodeInputSnapshot` — where they live now. */
+  snapshot?: object;
 }) => {
   const workflow = await prisma.workflow.create({
     data: { name: "Replay workflow", userId: authState.userId },
@@ -92,6 +94,15 @@ const createRunWithNode = async (nodeInput: {
       inputBlobKey: nodeInput.inputBlobKey ?? null,
     },
   });
+  if (nodeInput.snapshot) {
+    await prisma.nodeInputSnapshot.create({
+      data: {
+        executionId: execution.id,
+        nodeId: "n_target",
+        input: nodeInput.snapshot,
+      },
+    });
+  }
   return { workflow, execution };
 };
 
@@ -114,7 +125,62 @@ describe("executions.replayFromNode", () => {
     });
   });
 
-  it("dispatches the blob key when the recorded input was truncated", async () => {
+  it("seeds from the stored snapshot when the recorded input was truncated", async () => {
+    // The case that used to be impossible without R2. No blob key, no R2 — and
+    // the replay still resolves to real data.
+    //
+    // Dispatched BY REFERENCE, never inline: a snapshot exists only because the
+    // input passed the 32 KB clamp and may reach 4 MB, far past Inngest's event
+    // ceiling. `executeWorkflow` reads the row inside a step.
+    stubR2Unconfigured();
+    const full = { trigger: { email: "a@b.c" }, rows: [1, 2, 3] };
+    const { workflow, execution } = await createRunWithNode({
+      input: marker,
+      snapshot: full,
+    });
+
+    await caller.executions.replayFromNode({
+      executionId: execution.id,
+      nodeId: "n_target",
+    });
+
+    expect(sendWorkflowExecutionMock).toHaveBeenCalledWith({
+      workflowId: workflow.id,
+      initialDataSnapshot: { executionId: execution.id, nodeId: "n_target" },
+      replayFromNodeId: "n_target",
+      replayOfExecutionId: execution.id,
+    });
+    // The payload itself must NOT ride the event.
+    expect(JSON.stringify(sendWorkflowExecutionMock.mock.calls)).not.toContain(
+      "a@b.c",
+    );
+  });
+
+  it("prefers the stored snapshot over a legacy blob key", async () => {
+    // A row could carry both only during the changeover, but precedence must
+    // be stated: the snapshot needs no hydration round trip and no R2.
+    stubR2Configured();
+    const full = { trigger: { from: "postgres" } };
+    const { workflow, execution } = await createRunWithNode({
+      input: marker,
+      inputBlobKey: "replay-contexts/e1/n_target.json",
+      snapshot: full,
+    });
+
+    await caller.executions.replayFromNode({
+      executionId: execution.id,
+      nodeId: "n_target",
+    });
+
+    expect(sendWorkflowExecutionMock).toHaveBeenCalledWith({
+      workflowId: workflow.id,
+      initialDataSnapshot: { executionId: execution.id, nodeId: "n_target" },
+      replayFromNodeId: "n_target",
+      replayOfExecutionId: execution.id,
+    });
+  });
+
+  it("dispatches the blob key for a LEGACY row with no stored snapshot", async () => {
     stubR2Configured();
     const { workflow, execution } = await createRunWithNode({
       input: marker,

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { useTRPC } from "@/trpc/client";
 
 interface Props {
@@ -48,6 +49,22 @@ export const WebhookTriggerDialog = ({
       },
       onError: (error) => {
         toast.error(`Failed to regenerate: ${error.message}`);
+      },
+    }),
+  );
+
+  const setRequireSignature = useMutation(
+    trpc.webhook.setRequireSignature.mutationOptions({
+      onSuccess: ({ requireSignature }) => {
+        queryClient.invalidateQueries(getOptions);
+        toast.success(
+          requireSignature
+            ? "Signature now required — unsigned requests will be rejected"
+            : "Signature no longer required — the URL is the only protection",
+        );
+      },
+      onError: (error) => {
+        toast.error(`Could not change the setting: ${error.message}`);
       },
     }),
   );
@@ -104,7 +121,10 @@ export const WebhookTriggerDialog = ({
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="webhook-secret">Signing secret (optional)</Label>
+              <Label htmlFor="webhook-secret">
+                Signing secret
+                {data.requireSignature ? "" : " (optional)"}
+              </Label>
               <div className="flex gap-2">
                 <Input
                   id="webhook-secret"
@@ -124,12 +144,34 @@ export const WebhookTriggerDialog = ({
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                To verify payloads, send{" "}
-                <code className="font-mono">X-Guideboard-Signature</code> as{" "}
-                <code className="font-mono">sha256=&lt;HMAC&gt;</code> of the
-                raw body using this secret. Without it, the unguessable URL is
-                the only protection.
+                Send <code className="font-mono">X-Guideboard-Signature</code>{" "}
+                as <code className="font-mono">sha256=&lt;HMAC&gt;</code> of the
+                raw body using this secret.
               </p>
+            </div>
+
+            <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+              <div className="space-y-1">
+                <Label htmlFor="webhook-require-signature">
+                  Require a signature
+                </Label>
+                {/* Says what turning it OFF actually costs, rather than just
+                    naming the setting — the URL is the only credential left,
+                    and URLs end up in logs and browser history. */}
+                <p className="text-xs text-muted-foreground">
+                  {data.requireSignature
+                    ? "Unsigned requests are rejected. Turn this off only if the service calling this webhook cannot sign its requests."
+                    : "Unsigned requests are accepted, so anyone who learns this URL can run the workflow. Turn this on once your sender is signing."}
+                </p>
+              </div>
+              <Switch
+                id="webhook-require-signature"
+                checked={data.requireSignature}
+                disabled={setRequireSignature.isPending}
+                onCheckedChange={(requireSignature) =>
+                  setRequireSignature.mutate({ workflowId, requireSignature })
+                }
+              />
             </div>
 
             <Button

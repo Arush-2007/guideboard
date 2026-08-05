@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import { NodeType } from "@/generated/prisma";
 import {
   buildPickerSources,
+  filterPickerSources,
   getUpstreamFields,
   getUpstreamNodeIds,
   matchFieldByName,
+  type PickerSource,
 } from "./upstream-fields";
 
 const nodes = [
@@ -150,6 +152,96 @@ describe("matchFieldByName", () => {
   });
 });
 
+describe("filterPickerSources", () => {
+  const field = (path: string) => ({
+    fieldLabel: path,
+    path,
+    insertText: `@<${path}>@`,
+  });
+  const source = (key: string, label: string, paths: string[]) =>
+    ({
+      key,
+      label,
+      kind: "fields",
+      fields: paths.map(field),
+    }) as PickerSource;
+
+  const sources: PickerSource[] = [
+    source("a", "OG_Sheets", ["OG_Sheets.Job No", "OG_Sheets.tsc"]),
+    source("b", "OG_Trigger", ["OG_Trigger.output"]),
+    source("c", "Backlog_Sync", ["Backlog_Sync.output"]),
+  ];
+  const labelsOf = (result: PickerSource[]) => result.map((s) => s.label);
+
+  it("returns everything for an empty query", () => {
+    expect(filterPickerSources(sources, "")).toBe(sources);
+  });
+
+  it("narrows to the nodes a prefix can still become", () => {
+    expect(labelsOf(filterPickerSources(sources, "OG"))).toEqual([
+      "OG_Sheets",
+      "OG_Trigger",
+    ]);
+  });
+
+  it("is prefix-only, so a middle-of-the-name match is not kept", () => {
+    // The query is the start of what will be INSERTED, so `Backlog_Sync`
+    // containing "og" does not qualify. Substring matching here would keep it on
+    // screen and prevent the narrowing to one that lets the panel drill in.
+    expect(filterPickerSources(sources, "log")).toEqual([]);
+  });
+
+  it("narrows to exactly one, which is what triggers the drill-in", () => {
+    expect(labelsOf(filterPickerSources(sources, "OG_S"))).toEqual([
+      "OG_Sheets",
+    ]);
+  });
+
+  it("ignores case and separators", () => {
+    expect(labelsOf(filterPickerSources(sources, "ogs"))).toEqual([
+      "OG_Sheets",
+    ]);
+    expect(labelsOf(filterPickerSources(sources, "og_sheets"))).toEqual([
+      "OG_Sheets",
+    ]);
+  });
+
+  it("narrows the surviving node's FIELDS by the part after the dot", () => {
+    const [only] = filterPickerSources(sources, "og_sheets.j");
+    expect(
+      only.kind === "fields" && only.fields.map((f) => f.insertText),
+    ).toEqual(["@<OG_Sheets.Job No>@"]);
+  });
+
+  it("reaches a path containing a space without the space being typed", () => {
+    // `sanitizeHeaderKey` strips only dots, so a header keeps its spaces
+    // (`Job No`) — but the QUERY may not contain one (see NOT_IN_PATH), so this
+    // is the only way such a field can be narrowed to. Matching normalizes
+    // separators away, which is what makes it reachable.
+    const [only] = filterPickerSources(sources, "og_sheets.jobn");
+    expect(
+      only.kind === "fields" && only.fields.map((f) => f.insertText),
+    ).toEqual(["@<OG_Sheets.Job No>@"]);
+  });
+
+  it("matches a root-level trigger field that has no node segment", () => {
+    // `commentId` IS its own root — one rule covers it because the query is
+    // matched against the whole path rather than split at the dot.
+    const topLevel = [source("t", "Instagram Comment Trigger", ["commentId"])];
+    expect(labelsOf(filterPickerSources(topLevel, "comm"))).toEqual([
+      "Instagram Comment Trigger",
+    ]);
+  });
+
+  it("keeps the custom group only while the query can still spell it", () => {
+    const custom = [{ key: "custom", label: "X - Custom", kind: "custom" }];
+    expect(filterPickerSources(custom as PickerSource[], "cus")).toHaveLength(
+      1,
+    );
+    expect(filterPickerSources(custom as PickerSource[], "og")).toEqual([]);
+  });
+});
+
 describe("buildPickerSources", () => {
   const labelForType = (type: string) =>
     ({
@@ -169,6 +261,7 @@ describe("buildPickerSources", () => {
       nodeType: NodeType.TELEGRAM_TRIGGER,
       nodeRef: null,
       fieldLabel: "Sender first name",
+      path: "telegram.from.firstName",
       insertText: "@<telegram.from.firstName>@",
     },
     {
@@ -176,6 +269,7 @@ describe("buildPickerSources", () => {
       nodeType: NodeType.AI_TEXT,
       nodeRef: "AI_TEXT_1",
       fieldLabel: "AI output",
+      path: "AI_TEXT_1.output",
       insertText: "@<AI_TEXT_1.output>@",
     },
     {
@@ -183,6 +277,7 @@ describe("buildPickerSources", () => {
       nodeType: NodeType.AI_TEXT,
       nodeRef: "AI_TEXT_1",
       fieldLabel: "Model",
+      path: "AI_TEXT_1.model",
       insertText: "@<AI_TEXT_1.model>@",
     },
   ];
@@ -218,7 +313,13 @@ describe("buildPickerSources", () => {
       extraGroups: [
         {
           label: "Row above",
-          fields: [{ fieldLabel: "Name", insertText: "@<anchorRow.Name>@" }],
+          fields: [
+            {
+              fieldLabel: "Name",
+              path: "anchorRow.Name",
+              insertText: "@<anchorRow.Name>@",
+            },
+          ],
         },
       ],
       labelForType,

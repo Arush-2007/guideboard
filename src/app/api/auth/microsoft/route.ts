@@ -3,6 +3,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { env } from "@/lib/env";
 import { MICROSOFT_SCOPES } from "@/lib/microsoft-token";
 
 export async function GET(request: Request) {
@@ -14,8 +15,8 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  const clientId = process.env.MICROSOFT_CLIENT_ID;
-  const redirectUri = process.env.MICROSOFT_REDIRECT_URI;
+  const clientId = env(process.env.MICROSOFT_CLIENT_ID);
+  const redirectUri = env(process.env.MICROSOFT_REDIRECT_URI);
 
   if (!clientId || !redirectUri) {
     return NextResponse.redirect(

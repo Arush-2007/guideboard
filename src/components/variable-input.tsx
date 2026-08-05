@@ -33,6 +33,7 @@ export const VariableInput = React.forwardRef<
       workflowId,
       value,
       onChange,
+      onFocus,
       disabled,
       bare,
       extraGroups,
@@ -43,6 +44,7 @@ export const VariableInput = React.forwardRef<
     const field = useVariableField<HTMLInputElement>({
       value,
       onChange,
+      onFocus,
       name: rest.name,
       forwardedRef: ref,
       disabled,
@@ -64,23 +66,22 @@ export const VariableInput = React.forwardRef<
     // `bare` fields hold a raw dotted path, not `@<path>@` tokens, so there is
     // never anything for the highlight layer to pick out.
     const highlighted = field.highlighted && !bare;
-    // The one className both copies share, so they stay glyph-aligned.
-    const sharedClassName = cn("pr-10", className);
-
     return (
       // `grid-cols-1` is Tailwind's `minmax(0, 1fr)`: the control and its
       // highlight layer share one cell that can't be widened by a long value.
-      <div className="relative grid w-full grid-cols-1">
+      <div ref={field.containerRef} className="grid w-full grid-cols-1">
         <Input
           ref={field.setRefs}
           className={cn(
             "col-start-1 row-start-1",
             HIGHLIGHTABLE_CONTROL_CLASS,
-            sharedClassName,
+            className,
             highlighted && HIGHLIGHTED_CONTROL_CLASS,
           )}
           value={value}
           onChange={field.handleChange}
+          onFocus={field.handleFocus}
+          onSelect={field.handleSelect}
           disabled={disabled}
           {...rest}
         />
@@ -88,22 +89,25 @@ export const VariableInput = React.forwardRef<
           <VariableHighlight
             value={field.strValue}
             controlRef={field.innerRef}
-            className={sharedClassName}
+            // The control's own className, or the two copies drift out of
+            // glyph alignment.
+            className={className}
           />
         ) : null}
-        <div className="absolute bottom-1 right-1 z-10">
-          <VariablePicker
-            currentNodeId={currentNodeId}
-            workflowId={workflowId}
-            onSelect={handleVariableSelect}
-            open={field.pickerOpen}
-            onOpenChange={field.handlePickerOpenChange}
-            disabled={disabled}
-            bare={bare}
-            currentValue={field.strValue}
-            extraGroups={extraGroups}
-          />
-        </div>
+        {/* Renders no inline DOM in field mode — only the panel, when open. */}
+        <VariablePicker
+          currentNodeId={currentNodeId}
+          workflowId={workflowId}
+          onSelect={handleVariableSelect}
+          open={field.pickerOpen}
+          onOpenChange={field.handlePickerOpenChange}
+          disabled={disabled}
+          bare={bare}
+          currentValue={field.strValue}
+          extraGroups={extraGroups}
+          attachedTo={field.containerRef}
+          query={field.query}
+        />
       </div>
     );
   },

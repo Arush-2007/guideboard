@@ -8,6 +8,7 @@ import {
   nextNodeRef,
   nodeTypeHasRef,
   readNodeRef,
+  removePathsInTemplate,
   removeRefsInData,
   removeRefsInTemplate,
   renameRefInData,
@@ -303,6 +304,43 @@ describe("removeRefsInTemplate", () => {
       removeRefsInTemplate(
         "@<A_1.x>@ @<B_1.y>@ @<C_1.z>@",
         new Set(["A_1", "C_1"]),
+      ),
+    ).toBe(" @<B_1.y>@ ");
+  });
+});
+
+describe("removePathsInTemplate", () => {
+  // The narrow twin of `removeRefsInTemplate`, and the reason it exists: a step
+  // can be perfectly reachable with ONE of its values missing (a renamed sheet
+  // column). Removing by step there would erase the sibling values that still
+  // work — which is exactly what the save warning promises it will not do.
+
+  it("removes only the exact path, sparing its siblings", () => {
+    expect(
+      removePathsInTemplate(
+        "@<OG.firstRow.Gone>@|@<OG.firstRow.Kept>@",
+        new Set(["OG.firstRow.Gone"]),
+      ),
+    ).toBe("|@<OG.firstRow.Kept>@");
+  });
+
+  it("does not treat the step name as a match for its values", () => {
+    expect(
+      removePathsInTemplate("@<AI_TEXT_1.output>@", new Set(["AI_TEXT_1"])),
+    ).toBe("@<AI_TEXT_1.output>@");
+  });
+
+  it("keeps the prose around what it removes", () => {
+    expect(removePathsInTemplate("x @<A_1.b>@ y", new Set(["A_1.b"]))).toBe(
+      "x  y",
+    );
+  });
+
+  it("removes every listed path and leaves the rest", () => {
+    expect(
+      removePathsInTemplate(
+        "@<A_1.x>@ @<B_1.y>@ @<C_1.z>@",
+        new Set(["A_1.x", "C_1.z"]),
       ),
     ).toBe(" @<B_1.y>@ ");
   });

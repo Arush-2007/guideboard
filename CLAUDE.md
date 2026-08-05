@@ -41,12 +41,16 @@ Three are typed as a total `Record<NodeType, ...>`, so missing one is a **compil
 2. **`src/config/node-schemas.ts`** — maps `NodeType` → a Zod schema validating that node's `data` JSON. `parseNodeConfig(type, data)` is the single validation entry point, called by executors at runtime. Schemas are `.passthrough()` by default; field names must match the dialog forms exactly.
 3. **`src/features/executions/lib/executor-registry.ts`** — maps `NodeType` → its server-side `NodeExecutor`. `getExecutor(type)` throws if a type is unregistered.
 
-Four more are **partial** — an array, a `Set`, or a `Partial<Record<...>>` — so omitting one compiles cleanly and passes the test suite while shipping a node that is broken in the UI. There is no compiler backstop here; these have to be done from the checklist:
+Five more are **partial** — an array, a `Set`, or a `Partial<Record<...>>` — so omitting one compiles cleanly and passes the test suite while shipping a node that is broken in the UI. There is no compiler backstop here; these have to be done from the checklist:
 
 4. **`src/config/node-options.ts`** — label, description and icon. **Without this the node cannot be added from the node selector at all.** Brand icons come from the integrations registry; Lucide icons for utility nodes are imported here.
 5. **`src/config/node-outputs.ts`** — the fields the node writes into `context`. **Without this the node's output never appears in the variable picker, so no downstream node can reference it** — the node runs, but nothing can consume its result.
 6. **`src/lib/node-output-summary.ts`** — the one-line "what happened" summary for the execution page's Friendly view. Returning `null`, or having no entry, falls back to the raw output table.
 7. **`src/features/executions/lib/node-status-registry.ts`** — the `STATUS_EMITTING_NODE_TYPES` allowlist, for nodes whose executor publishes realtime status (see below).
+8. **`src/config/node-references.ts`** — how the node names OTHER steps in its own config, read by the dangling-reference detector (`src/lib/dangling-refs.ts`). Two maps, both needed only by unusual nodes:
+   - `nodeSelfRoots` — for a node that injects a context key for its own field templates (one no upstream node produces, offered via the picker's `extraGroups` prop). Today: the Sheets append's `anchorRow`. **Without it the node's own valid config is reported as dangling** — a badge that won't clear, and a save warning whose "Remove and save" erases the working field.
+   - `nodeInactiveFields` — for a node whose dialog has a MODE selector and so keeps the other mode's fields populated (Sheets `action`, Excel `operation`, Record Lookup `source`, Notion `action`). Declares which keys the current mode never reads, so a dead reference in one isn't reported. **Without it a `find_rows` node warns about the column mappings it kept from being an append.**
+   - `UNCHECKED_NODE_TYPES` — node types skipped entirely. Today: the Code node, whose field is a program rather than a template; see `isRefCheckedNodeType` for why guessing at JavaScript references is worse than not warning.
 
 `src/config/node-kinds.ts` (`TRIGGER_NODE_TYPES`) needs an entry **only for triggers**; `node-kinds.test.ts` asserts it matches the `_TRIGGER`-suffixed enum members exactly, so a trigger left out fails the build. The conversational builder needs nothing — its allowlist derives from `Object.values(NodeType)` (`src/lib/workflow-persistence.ts`).
 
@@ -81,6 +85,25 @@ A node may narrow this. The Calculator (`components/calculator/executor.ts`) rej
 
 **Polling triggers:** Gmail, Google Sheets, and YouTube comment triggers are not webhooks — they're driven by one cron Inngest function, `pollTriggers` (every 5 min), which lists all three providers' `*Poll` rows in a single step and fans out a `polls/<provider>.check` event per row. The per-poll work (external API calls, workflow dispatch) lives in the matching `handle*Poll` function, each with its own retries and concurrency cap, and emits workflow executions with idempotency keys. Keep the dispatchers combined: a cron tick is billed whether or not it finds work, so splitting them back into one function (or one step) per provider triples the cost of an idle install for identical behaviour. Schedule triggers have their own dispatcher, `pollSchedules`, whose cron is `SCHEDULE_POLL_CRON` (default every minute). `pruneOldExecutions` deletes executions older than 30 days. Every one of these is registered in `src/app/api/inngest/route.ts` — new Inngest functions must be added there to be served.
 
+### Oversized payloads go to Postgres, not blob storage
+
+Two things the engine must not lose are too big for an Inngest event or for an inline column, and both live in Postgres:
+
+- **`NodeInputSnapshot`** — a node's full input when `clampJson` had to reduce `NodeExecution.input` to a truncation marker. Replay-from-node seeds from this; without it, replaying a marker renders every reference blank while each node still performs its side effect.
+- **`FanOutSource` / `FanOutItem`** — a fan-out's shared context and one row per item, written once by the parent and read one item at a time by each child. This is what keeps a chain link on the wire a fixed-size cursor instead of O(N²) bytes.
+
+Both cascade-delete from `Execution`, so `pruneOldExecutions` covers them with no new GC wiring.
+
+**Blob storage (R2) is optional; the database is not.** Every other R2 consumer degrades when it is unset — avatar upload becomes a feature flag, signed-URL refresh no-ops, the convert node refuses one action. These two used R2 and therefore silently lost data when it was unconfigured. `NodeExecution.inputBlobKey` and the `replay-contexts/` prune prefix are read-only legacy, deletable once every run predating the cutover has aged past the 30-day retention (from 2026-09-04).
+
+A SKIPPED node's record carries **no** `input` (`NodeRecord.input` is optional) — a node that never ran received nothing, and no reader can use it.
+
+### Production configuration is checked at boot
+
+`assertProductionConfig` (`src/lib/production-config.ts`), called from `src/instrumentation.ts`, refuses to start a **production** server when a security-critical secret is unset or still an `.env.example` placeholder. Dev is unaffected, so a fresh clone still runs on an unedited `.env`.
+
+⚠️ Its list is hand-maintained with no compiler backstop — the same hazard as the partial node registries above — and the same knowledge also lives in `.env.example` and `DEPLOYMENT.md`. Adding a security-critical secret means editing all three.
+
 ### API layer (tRPC)
 
 tRPC v11 with superjson. Routers are composed in `src/trpc/routers/_app.ts` from per-feature routers under `src/features/*/server/routers.ts`. `src/trpc/init.ts` defines `protectedProcedure` (requires a Better Auth session, attaches `ctx.auth`). `premiumProcedure` is currently an alias for `protectedProcedure` (Polar billing is disabled). Server components prefetch via `src/trpc/server.tsx`; client uses TanStack Query via `src/trpc/client.tsx`.
@@ -93,7 +116,11 @@ Third-party secrets (API keys, OAuth tokens) are encrypted at rest with `cryptr`
 
 ### Webhooks
 
-Inbound webhooks are Next route handlers under `src/app/api/webhooks/<provider>/`. Each verifies a provider-specific shared secret/signature (see `src/lib/webhook-verify.ts` and the `*_WEBHOOK_SECRET` / `*_VERIFY_TOKEN` env vars in `.env.example`), then calls `sendWorkflowExecution`.
+Inbound webhooks are Next route handlers under `src/app/api/webhooks/<provider>/`. Each verifies a provider-specific shared secret/signature (see the `*_WEBHOOK_SECRET` / `*_VERIFY_TOKEN` env vars in `.env.example`), then calls `sendWorkflowExecution`.
+
+**A route must authenticate through `verifyWebhookRequest` (`src/lib/webhook-verify.ts`) and never inline.** That function is the module's only export, and it owns the decision an unset secret implies: 503, never "allow". Deciding that per-route is what let one endpoint drift open — it skipped verification entirely when its secret was unset, which stopped being survivable the moment `env()` began (correctly) collapsing `.env.example` placeholders to `undefined`. Pass `scheme` (`shared-secret` / `hmac-sha256` / `hmac-sha1`), the secret as a literal `process.env.X`, and `secretName`; override `invalidStatus` only to preserve a status a provider already observes (Instagram 403, Typeform 400).
+
+The generic webhook (`generic/[token]`) is per-trigger rather than env-configured: an unguessable cuid2 token is the baseline credential, and `WebhookTrigger.requireSignature` decides whether an `X-Guideboard-Signature` HMAC is required. New triggers are provisioned with it `true`; rows predating the column keep `false` so live integrations don't break.
 
 ### Conversational builder
 

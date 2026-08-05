@@ -4,6 +4,7 @@ import { PAGINATION } from "@/config/constants";
 import { CredentialType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
+import { env } from "@/lib/env";
 import { sheetRange } from "@/lib/google-sheets";
 import { refreshGoogleTokenIfNeeded } from "@/lib/google-token";
 import { interactiveHttp, isTimeout } from "@/lib/http";
@@ -569,7 +570,7 @@ export const credentialsRouter = createTRPCRouter({
         input.credentialId,
         ctx.auth.user.id,
       );
-      const secret = process.env.TYPEFORM_WEBHOOK_SECRET;
+      const secret = env(process.env.TYPEFORM_WEBHOOK_SECRET);
       if (!secret) {
         throw new Error(
           "TYPEFORM_WEBHOOK_SECRET is not configured — set it to verify incoming webhooks.",

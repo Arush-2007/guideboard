@@ -2,11 +2,21 @@
  * Google Form webhook endpoint.
  *
  * Callers must authenticate by passing the shared secret via either:
- *   - `x-webhook-secret` request header, OR
+ *   - `x-webhook-secret` request header (preferred), OR
  *   - `?secret=` query parameter
  *
- * The secret must match the GOOGLE_FORM_WEBHOOK_SECRET environment variable.
- * If the env var is not set the endpoint remains open (for local dev).
+ * The secret must match GOOGLE_FORM_WEBHOOK_SECRET, compared in constant time.
+ *
+ * **Fails CLOSED when the secret is unset**, matching every other webhook in
+ * this directory (Telegram, Typeform, YouTube, Instagram all refuse rather than
+ * run unauthenticated). This route used to skip verification entirely in that
+ * case, which was survivable only for as long as an unedited `.env` still
+ * counted as "set" — the placeholder was a non-empty string, so requests that
+ * did not present it were rejected. Once `env()` began collapsing placeholders
+ * to `undefined` (correctly — see `lib/env.ts`), that accident stopped holding
+ * and the endpoint became fully open: any unauthenticated POST could start a
+ * workflow run. An endpoint that starts billable, side-effecting work must
+ * never be the one that treats "no credential configured" as "allow".
  */
 
 import { type NextRequest, NextResponse } from "next/server";
@@ -15,7 +25,7 @@ import { normalizeResponseKeys } from "@/lib/form-responses";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
 import { googleFormIdempotencyKey } from "@/lib/webhook-idempotency";
-import { timingSafeStringEqual } from "@/lib/webhook-verify";
+import { verifyWebhookRequest } from "@/lib/webhook-verify";
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,22 +38,20 @@ export async function POST(request: NextRequest) {
 
     const url = new URL(request.url);
 
-    const providedSecret =
-      request.headers.get("x-webhook-secret") ?? url.searchParams.get("secret");
-    const expectedSecret = process.env.GOOGLE_FORM_WEBHOOK_SECRET;
-
-    if (expectedSecret) {
-      if (!timingSafeStringEqual(providedSecret, expectedSecret)) {
-        return NextResponse.json(
-          { success: false, error: "Unauthorized" },
-          { status: 401 },
-        );
-      }
-    } else {
-      logger.warn(
-        "GOOGLE_FORM_WEBHOOK_SECRET is not set — Google Form webhook is unauthenticated",
-      );
-    }
+    // The query-parameter fallback exists because Apps Script's simplest
+    // `UrlFetchApp` call cannot set headers; the header is preferred, since a
+    // URL secret reaches proxy logs and browser history that a header does not.
+    const auth = verifyWebhookRequest({
+      request,
+      scheme: {
+        kind: "shared-secret",
+        header: "x-webhook-secret",
+        queryParam: "secret",
+      },
+      secret: process.env.GOOGLE_FORM_WEBHOOK_SECRET,
+      secretName: "GOOGLE_FORM_WEBHOOK_SECRET",
+    });
+    if (!auth.ok) return auth.response;
 
     const workflowId = url.searchParams.get("workflowId");
 

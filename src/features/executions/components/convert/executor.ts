@@ -19,6 +19,7 @@ import { logger } from "@/lib/logger";
 import {
   createMediaJob,
   fetchMediaResult,
+  isMediaConvertConfigured,
   type MediaSource,
 } from "@/lib/media-convert";
 import { fetchBytes, fetchResumeText, isDriveSource } from "@/lib/resume-fetch";
@@ -149,7 +150,10 @@ export const convertExecutor: NodeExecutor<ConvertData> = async ({
         // Binary output: transcode via the external provider and store the
         // bytes in blob storage, threading a handle (URL) through context — never
         // base64. Both dependencies are config, so a missing one is non-retriable.
-        if (!process.env.CLOUDCONVERT_API_KEY) {
+        // Via the shared probe, not a bare truthiness check on the env var: an
+        // unedited placeholder is non-empty and would otherwise be sent to the
+        // provider as if it were a key.
+        if (!isMediaConvertConfigured()) {
           throw new NonRetriableError(
             "Convert: CLOUDCONVERT_API_KEY is not set — cannot run binary conversions.",
           );

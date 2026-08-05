@@ -1,7 +1,9 @@
 import { TRPCError } from "@trpc/server";
 import z from "zod";
 import type { Prisma } from "@/generated/prisma";
+import { describeStrippedRefs } from "@/lib/dangling-refs";
 import prisma from "@/lib/db";
+import { env } from "@/lib/env";
 import { isTimeout, timeoutSignal } from "@/lib/http";
 import {
   generatedWorkflowSchema,
@@ -232,7 +234,7 @@ export const conversationsRouter = createTRPCRouter({
         },
       });
 
-      const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+      const apiKey = env(process.env.ANTHROPIC_API_KEY);
       if (!apiKey) {
         throw new TRPCError({
           code: "BAD_REQUEST",
@@ -351,7 +353,7 @@ export const conversationsRouter = createTRPCRouter({
 
         validateGeneratedWorkflowGraph(wfParsed.nodes, wfParsed.edges);
 
-        const { workflowId } = await persistGeneratedWorkflow(
+        const { workflowId, danglingRefs } = await persistGeneratedWorkflow(
           ctx.auth.user.id,
           wfParsed,
         );
@@ -364,8 +366,13 @@ export const conversationsRouter = createTRPCRouter({
           },
         });
 
+        // The model's own success message, plus a note about anything the
+        // persist step had to clear. Appended rather than replacing it: the
+        // workflow WAS built, and the note is about one or two fields in it.
+        const note = describeStrippedRefs(danglingRefs);
+
         return {
-          reply: parsed.message,
+          reply: note ? `${parsed.message}\n\n${note}` : parsed.message,
           phase: "BUILDING" as const,
           workflowId,
         };

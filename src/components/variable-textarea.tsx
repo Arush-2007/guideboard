@@ -27,6 +27,7 @@ export const VariableTextarea = React.forwardRef<
       workflowId,
       value,
       onChange,
+      onFocus,
       disabled,
       ...rest
     },
@@ -35,30 +36,30 @@ export const VariableTextarea = React.forwardRef<
     const field = useVariableField<HTMLTextAreaElement>({
       value,
       onChange,
+      onFocus,
       name: rest.name,
       forwardedRef: ref,
       disabled,
     });
 
     const highlighted = field.highlighted;
-    // Reserve space at the bottom so the picker button (bottom-right) never
-    // sits over typed text. Shared by both copies so they stay glyph-aligned.
-    const sharedClassName = cn("pb-10", className);
 
     return (
       // One cell shared by the control and its highlight layer — see
       // VariableInput for why the column is `minmax(0, 1fr)`.
-      <div className="relative grid w-full grid-cols-1">
+      <div ref={field.containerRef} className="grid w-full grid-cols-1">
         <Textarea
           ref={field.setRefs}
           className={cn(
             "col-start-1 row-start-1",
             HIGHLIGHTABLE_CONTROL_CLASS,
-            sharedClassName,
+            className,
             highlighted && HIGHLIGHTED_CONTROL_CLASS,
           )}
           value={value}
           onChange={field.handleChange}
+          onFocus={field.handleFocus}
+          onSelect={field.handleSelect}
           disabled={disabled}
           {...rest}
         />
@@ -67,19 +68,22 @@ export const VariableTextarea = React.forwardRef<
             value={field.strValue}
             controlRef={field.innerRef}
             multiline
-            className={sharedClassName}
+            // The control's own className, or the two copies drift out of
+            // glyph alignment.
+            className={className}
           />
         ) : null}
-        <div className="absolute bottom-2 right-2 z-10">
-          <VariablePicker
-            currentNodeId={currentNodeId}
-            workflowId={workflowId}
-            onSelect={field.insert}
-            open={field.pickerOpen}
-            onOpenChange={field.handlePickerOpenChange}
-            disabled={disabled}
-          />
-        </div>
+        {/* Renders no inline DOM in field mode — only the panel, when open. */}
+        <VariablePicker
+          currentNodeId={currentNodeId}
+          workflowId={workflowId}
+          onSelect={field.insert}
+          open={field.pickerOpen}
+          onOpenChange={field.handlePickerOpenChange}
+          disabled={disabled}
+          attachedTo={field.containerRef}
+          query={field.query}
+        />
       </div>
     );
   },

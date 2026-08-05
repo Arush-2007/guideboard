@@ -1,5 +1,6 @@
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
+import { env } from "@/lib/env";
 import { asTimeoutError, HTTP_TIMEOUT, http } from "@/lib/http";
 
 type MicrosoftRefreshResponse = {
@@ -42,8 +43,8 @@ export async function refreshMicrosoftTokenIfNeeded(
     return decrypt(credential.accessToken);
   }
 
-  const clientId = process.env.MICROSOFT_CLIENT_ID;
-  const clientSecret = process.env.MICROSOFT_CLIENT_SECRET;
+  const clientId = env(process.env.MICROSOFT_CLIENT_ID);
+  const clientSecret = env(process.env.MICROSOFT_CLIENT_SECRET);
 
   if (!clientId || !clientSecret) {
     throw new Error(

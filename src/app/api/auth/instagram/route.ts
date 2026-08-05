@@ -3,6 +3,7 @@ import "server-only";
 import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { env } from "@/lib/env";
 
 export async function GET(request: Request) {
   const session = await auth.api.getSession({
@@ -13,8 +14,8 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL("/login", request.url));
   }
 
-  const clientId = process.env.INSTAGRAM_APP_ID;
-  const redirectUri = process.env.INSTAGRAM_REDIRECT_URI;
+  const clientId = env(process.env.INSTAGRAM_APP_ID);
+  const redirectUri = env(process.env.INSTAGRAM_REDIRECT_URI);
 
   if (!clientId || !redirectUri) {
     return NextResponse.redirect(

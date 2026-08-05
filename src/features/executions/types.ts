@@ -1,5 +1,6 @@
 import type { Realtime } from "@inngest/realtime";
 import type { GetStepTools, Inngest } from "inngest";
+import type { OnItemFailure } from "@/lib/multi-match";
 
 export type WorkflowContext = Record<string, unknown>;
 
@@ -112,13 +113,20 @@ export interface FanOutOutcome {
   context: WorkflowContext;
   /** One child sub-execution is dispatched per item; may be empty. */
   items: unknown[];
+  /**
+   * What a failed item does to the rest of the chain. Resolved from node config
+   * by the executor and carried here so the engine never has to re-read config
+   * to decide. Omitted means the default, "continue".
+   */
+  onItemFailure?: OnItemFailure;
 }
 
 export function fanOut(
   context: WorkflowContext,
   items: unknown[],
+  onItemFailure?: OnItemFailure,
 ): FanOutOutcome {
-  return { [FAN_OUT]: true, context, items };
+  return { [FAN_OUT]: true, context, items, onItemFailure };
 }
 
 export function isFanOut(value: unknown): value is FanOutOutcome {

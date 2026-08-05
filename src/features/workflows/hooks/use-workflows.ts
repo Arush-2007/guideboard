@@ -4,6 +4,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import { toast } from "sonner";
+import { describeStrippedRefs } from "@/lib/dangling-refs";
 import { useTRPC } from "@/trpc/client";
 import { useWorkflowsParams } from "./use-workflows-params";
 
@@ -158,8 +159,14 @@ export const useGenerateWorkflowFromPrompt = () => {
 
   return useMutation(
     trpc.workflows.generateFromPrompt.mutationOptions({
-      onSuccess: () => {
+      onSuccess: ({ danglingRefs }) => {
         queryClient.invalidateQueries(trpc.workflows.getMany.queryOptions({}));
+        // The build succeeded, so this is a warning rather than an error: the
+        // persist step cleared fields that named a step which doesn't run before
+        // them. The conversational builder says the same thing in its reply —
+        // both read `describeStrippedRefs`, so the wording can't drift.
+        const note = describeStrippedRefs(danglingRefs);
+        if (note) toast.warning(note, { duration: 12000 });
       },
     }),
   );

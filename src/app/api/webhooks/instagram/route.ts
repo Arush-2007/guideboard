@@ -4,10 +4,11 @@ import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
+import { env } from "@/lib/env";
 import { refreshInstagramTokenIfNeeded } from "@/lib/instagram-token";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
-import { verifyInstagramWebhookSignature } from "@/lib/webhook-verify";
+import { verifyWebhookRequest } from "@/lib/webhook-verify";
 
 type CommentValue = {
   id: string;
@@ -41,9 +42,15 @@ export async function GET(request: NextRequest) {
   const token = searchParams.get("hub.verify_token");
   const challenge = searchParams.get("hub.challenge");
 
+  // Via `env(...)`, and guarded: the placeholder in .env.example is PUBLIC, so
+  // an unedited `INSTAGRAM_VERIFY_TOKEN` would otherwise be a working verify
+  // token that anyone reading the repo could present. Absent now means reject.
+  const expectedToken = env(process.env.INSTAGRAM_VERIFY_TOKEN);
+
   if (
     mode === "subscribe" &&
-    token === process.env.INSTAGRAM_VERIFY_TOKEN &&
+    expectedToken !== undefined &&
+    token === expectedToken &&
     challenge
   ) {
     return new NextResponse(challenge, {
@@ -64,29 +71,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const appSecret = process.env.INSTAGRAM_APP_SECRET;
-    if (!appSecret) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "INSTAGRAM_APP_SECRET is not configured. Required to verify webhook signatures.",
-        },
-        { status: 503 },
-      );
-    }
-
     const rawBody = await request.text();
-    const signature =
-      request.headers.get("x-hub-signature-256") ??
-      request.headers.get("X-Hub-Signature-256");
 
-    if (!verifyInstagramWebhookSignature(rawBody, signature, appSecret)) {
-      return NextResponse.json(
-        { success: false, error: "Invalid webhook signature" },
-        { status: 403 },
-      );
-    }
+    // One header name, not two: `Headers.get` is case-insensitive per spec, so
+    // the previous `x-hub-signature-256 ?? X-Hub-Signature-256` fallback could
+    // never fire.
+    const auth = verifyWebhookRequest({
+      request,
+      rawBody,
+      scheme: { kind: "hmac-sha256", header: "x-hub-signature-256" },
+      secret: process.env.INSTAGRAM_APP_SECRET,
+      secretName: "INSTAGRAM_APP_SECRET",
+      // 403, not the default 401: the code Meta has always seen from us.
+      invalidStatus: 403,
+      invalidMessage: "Invalid webhook signature",
+    });
+    if (!auth.ok) return auth.response;
 
     const body = JSON.parse(rawBody) as InstagramPayload;
 

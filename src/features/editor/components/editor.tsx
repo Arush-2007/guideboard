@@ -42,6 +42,7 @@ import { NodeStatusSubscriber } from "@/features/executions/components/node-stat
 import { deriveActiveChannels } from "@/features/executions/lib/node-status";
 import { channelNameForNodeType } from "@/features/executions/lib/node-status-registry";
 import { NodeType } from "@/generated/prisma";
+import { type DanglingRef, findDanglingRefsByNode } from "@/lib/dangling-refs";
 import {
   clearRefsForRemovedNodes,
   collectNodeRefs,
@@ -55,6 +56,7 @@ import { unrunnableNodes } from "../lib/connectivity";
 import { liveEdges, liveNodes } from "../lib/live-graph";
 import { NEVER_SAVED_BASELINE, serializeSnapshot } from "../lib/snapshot";
 import {
+  danglingRefsAtom,
   editorAtom,
   invalidNodeConfigAtom,
   isDirtyAtom,
@@ -65,6 +67,7 @@ import {
   unrunnableNodesAtom,
 } from "../store/atoms";
 import { AddNodeButton } from "./add-node-button";
+import { DanglingSaveDialog } from "./dangling-save-dialog";
 import { DeletableEdge } from "./deletable-edge";
 import { ExecuteWorkflowButton } from "./execute-workflow-button";
 import { HistoryController } from "./history-controller";
@@ -338,6 +341,91 @@ const ConnectivityValidator = () => {
   // entries behind in the shared atom — same contract <HistoryController> keeps
   // for `historyControlsAtom`.
   useEffect(() => () => setUnrunnable({}), [setUnrunnable]);
+
+  return null;
+};
+
+// Finds every node whose config references a step that cannot reach it, and is
+// the sole writer of `danglingRefsAtom` (read by the per-node badge). Reads the
+// React Flow store for the same reason <ConfigValidator> does, and because the
+// answer depends on the EDGES as much as the data: cutting a wire is one of the
+// ways a reference dies. Must be a child of <ReactFlowProvider>.
+//
+// Unlike the two validators above, this one SKIPS work whose inputs haven't
+// changed, because its scan is the expensive kind: `findDanglingRefsByNode`
+// regex-walks every string in every node's `data`, and a Sheets node's config is
+// large. The store publishes a new nodes array on every pointer-move of a drag,
+// which would otherwise pay for that walk once a frame to reach the identical
+// answer — <ConfigValidator>'s "just a safeParse per node" reasoning does not
+// stretch this far. Writing the atom only on a real change stops the re-renders
+// but not the work, so the work is gated too.
+//
+// `data` and edge objects are not recreated by a drag (only `position` is), so a
+// reference check over them is both sound and O(nodes + edges).
+const sameGraphInputs = (a: Graph | null, b: Graph): boolean =>
+  a !== null &&
+  a.nodes.length === b.nodes.length &&
+  a.edges.length === b.edges.length &&
+  a.nodes.every((node, i) => {
+    const other = b.nodes[i];
+    return node.id === other.id && node.data === other.data;
+  }) &&
+  a.edges.every((edge, i) => {
+    const other = b.edges[i];
+    return edge.source === other.source && edge.target === other.target;
+  });
+
+type Graph = { nodes: Node[]; edges: Edge[] };
+
+const DanglingRefValidator = () => {
+  const nodes = useStore((state) => state.nodes);
+  const edges = useStore((state) => state.edges);
+  const setDangling = useSetAtom(danglingRefsAtom);
+  // Seeded `null`, NOT "" — same reasoning as the two validators above: an empty
+  // map serializes to "", so a `""` seed would let a clean canvas skip its first
+  // write and inherit the previous workflow's map from this app-lifetime atom.
+  const lastKeyRef = useRef<string | null>(null);
+  const lastInputRef = useRef<Graph | null>(null);
+
+  useEffect(() => {
+    // Order matters: node ORDER changing (elevate-on-select) is not a content
+    // change, but it does move the arrays, so the cheap check falls through and
+    // the scan below re-derives the same map — which the key comparison then
+    // discards without a write.
+    if (sameGraphInputs(lastInputRef.current, { nodes, edges })) return;
+    lastInputRef.current = { nodes, edges };
+
+    const found = findDanglingRefsByNode(nodes, edges);
+    const map: Record<string, DanglingRef[]> = {};
+    for (const entry of found) map[entry.nodeId] = entry.refs;
+
+    // Order-independent change key so React Flow reordering the nodes array
+    // (e.g. elevate-on-select) can't masquerade as a reference change.
+    const key = Object.keys(map)
+      .sort()
+      .map(
+        (id) => `${id}:${map[id].map((r) => `${r.field}>${r.path}`).join("|")}`,
+      )
+      .join(";");
+    if (key !== lastKeyRef.current) {
+      lastKeyRef.current = key;
+      setDangling(map);
+    }
+  }, [nodes, edges, setDangling]);
+
+  // Drop the map on unmount, same contract the other validators keep. The
+  // memoized inputs go with it, so the next workflow can't match against the
+  // previous one's graph and skip its first scan.
+  useEffect(
+    () => () => {
+      // BOTH memos, or the next editor could match the previous workflow's key
+      // and skip publishing its own map.
+      lastInputRef.current = null;
+      lastKeyRef.current = null;
+      setDangling({});
+    },
+    [setDangling],
+  );
 
   return null;
 };
@@ -730,6 +818,10 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
             `unrunnableNodesAtom` for the per-node warning triangle. Renders
             nothing. */}
         <ConnectivityValidator />
+        {/* Flags nodes whose config references a step that can't reach them,
+            publishing `danglingRefsAtom` for the per-node badge. Renders
+            nothing. */}
+        <DanglingRefValidator />
         {/* Owns undo/redo: observes the same store to record history and
             restores into it. Renders nothing; publishes controls for the
             toolbar buttons. Inside the provider so it can read the store, and
@@ -816,6 +908,9 @@ export const Editor = ({ workflowId }: { workflowId: string }) => {
           <MiniMapWithControls onRefine={handleRefine} />
         </div>
         <NavGuardDialog workflowId={workflowId} />
+        {/* Holds a save that would persist references to steps that can't reach
+            the nodes using them, whichever of the three save paths asked. */}
+        <DanglingSaveDialog />
       </div>
     </ReactFlowProvider>
   );

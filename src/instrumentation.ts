@@ -7,6 +7,13 @@ import * as Sentry from "@sentry/nextjs";
 // root sentry.*.config.ts files).
 export async function register() {
   if (process.env.NEXT_RUNTIME === "nodejs") {
+    // Before anything else: a production deployment missing a
+    // security-critical secret fails HERE, loudly, on the deploy that
+    // introduced it — rather than weeks later as a webhook that quietly stops
+    // working. No-op in dev and during `next build`; see production-config.ts.
+    const { assertProductionConfig } = await import("./lib/production-config");
+    assertProductionConfig();
+
     await import("../sentry.server.config");
   }
 

@@ -6,7 +6,64 @@ import { isBlobConfigured } from "@/lib/blob";
 import { isClampedMarker } from "@/lib/clamp-json";
 import prisma from "@/lib/db";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
+import { hasNodeInputSnapshot } from "../lib/node-input-snapshot";
 import { refreshBlobUrls } from "./refresh-blob-urls";
+
+/**
+ * Where a replay-from-node run takes its seed context from — the one seed field
+ * `sendWorkflowExecution` should be given.
+ *
+ * An oversized input was stored as a truncation marker, and replaying FROM a
+ * marker is silently destructive: every upstream reference resolves empty while
+ * each node still performs its real side effect. So a marker means "find the
+ * full snapshot, or refuse" — never "use what's in the row".
+ *
+ * Snapshots are dispatched BY REFERENCE, never inline: one exists precisely
+ * because the input passed the 32 KB clamp and may run to
+ * `NODE_INPUT_SNAPSHOT_MAX_BYTES` (4 MB), well past Inngest's event ceiling.
+ * `executeWorkflow` reads the row inside a step.
+ */
+async function resolveReplaySeed(
+  snapshot: { input: unknown; inputBlobKey: string | null },
+  input: { executionId: string; nodeId: string },
+): Promise<{
+  initialData?: Record<string, unknown>;
+  initialDataSnapshot?: { executionId: string; nodeId: string };
+  initialDataBlobKey?: string;
+}> {
+  if (!isClampedMarker(snapshot.input)) {
+    return { initialData: (snapshot.input as Record<string, unknown>) ?? {} };
+  }
+
+  if (await hasNodeInputSnapshot(input.executionId, input.nodeId)) {
+    return {
+      initialDataSnapshot: {
+        executionId: input.executionId,
+        nodeId: input.nodeId,
+      },
+    };
+  }
+
+  // LEGACY: rows recorded before snapshots moved to Postgres. Execution
+  // retention is 30 days, so this branch — and `inputBlobKey` with it — can be
+  // deleted from 2026-09-04.
+  if (snapshot.inputBlobKey) {
+    if (!isBlobConfigured()) {
+      throw new Error(
+        "This node's full input lives in blob storage, but R2 is not " +
+          "configured. Set the R2_* environment variables to replay it.",
+      );
+    }
+    return { initialDataBlobKey: snapshot.inputBlobKey };
+  }
+
+  throw new Error(
+    "This node's input was too large to store inline and no full snapshot " +
+      "exists (the run predates full snapshots, or its input exceeded the " +
+      "snapshot size limit), so replaying it would use incomplete data. " +
+      "Re-run the whole workflow instead.",
+  );
+}
 
 // The on-canvas failure popover shows an error at a glance, not the full stack.
 // Cap the returned message so the payload stays small; the untrimmed text is
@@ -151,6 +208,18 @@ export const executionsRouter = createTRPCRouter({
         );
       }
 
+      // Refuse a truncation marker rather than dispatching it as the context —
+      // the same guard `replayFromNode` already applies. Re-running from a
+      // marker is silently destructive: every `@<REF.path>@` renders blank
+      // while each node still performs its real side effect, so the run looks
+      // like it worked and writes empty values.
+      if (!blobRef && isClampedMarker(execution.input)) {
+        throw new Error(
+          "This run's input was too large to store inline, so re-running it " +
+            "would use incomplete data. Trigger the workflow again instead.",
+        );
+      }
+
       await sendWorkflowExecution({
         workflowId: execution.workflowId,
         ...(blobRef
@@ -197,37 +266,14 @@ export const executionsRouter = createTRPCRouter({
         throw new Error("Can't replay from a node that was skipped");
       }
 
-      // An oversized input was stored as a truncation marker; replaying from
-      // the marker would silently feed the run garbage (every upstream
-      // reference resolves empty). Use the full R2 snapshot when one exists,
-      // refuse clearly when it doesn't.
-      if (isClampedMarker(snapshot.input)) {
-        if (!snapshot.inputBlobKey) {
-          throw new Error(
-            "This node's input was too large to store inline and no full " +
-              "snapshot exists (the run predates full snapshots or blob " +
-              "storage was off when it ran), so replaying it would use " +
-              "incomplete data. Re-run the whole workflow instead.",
-          );
-        }
-        if (!isBlobConfigured()) {
-          throw new Error(
-            "This node's full input lives in blob storage, but R2 is not " +
-              "configured. Set the R2_* environment variables to replay it.",
-          );
-        }
-        await sendWorkflowExecution({
-          workflowId: execution.workflowId,
-          initialDataBlobKey: snapshot.inputBlobKey,
-          replayFromNodeId: input.nodeId,
-          replayOfExecutionId: input.executionId,
-        });
-        return { success: true };
-      }
+      // How this run gets its seed — chosen here, dispatched once below, so the
+      // three sources differ by one field rather than by three near-identical
+      // calls. The legacy arm then lifts out in a single cut when it expires.
+      const seed = await resolveReplaySeed(snapshot, input);
 
       await sendWorkflowExecution({
         workflowId: execution.workflowId,
-        initialData: (snapshot.input as Record<string, unknown>) ?? {},
+        ...seed,
         replayFromNodeId: input.nodeId,
         replayOfExecutionId: input.executionId,
       });

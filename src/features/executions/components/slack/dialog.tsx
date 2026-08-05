@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import z from "zod";
+import { useDanglingRefGuard } from "@/components/dangling-ref-guard";
 import { EditableNodeTitle } from "@/components/editable-node-title";
 import { RecipientList } from "@/components/recipient-list";
 import { Button } from "@/components/ui/button";
@@ -95,6 +96,8 @@ export const SlackDialog = ({
     onOpenChange(false);
   };
 
+  const guard = useDanglingRefGuard({ currentNodeId, onSave: handleSubmit });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
@@ -107,7 +110,7 @@ export const SlackDialog = ({
         </DialogHeader>
         <Form {...form}>
           <form
-            onSubmit={form.handleSubmit(handleSubmit)}
+            onSubmit={form.handleSubmit(guard.save)}
             className="mt-4 space-y-6"
           >
             <FormField
@@ -166,6 +169,7 @@ export const SlackDialog = ({
             </DialogFooter>
           </form>
         </Form>
+        {guard.dialog}
       </DialogContent>
     </Dialog>
   );

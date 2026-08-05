@@ -30,10 +30,17 @@ export async function setup() {
 
   // The Prisma singleton and the migration CLI both read DATABASE_URL.
   process.env.DATABASE_URL = databaseUrl;
+  // …and the CLI reads DIRECT_URL, which the schema declares. Pointing it at
+  // the test database is not a convenience: an inherited DIRECT_URL from the
+  // developer's `.env` is what `migrate deploy` would actually connect to, so
+  // leaving it alone would apply migrations to the DEV database while the tests
+  // ran against an unmigrated container. Unset, it fails schema validation
+  // outright. Both modes want "the direct connection is this database".
+  process.env.DIRECT_URL = databaseUrl;
 
   execSync("npx prisma migrate deploy", {
     stdio: "inherit",
-    env: { ...process.env, DATABASE_URL: databaseUrl },
+    env: { ...process.env, DATABASE_URL: databaseUrl, DIRECT_URL: databaseUrl },
   });
 }
 

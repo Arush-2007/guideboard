@@ -3,12 +3,16 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import prisma from "@/lib/db";
 import { emailTemplate, sendEmail } from "@/lib/email";
 import { encrypt } from "@/lib/encryption";
+import { env } from "@/lib/env";
 import { trustedOrigins } from "@/lib/trusted-origins";
 
-const githubClientId = process.env.GITHUB_CLIENT_ID;
-const githubClientSecret = process.env.GITHUB_CLIENT_SECRET;
-const googleClientId = process.env.GOOGLE_CLIENT_ID;
-const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+// Through `env(...)`, so an unedited .env.example placeholder reads as absent
+// and the provider is simply not registered — rather than being registered with
+// a credential that fails at the OAuth redirect.
+const githubClientId = env(process.env.GITHUB_CLIENT_ID);
+const githubClientSecret = env(process.env.GITHUB_CLIENT_SECRET);
+const googleClientId = env(process.env.GOOGLE_CLIENT_ID);
+const googleClientSecret = env(process.env.GOOGLE_CLIENT_SECRET);
 
 async function syncGoogleCredentialFromAccountTable(userId: string) {
   const account = await prisma.account.findFirst({

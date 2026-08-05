@@ -88,10 +88,25 @@ export type UpstreamFieldRow = {
   fieldLabel: string;
   /** The text inserted into the field, e.g. `@<telegram.from.firstName>@`. */
   insertText: string;
+  /** The same reference without its wrapper — see {@link PickerFieldRow}. */
+  path: string;
+  /**
+   * True when the row came from the node's saved `discoveredFields` — a shape
+   * read off the LIVE data (a sheet's headers, a form's questions) rather than
+   * declared in `node-outputs.ts`.
+   *
+   * The difference is exhaustiveness, and it is load-bearing for the
+   * dangling-reference check: discovered siblings are the complete contents of
+   * their parent, so a path alongside them that is missing really is missing.
+   * The static registry declares only what is worth OFFERING and routinely omits
+   * outputs the executor emits (Sheets `find_rows` publishes `rows`, which no
+   * descriptor mentions), so absence there proves nothing.
+   */
+  discovered?: boolean;
   example?: string;
 };
 
-type GraphNode = {
+export type GraphNode = {
   id: string;
   type?: string | null;
   /**
@@ -120,6 +135,82 @@ function readDiscoveredFields(data: GraphNode["data"]): DiscoveredField[] {
 }
 
 /**
+ * Everything ONE node offers, as pickable rows — the unit `getUpstreamFields`
+ * is assembled from.
+ *
+ * Split out because two callers need "what does this node publish?" and only one
+ * of them is walking a single node's ancestry. The dangling-reference validator
+ * (`lib/dangling-refs.ts`) answers that question for EVERY node on every canvas
+ * change; going through `getUpstreamFields` per node would re-run the graph's
+ * toposort once per node, on every drag frame, to rebuild rows that don't depend
+ * on the walk at all. Extracting it also keeps a node's output contract stated
+ * once, so the picker and the validator can never disagree about what a node
+ * publishes.
+ */
+export function fieldsForNode(node: GraphNode): UpstreamFieldRow[] {
+  if (!node.type) return [];
+
+  const rows: UpstreamFieldRow[] = [];
+  const id = node.id;
+  const type = node.type as NodeType;
+  // The ref (e.g. "AI_TEXT_1") is the node's identity: it heads the picker's
+  // node list AND is the exact token the inserted `@<AI_TEXT_1.output>@`
+  // names, so what the user picks here reads the same as what the canvas
+  // shows. Carried raw — naming is `displayNameFor`'s job, not this walk's.
+  const ref = readNodeRef(node.data);
+  const descriptor = nodeOutputs[type];
+
+  if (descriptor) {
+    for (const field of descriptor.fields) {
+      // Config-dependent fields (e.g. Sheets append vs find_rows) declare a
+      // predicate over the node's saved data; hide the ones that don't apply.
+      if (field.pickIf && !field.pickIf(node.data)) continue;
+      const path = resolveOutputPath(type, id, field.path, ref);
+      if (!path) continue;
+      rows.push({
+        nodeId: id,
+        nodeType: String(node.type),
+        nodeRef: ref,
+        fieldLabel: field.label,
+        path,
+        insertText: `@<${path}>@`,
+        example: field.example,
+      });
+    }
+  } else {
+    // Node type not declared in the registry yet — offer the whole blob so
+    // power users can still drill in manually.
+    const path = getOutputKeyForNode(String(node.type), id, ref);
+    rows.push({
+      nodeId: id,
+      nodeType: String(node.type),
+      nodeRef: ref,
+      fieldLabel: "Whole output",
+      path,
+      insertText: `@<${path}>@`,
+    });
+  }
+
+  // Append any dynamically discovered fields the node saved (e.g. a Google
+  // Form's questions). These carry their own ready-to-insert path, so they
+  // layer on top of the static descriptor for the same node.
+  for (const field of readDiscoveredFields(node.data)) {
+    rows.push({
+      nodeId: id,
+      nodeType: String(node.type),
+      nodeRef: ref,
+      fieldLabel: field.label || field.path,
+      path: field.path,
+      discovered: true,
+      insertText: `@<${field.path}>@`,
+      example: field.example,
+    });
+  }
+
+  return rows;
+}
+
+/**
  * Flattened, ordered list of pickable fields from every node upstream of
  * `currentNodeId`. Declared nodes (in `node-outputs.ts`) expand into individual
  * fields; undeclared nodes contribute a single "whole output" entry.
@@ -131,7 +222,6 @@ export function getUpstreamFields(
 ): UpstreamFieldRow[] {
   const upstreamIds = getUpstreamNodeIds(currentNodeId, edges);
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
-  const rows: UpstreamFieldRow[] = [];
 
   // Run order, falling back to the id sort for any node the ordering couldn't
   // place (only reachable when the graph is cyclic and the whole index is empty).
@@ -145,67 +235,25 @@ export function getUpstreamFields(
     return a.localeCompare(b);
   });
 
+  const rows: UpstreamFieldRow[] = [];
   for (const id of ordered) {
     const node = nodeById.get(id);
-    if (!node?.type) continue;
-
-    const type = node.type as NodeType;
-    // The ref (e.g. "AI_TEXT_1") is the node's identity: it heads the picker's
-    // node list AND is the exact token the inserted `@<AI_TEXT_1.output>@`
-    // names, so what the user picks here reads the same as what the canvas
-    // shows. Carried raw — naming is `displayNameFor`'s job, not this walk's.
-    const ref = readNodeRef(node.data);
-    const descriptor = nodeOutputs[type];
-
-    if (descriptor) {
-      for (const field of descriptor.fields) {
-        // Config-dependent fields (e.g. Sheets append vs find_rows) declare a
-        // predicate over the node's saved data; hide the ones that don't apply.
-        if (field.pickIf && !field.pickIf(node.data)) continue;
-        const path = resolveOutputPath(type, id, field.path, ref);
-        if (!path) continue;
-        rows.push({
-          nodeId: id,
-          nodeType: String(node.type),
-          nodeRef: ref,
-          fieldLabel: field.label,
-          insertText: `@<${path}>@`,
-          example: field.example,
-        });
-      }
-    } else {
-      // Node type not declared in the registry yet — offer the whole blob so
-      // power users can still drill in manually.
-      rows.push({
-        nodeId: id,
-        nodeType: String(node.type),
-        nodeRef: ref,
-        fieldLabel: "Whole output",
-        insertText: `@<${getOutputKeyForNode(String(node.type), id, ref)}>@`,
-      });
-    }
-
-    // Append any dynamically discovered fields the node saved (e.g. a Google
-    // Form's questions). These carry their own ready-to-insert path, so they
-    // layer on top of the static descriptor for the same node.
-    for (const field of readDiscoveredFields(node.data)) {
-      rows.push({
-        nodeId: id,
-        nodeType: String(node.type),
-        nodeRef: ref,
-        fieldLabel: field.label || field.path,
-        insertText: `@<${field.path}>@`,
-        example: field.example,
-      });
-    }
+    if (node) rows.push(...fieldsForNode(node));
   }
-
   return rows;
 }
 
-/** Collapses a label to comparable letters+digits: "Sender first name" → "senderfirstname". */
-function normalizeLabel(label: string): string {
-  return label.toLowerCase().replace(/[^a-z0-9]/g, "");
+/**
+ * Collapses text to comparable letters+digits: "Sender first name" →
+ * "senderfirstname", "OG_Sheets.Job No" → "ogsheetsjobno".
+ *
+ * Shared by the two things in this module that compare user-facing names —
+ * auto-map-by-name (`matchFieldByName`) and picker narrowing
+ * (`pathMatchesQuery`). One spelling, so tuning what counts as a separator can't
+ * make the two disagree.
+ */
+function normalizeForMatch(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 /**
@@ -226,18 +274,30 @@ export function matchFieldByName<T extends { fieldLabel: string }>(
   targetLabel: string,
   fields: T[],
 ): T | undefined {
-  const target = normalizeLabel(targetLabel);
+  const target = normalizeForMatch(targetLabel);
   return (
-    fields.find((f) => normalizeLabel(f.fieldLabel) === target) ??
+    fields.find((f) => normalizeForMatch(f.fieldLabel) === target) ??
     fields.find((f) => {
-      const label = normalizeLabel(f.fieldLabel);
+      const label = normalizeForMatch(f.fieldLabel);
       return label.includes(target) || target.includes(label);
     })
   );
 }
 
-/** One pickable field, as the picker renders it. */
-export type PickerFieldRow = { insertText: string; fieldLabel: string };
+/**
+ * One pickable field, as the picker renders it.
+ *
+ * `path` is the same string as `insertText` without its `@<…>@` wrapper. It is
+ * carried rather than re-derived because both consumers that need it — picker
+ * narrowing on every keystroke, and the dangling-reference validator on every
+ * graph change — would otherwise regex-unwrap a string that was built by
+ * interpolating that exact value moments earlier.
+ */
+export type PickerFieldRow = {
+  insertText: string;
+  path: string;
+  fieldLabel: string;
+};
 
 /**
  * A group of fields the CURRENT node offers about itself, rather than fields
@@ -268,6 +328,67 @@ export type PickerSource = {
   /** The current node's custom features; the picker owns their rendering. */
   | { kind: "custom" }
 );
+
+/**
+ * What a custom-feature source is matched by. Its entries are built by the
+ * picker itself rather than carried here, and its tokens all read
+ * `@<custom:serialNumber?…>@`, so this is their common opening — enough for
+ * `cus` to keep the group and for `og` to drop it.
+ */
+const CUSTOM_SOURCE_MATCH = "custom";
+
+/**
+ * Narrows the picker to what the typed query can still become.
+ *
+ * The match is a PREFIX, not a substring: the query is the beginning of the very
+ * string that will be inserted, so a candidate qualifies only while the user is
+ * still typing it from the front. Substring matching would keep `Backlog_Sync`
+ * on screen for a query of `og` and delay — or prevent — the narrowing to one
+ * that lets the panel drill in on its own.
+ *
+ * It runs against the WHOLE path (`OG_Sheets.Job No`) rather than splitting at
+ * the dot, which makes one rule cover three cases that would otherwise each need
+ * their own: narrowing to a node (`OG_S`), narrowing to a field within it
+ * (`OG_Sheets.j`), and the trigger fields that have no node segment at all and
+ * ARE their own root (`commentId`).
+ *
+ * A source survives while any of its fields does, and each surviving source
+ * carries only its matching fields — so drilling into the one that is left shows
+ * that node's matching values rather than all of them. An empty query is the
+ * whole list unchanged, which is what a picker opened by focus shows before
+ * anything is typed.
+ */
+export function filterPickerSources(
+  sources: PickerSource[],
+  query: string,
+): PickerSource[] {
+  if (query === "") return sources;
+  // Normalized ONCE, not per candidate: this runs over every pickable field of
+  // every upstream node on each keystroke, and a Sheets node alone can carry
+  // dozens.
+  const target = normalizeForMatch(query);
+  const matches = (path: string) => normalizeForMatch(path).startsWith(target);
+
+  const filtered: PickerSource[] = [];
+  for (const source of sources) {
+    if (source.kind === "custom") {
+      if (matches(CUSTOM_SOURCE_MATCH)) filtered.push(source);
+      continue;
+    }
+    const fields = source.fields.filter((f) => matches(f.path));
+    if (fields.length > 0) filtered.push({ ...source, fields });
+  }
+  return filtered;
+}
+
+/**
+ * Strips the `@<path>@` wrapper down to the bare dotted path. Shared with the
+ * picker, which inserts this form into fields that consume a raw path rather
+ * than a template (`bare` mode).
+ */
+export function toBarePath(insertText: string): string {
+  return insertText.replace(/^@<\s*/, "").replace(/\s*>@$/, "");
+}
 
 /**
  * Turns the flat field list into the picker's first-panel source list: the
