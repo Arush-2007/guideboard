@@ -26,12 +26,14 @@ vi.mock("@/lib/auth", () => ({
   },
 }));
 
+import { createPrismaNodeRecorder } from "@/execution/node-recorder";
+import { passthroughRunStep, runExecution } from "@/execution/run-execution";
 import { topologicalSort } from "@/execution/topological-sort";
 import type { StepTools } from "@/features/executions/types";
 import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
-import { createPrismaNodeRecorder } from "./functions";
+import { createWorkerStep } from "@/worker/worker-step";
 import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
 
 /**
@@ -697,6 +699,127 @@ describe("execution idempotency scoping", () => {
     expect(
       await prisma.execution.count({ where: { workflowId: workflow.id } }),
     ).toBe(2);
+  });
+});
+
+/**
+ * Runtime parity over REAL executors.
+ *
+ * The sibling test in `src/execution/run-execution.integration.test.ts` proves
+ * the same property against fake executors; this one is the harder half, and the
+ * difference is what makes it worth having: `createWorkerStep` round-trips every
+ * step's value through `jsonb`, and here those values are real HTTP responses
+ * rather than hand-written literals. If that round trip changed the shape of
+ * anything a downstream node's template reads, the rendered Discord string would
+ * differ between the two runs.
+ *
+ * Both runs go through `runExecution` — the whole body, idempotency check and
+ * `update-execution` included — rather than a hand-assembled pipeline, so the
+ * comparison covers what production actually executes.
+ *
+ * ONE workflow, run twice. Two workflows would give the runs different node ids,
+ * and node ids ARE the context's output keys — so the comparison would be
+ * normalising away exactly the payload it exists to compare.
+ */
+describe("runtime parity — real executors under the worker's step", () => {
+  it("produces the same context and rows under both step implementations", async () => {
+    const workflow = await prisma.workflow.create({
+      data: { name: "Parity fixture", userId },
+    });
+
+    await prisma.node.createMany({
+      data: [
+        {
+          id: "p_trigger",
+          workflowId: workflow.id,
+          type: NodeType.MANUAL_TRIGGER,
+          name: "Manual trigger",
+          position: { x: 0, y: 0 },
+          data: {},
+        },
+        {
+          id: "p_get",
+          workflowId: workflow.id,
+          type: NodeType.HTTP_REQUEST,
+          name: "Fetch user",
+          position: { x: 250, y: 0 },
+          data: { endpoint: `${baseUrl}/users/1`, method: "GET" },
+        },
+        {
+          id: "p_discord",
+          workflowId: workflow.id,
+          type: NodeType.DISCORD,
+          name: "Notify",
+          position: { x: 500, y: 0 },
+          data: {
+            webhookUrl: `${baseUrl}/post`,
+            content:
+              "Enriched as @<http_request_p_get.httpResponse.data.name>@ (HTTP @<http_request_p_get.httpResponse.status>@)",
+          },
+        },
+      ],
+    });
+    await prisma.connection.createMany({
+      data: [
+        {
+          workflowId: workflow.id,
+          fromNodeId: "p_trigger",
+          toNodeId: "p_get",
+        },
+        {
+          workflowId: workflow.id,
+          fromNodeId: "p_get",
+          toNodeId: "p_discord",
+        },
+      ],
+    });
+
+    const run = async (label: string, worker: boolean) => {
+      const result = await runExecution({
+        workflowId: workflow.id,
+        inngestEventId: `evt_parity_${label}`,
+        payload: { initialData: { lead: { name: "Ada Lovelace" } } },
+        runStep: passthroughRunStep,
+        engineStepFor: worker
+          ? (executionId: string) => createWorkerStep({ executionId })
+          : () => passthroughRunStep,
+        publish,
+      });
+
+      if (result.skipped) throw new Error("unexpected skip");
+
+      const execution = await prisma.execution.findUniqueOrThrow({
+        where: { id: result.executionId },
+        select: { status: true, output: true, error: true },
+      });
+      const nodes = await prisma.nodeExecution.findMany({
+        where: { executionId: result.executionId },
+        select: {
+          nodeId: true,
+          nodeType: true,
+          sequence: true,
+          status: true,
+          output: true,
+        },
+        orderBy: { sequence: "asc" },
+      });
+
+      return { execution, nodes, context: result.context };
+    };
+
+    const shimmed = await run("shim", false);
+    const durable = await run("worker", true);
+
+    expect(durable).toEqual(shimmed);
+
+    // Not just equal to each other — equal to the RIGHT thing. Two identically
+    // broken runs would satisfy the comparison above on its own.
+    expect(
+      (durable.context.discord_p_discord as { messageContent: string })
+        .messageContent,
+    ).toBe("Enriched as Leanne Graham (HTTP 200)");
+    expect(durable.execution.status).toBe(ExecutionStatus.SUCCESS);
+    expect(durable.nodes).toHaveLength(3);
   });
 });
 
