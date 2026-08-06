@@ -265,6 +265,12 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
 > to replace Inngest. It is **not wired to anything** — no routing exists, so
 > every production run today is Inngest, start to finish. The extraction is what
 > lets both execute byte-identical runs when routing lands.
+>
+> The worker itself is now complete and runnable (`npm run worker:dev`): it
+> claims jobs, holds them with a fenced heartbeat, resumes a reclaimed job from
+> its stored steps, and shuts down gracefully. What it lacks is anyone sending
+> it work. `Workflow.executionRuntime` exists in the schema and is **read by
+> nothing** until the routing step.
 
 ### Execution Flow
 
@@ -580,7 +586,16 @@ guideboard/
 │   │   ├── utils.ts               # sendWorkflowExecution
 │   │   └── channels/              # 14 realtime channel definitions
 │   ├── queue/                     # Postgres job queue (built, not wired)
-│   ├── worker/                    # Self-hosted worker step store (not wired)
+│   │   ├── jobs.ts                # enqueue/claim/heartbeat/complete/fail/reclaim
+│   │   ├── step-store.ts          # StepResult — the durable-step guarantee
+│   │   └── metrics.ts             # queue depth, oldest-claimable age, fences
+│   ├── worker/                    # Self-hosted worker process (not wired)
+│   │   ├── main.ts                # boot, claim loop, reaper, shutdown
+│   │   ├── run-job.ts             # one job: heartbeat, fence, failure triage
+│   │   ├── config.ts              # worker id, concurrency, its own boot check
+│   │   ├── db.ts                  # the separate control-plane Prisma pool
+│   │   ├── worker-step.ts         # createWorkerStep — the ExecutorStep impl
+│   │   └── fenced-error.ts        # FencedError + its four reasons
 │   ├── lib/
 │   │   ├── auth.ts                # Better Auth server config
 │   │   ├── auth-client.ts         # Better Auth React client

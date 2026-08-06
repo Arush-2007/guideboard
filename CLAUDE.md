@@ -104,7 +104,7 @@ A SKIPPED node's record carries **no** `input` (`NodeRecord.input` is optional) 
 
 `assertProductionConfig` (`src/lib/production-config.ts`), called from `src/instrumentation.ts`, refuses to start a **production** server when a security-critical secret is unset or still an `.env.example` placeholder. Dev is unaffected, so a fresh clone still runs on an unedited `.env`.
 
-⚠️ Its list is hand-maintained with no compiler backstop — the same hazard as the partial node registries above — and the same knowledge also lives in `.env.example` and `DEPLOYMENT.md`. Adding a security-critical secret means editing all three.
+⚠️ Its list is hand-maintained with no compiler backstop — the same hazard as the partial node registries above — and the same knowledge also lives in `.env.example`, `DEPLOYMENT.md` and `assertWorkerConfig` (`src/worker/config.ts`, the self-hosted worker's own boot check, which needs one because `instrumentation.ts` is a Next hook that process never runs). Adding a security-critical secret means editing all four. The worker's list is a deliberate subset — it serves no HTTP and signs no cookies — but it reuses `missingProductionSettings`, so the checking is one mechanism.
 
 ### API layer (tRPC)
 
