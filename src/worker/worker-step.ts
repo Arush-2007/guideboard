@@ -58,10 +58,21 @@ export function createWorkerStep({
    * Run-scoped by construction, never module scope. A cache at module scope
    * would leak stored values BETWEEN executions — the same wrong-value bug the
    * per-node key exists to prevent, with a far longer blast radius.
+   *
+   * ⚠️ A REJECTION is explicitly not cached, and that is not the same statement
+   * as the memo being safe. A memoized failure is not a memoized value: one
+   * connection blip on the first load would otherwise pin that rejected promise
+   * for the rest of the run, so every later step replays a stale error from a
+   * query it never issued — attributing the fault to steps that never touched
+   * the database. Clearing it means the next step retries the load, which is the
+   * only outcome that can still be correct.
    */
   let pending: Promise<StepResultMap> | null = null;
   const stepResults = (): Promise<StepResultMap> => {
-    pending ??= loadStepResults(executionId);
+    pending ??= loadStepResults(executionId).catch((err) => {
+      pending = null;
+      throw err;
+    });
     return pending;
   };
 

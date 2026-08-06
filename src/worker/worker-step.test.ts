@@ -98,6 +98,27 @@ describe("createWorkerStep — memoization", () => {
     // keeps the heartbeat from being starved (parent plan §6.3 hazard 1).
     expect(loadStepResults).toHaveBeenCalledTimes(1);
   });
+
+  it("retries the load after a rejection instead of replaying it", async () => {
+    // A memoized FAILURE is not a memoized value. One connection blip on the
+    // first load must not pin that rejected promise for the rest of the run —
+    // an executor that catches a `step.run` failure and continues would then get
+    // the same stale error for every remaining step, attributing the fault to
+    // steps that never touched the database.
+    loadStepResults.mockRejectedValueOnce(new Error("connection terminated"));
+
+    const step = newStep();
+
+    await expect(
+      step.forNode("node_a").run("first", async () => 1),
+    ).rejects.toThrow("connection terminated");
+
+    // The next step re-issues the query and runs normally.
+    const fn = vi.fn(async () => "recovered");
+    expect(await step.forNode("node_b").run("second", fn)).toBe("recovered");
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(loadStepResults).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe("createWorkerStep — step id namespacing", () => {
