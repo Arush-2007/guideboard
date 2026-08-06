@@ -1,4 +1,4 @@
-import { NonRetriableError } from "inngest";
+import { unavailableAi } from "@/execution/passthrough-step";
 import type { ExecutorStep } from "@/features/executions/types";
 import {
   insertStepResultOrReadExisting,
@@ -17,8 +17,8 @@ import { FencedError, isFencedError } from "./fenced-error";
  * two structurally different places:
  *
  * - **The root**, for its own batched-segment checkpoints
- *   (`step.run("nodes:0-4", …)`, run-workflow.ts:825). There is no node id at
- *   that call site, and none is needed: those ids are derived from topological
+ *   (`step.run(\`nodes:${start}-${end}\`, …)` in `run-workflow.ts`). There is no
+ *   node id at that call site, and none is needed: those ids are derived from topological
  *   POSITION and are already unique within a run, so they are stored verbatim —
  *   exactly the ids Inngest stores today.
  * - **`forNode(nodeId)`**, for the step handed to an executor. Ids here are
@@ -190,29 +190,20 @@ export function createWorkerStep({
           fn: (...args: unknown[]) => unknown,
           ...args: unknown[]
         ) => memoized(id, fn, args),
-        // Nothing calls this. Implemented as a throw rather than omitted so a
-        // future caller gets a sentence telling them what to do instead of
-        // `undefined is not a function` — the same reason `inlineStep` does
-        // (run-workflow.ts:311-317). `infer` asks the Inngest PLATFORM to
-        // perform the inference, and there is no platform here to ask.
-        infer: async () => {
-          throw new NonRetriableError(
-            "step.ai.infer() is not available on the self-hosted worker — it is " +
-              "executed by the Inngest platform, not by this process. Call the " +
-              "provider directly inside step.ai.wrap() instead.",
-          );
-        },
-        // Pure model descriptors, nothing to execute.
-        models: {},
+        // `infer` and `models` are shared with the engine's `inlineStep` and
+        // `runExecution`'s run-level step — see `passthrough-step.ts` for why
+        // one definition matters when the cast below checks nothing. Only
+        // `wrap` differs here, because only `wrap` memoizes.
+        ...unavailableAi(
+          "step.ai.infer() is not available on the self-hosted worker — it is " +
+            "executed by the Inngest platform, not by this process. Call the " +
+            "provider directly inside step.ai.wrap() instead.",
+        ),
       },
-      // ⚠️ The one cast, and the same one `inlineStep` documents
-      // (run-workflow.ts:292-321). `ExecutorStep`'s `run` returns
-      // `Promise<Jsonify<T>>`, which no runtime function can honestly produce —
-      // the value really has been through JSON, but only the type system's word
-      // for it is missing. The cast means TypeScript checks NOTHING about the
-      // shape of this object, which is why `infer` and `models` are implemented
-      // rather than left off: an executor reaching for one would compile
-      // cleanly and fail at runtime.
+      // ⚠️ The one cast, and the same one `inlineStep` documents.
+      // `ExecutorStep`'s `run` returns `Promise<Jsonify<T>>`, which no runtime
+      // function can honestly produce — the value really has been through JSON,
+      // but only the type system's word for it is missing.
     } as unknown as ExecutorStep;
   }
 

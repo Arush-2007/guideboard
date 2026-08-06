@@ -1,6 +1,7 @@
 import type { Realtime } from "@inngest/realtime";
 import { NonRetriableError } from "inngest";
 import { requiresCheckpoint, TRIGGER_NODE_TYPES } from "@/config/node-kinds";
+import { createPassthroughStep } from "@/execution/passthrough-step";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
   type ExecutorStep,
@@ -281,44 +282,19 @@ export const MAX_SEGMENT_NODES = Math.min(
  * `step.run` JSON-round-trips the context on the way out. Only inline-safe types
  * see this shim, and none of them put non-JSON values into the context.
  *
- * ⚠️ The cast also means the type system checks nothing here. `ExecutorStep` is
- * `Pick<StepTools, "run" | "ai">`, and `ai` carries `infer` and `models` as well
- * as `wrap` — so an executor reaching for one of those compiles cleanly and
- * would hit `undefined is not a function` the first time it landed in a batch.
- * They are implemented rather than omitted for that reason; `infer` throws a
- * legible error instead of pretending, because it asks the PLATFORM to perform
- * the inference and there is nothing to run inline.
+ * The shim itself is `createPassthroughStep`, shared with `runExecution`'s
+ * run-level step and with `createWorkerStep`'s non-memoizing members — see that
+ * module for why one definition matters when the cast checks nothing.
+ *
+ * The `infer` message is this site's: unreachable today, because every AI node
+ * is checkpointed and all five use `wrap`. If that ever changes, it names the
+ * fix rather than throwing a bare TypeError.
  */
-const inlineStep = {
-  // Trailing input is forwarded, matching `flushingStep` and real `step.run`.
-  // Dropping it would hand an executor `undefined` for arguments it declared,
-  // and only when its node happened to be batched — a failure that appears in
-  // the hardest place to attribute it.
-  run: async (
-    _id: string,
-    fn: (...input: unknown[]) => unknown,
-    ...input: unknown[]
-  ) => fn(...input),
-  ai: {
-    wrap: async (
-      _id: string,
-      fn: (...args: unknown[]) => unknown,
-      ...args: unknown[]
-    ) => fn(...args),
-    // Unreachable today — every AI node is checkpointed, and all five use
-    // `wrap`. If that ever changes, fail with an actionable message rather than
-    // a TypeError from a missing method.
-    infer: async () => {
-      throw new NonRetriableError(
-        "step.ai.infer() cannot run inside a batched segment — it is executed " +
-          "by the Inngest platform, not by this process. Mark the node type " +
-          "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",
-      );
-    },
-    // Pure model descriptors, no execution — safe to pass through untouched.
-    models: {},
-  },
-} as unknown as ExecutorStep;
+const inlineStep = createPassthroughStep(
+  "step.ai.infer() cannot run inside a batched segment — it is executed " +
+    "by the Inngest platform, not by this process. Mark the node type " +
+    "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",
+);
 
 /**
  * Wraps the real step so every callback flushes buffered node records first.
