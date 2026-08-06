@@ -7,7 +7,6 @@ import {
   type ExecutorStep,
   isFanOut,
   isRouted,
-  type StepTools,
   type WorkflowContext,
 } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
@@ -392,9 +391,30 @@ function planSegments(
 }
 
 /**
+ * The step the engine itself needs — `ExecutorStep`, plus an OPTIONAL way to
+ * ask for a step scoped to one node.
+ *
+ * This is the seam between the two runtimes, and the optionality is the whole
+ * point. Inngest's `StepTools` has no `forNode` and cannot grow one, so the
+ * engine must be able to run without it; the self-hosted worker's `WorkerStep`
+ * supplies it, and that is what stops two nodes of the same type colliding on a
+ * shared step literal like `"get-credential"` (see `worker-step.ts`). Optional
+ * beats a second `stepForNode` parameter because there is one step object here,
+ * not two, and the absence is a true statement about Inngest rather than a
+ * caller obligation somebody can forget.
+ *
+ * Narrowed from `StepTools` at the same time: the engine only ever used `run`
+ * and `ai`, and the worker's step is an `ExecutorStep`, so the wider type would
+ * have forced a cast at the worker's call site for nothing.
+ */
+export type EngineStep = ExecutorStep & {
+  forNode?: (nodeId: string) => ExecutorStep;
+};
+
+/**
  * Runs a workflow's nodes sequentially, threading the `context` object from one
  * node's output into the next node's input. This is the core of the execution
- * engine; `executeWorkflow` (src/inngest/functions.ts) wraps it with the
+ * engine; `runExecution` (src/execution/run-execution.ts) wraps it with the
  * Execution-row bookkeeping, while integration tests drive it directly with a
  * shimmed `step`/`publish` to exercise the real executors end to end.
  *
@@ -445,7 +465,7 @@ export async function runWorkflowNodes({
   /** Execution row id, threaded to executors for deterministic resource keys. */
   executionId: string;
   initialData?: WorkflowContext;
-  step: StepTools;
+  step: EngineStep;
   publish: Realtime.PublishFn;
   recorder?: NodeRecorder;
   fanOutDispatcher?: FanOutDispatcher;
@@ -786,10 +806,19 @@ export async function runWorkflowNodes({
       // callback runs exactly once and is memoized thereafter, so every buffered
       // row is written once, at no extra step. Flushing BEFORE the callback's own
       // work means a node that throws still persists its predecessors.
+      //
+      // `forNode` FIRST, then the flush wrapper: this is the only place a node
+      // receives a step that persists anything, so it is the only place that
+      // needs its ids namespaced under the node. The other two step sites
+      // deliberately do not — `nodes:i-j` below is run-level and already unique
+      // by topological position, and a batched segment's nodes get `inlineStep`,
+      // which persists nothing at all. `?? step` because Inngest has no
+      // `forNode`; on that runtime this line is exactly what it was.
+      const nodeStep = step.forNode?.(sortedNodes[segment.start].id) ?? step;
       await runNode(
         sortedNodes[segment.start],
         segment.start,
-        flushingStep(step, flushPending),
+        flushingStep(nodeStep, flushPending),
         false,
       );
       continue;
