@@ -35,8 +35,9 @@ export interface WorkerStepOptions {
   /** The `Execution` row this run's steps are memoized against. */
   executionId: string;
   /**
-   * Aborted when the worker loses its lease. Optional, and nothing supplies one
-   * yet — see the fence seam note below.
+   * Aborted when the worker loses its lease, with a `FencedError` as the abort
+   * reason. Supplied by `runJob`; optional only so a test can build a step
+   * without one.
    */
   signal?: AbortSignal;
 }
@@ -77,9 +78,9 @@ export function createWorkerStep({
   };
 
   /**
-   * The fence seam. Wired to nothing today — the lease that trips it is built
-   * in Step 5 — but it lives here now so Step 5 does not have to retrofit a
-   * check into every call site.
+   * The fence seam, and it is live: `runJob`'s heartbeat aborts this signal
+   * with a `FencedError` the moment it learns — or concludes — that the lease
+   * is gone.
    *
    * Checked at the top of EVERY `run`/`ai.wrap`, not only before a callback
    * that will actually execute. The plan asks for "before every step callback";
