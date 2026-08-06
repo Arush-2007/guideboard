@@ -48,10 +48,12 @@ export function getUpstreamNodeIds(
  * Position of every node in the order the workflow RUNS, so the picker can list
  * upstream nodes the way the canvas reads (trigger first) instead of by cuid.
  *
- * Deliberately not `topologicalSort` from `inngest/utils.ts`: that one imports
- * the Inngest client and takes Prisma rows, so it can neither reach a client
- * bundle nor see canvas edges. Both go through the same `toposort` package, so
- * the ordering itself stays one implementation.
+ * Deliberately not `topologicalSort` from `@/execution/topological-sort`: that
+ * one takes Prisma rows, so it cannot see canvas edges. It used to also import
+ * the Inngest client — the second reason this reimplementation existed, removed
+ * when the runtime split moved it out of `inngest/utils.ts` — but the row-vs-edge
+ * mismatch remains and is enough on its own. Both go through the same `toposort`
+ * package, so the ordering itself stays one implementation.
  *
  * Returns an empty map if the graph can't be ordered (a cycle), which drops
  * callers back to a stable id sort — the picker must never throw on a graph the

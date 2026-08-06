@@ -51,7 +51,7 @@ vi.mock("@/features/executions/lib/executor-registry", () => ({
 }));
 
 const { runWorkflowNodes } = await import("./run-workflow");
-const { topologicalSort } = await import("./utils");
+const { topologicalSort } = await import("@/execution/topological-sort");
 const { unrunnableNodes } = await import("@/features/editor/lib/connectivity");
 const { TRIGGER_NODE_TYPES } = await import("@/config/node-kinds");
 

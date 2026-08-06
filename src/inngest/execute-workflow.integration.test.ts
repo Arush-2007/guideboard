@@ -26,13 +26,13 @@ vi.mock("@/lib/auth", () => ({
   },
 }));
 
+import { topologicalSort } from "@/execution/topological-sort";
 import type { StepTools } from "@/features/executions/types";
 import { ExecutionStatus, NodeType, type Prisma } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
 import { createPrismaNodeRecorder } from "./functions";
 import { type NodeRecorder, runWorkflowNodes } from "./run-workflow";
-import { topologicalSort } from "./utils";
 
 /**
  * End-to-end engine test: builds a real 5-node workflow in Postgres and runs it

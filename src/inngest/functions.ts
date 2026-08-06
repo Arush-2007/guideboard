@@ -1,4 +1,5 @@
 import { NonRetriableError } from "inngest";
+import { topologicalSort } from "@/execution/topological-sort";
 import {
   buildFailureEmail,
   resolveFailureCause,
@@ -66,7 +67,7 @@ import {
   sheetsPollIdempotencyKey,
   sheetsProjection,
 } from "./sheets-poll-diff";
-import { sendWorkflowExecution, topologicalSort } from "./utils";
+import { sendWorkflowExecution } from "./utils";
 
 // How many polls of one provider may run at once. Inngest checks this against
 // the account's plan ceiling at SYNC time and refuses to register a function
