@@ -103,13 +103,27 @@ export const MAX_CLAIM_CONFLICT_RETRIES = 3;
 const MAX_LAST_ERROR_CHARS = 4_000;
 
 /**
- * Accepts the singleton client or a transaction client.
+ * Accepts the singleton client, a transaction client, or a worker's dedicated
+ * control-plane client.
  *
- * Enqueue takes one so it can sit inside the CALLER's transaction — which is
- * the capability an off-the-shelf queue library could not give us, since its
- * enqueue holds its own pool. Everything else here runs standalone.
+ * Two unrelated capabilities ride on this one parameter, and both need it:
+ *
+ * 1. **Enqueue can sit inside the CALLER's transaction** — the thing an
+ *    off-the-shelf queue library could not give us, since its enqueue holds its
+ *    own pool.
+ * 2. **The worker can run its claim loop and heartbeat on a pool of their own**,
+ *    separate from the one its runs execute against. That is a correctness
+ *    requirement, not tuning: if the execution pool saturates, a heartbeat
+ *    sharing it cannot renew, and the worker fences ITSELF — a self-inflicted
+ *    outage that presents as a mystery abort. See `src/worker/db.ts`.
+ *
+ * ⚠️ Deliberately narrow — `$queryRaw` and nothing else. Widening it to admit a
+ * model delegate would drag in the `PrismaClient` vs `TransactionClient`
+ * difference and make the type dishonest about what a transaction client can
+ * do. `diagnoseLostLease` was rewritten as a raw SELECT to keep it this narrow;
+ * anything added here should be too.
  */
-type SqlRunner = Pick<Prisma.TransactionClient, "$queryRaw">;
+export type SqlRunner = Pick<Prisma.TransactionClient, "$queryRaw">;
 
 /**
  * "This worker still holds this job." Every write that finishes or advances a
@@ -234,15 +248,17 @@ export async function claimNextJob({
   workerId,
   leaseSeconds = DEFAULT_LEASE_SECONDS,
   maxConflictRetries = MAX_CLAIM_CONFLICT_RETRIES,
+  client = prisma,
 }: {
   /** Identifies this worker instance; stored on the row as `lockedBy`. */
   workerId: string;
   leaseSeconds?: number;
   maxConflictRetries?: number;
+  client?: SqlRunner;
 }): Promise<WorkflowJob | null> {
   for (let attempt = 0; attempt <= maxConflictRetries; attempt++) {
     try {
-      const rows = await prisma.$queryRaw<WorkflowJob[]>`
+      const rows = await client.$queryRaw<WorkflowJob[]>`
         UPDATE "WorkflowJob" j
         SET status = 'RUNNING'::"JobStatus",
             "lockedBy" = ${workerId},
@@ -377,12 +393,14 @@ export async function heartbeatJob({
   jobId,
   workerId,
   leaseSeconds = DEFAULT_LEASE_SECONDS,
+  client = prisma,
 }: {
   jobId: string;
   workerId: string;
   leaseSeconds?: number;
+  client?: SqlRunner;
 }): Promise<HeartbeatResult> {
-  const rows = await prisma.$queryRaw<{ leaseExpiresAt: Date }[]>`
+  const rows = await client.$queryRaw<{ leaseExpiresAt: Date }[]>`
     UPDATE "WorkflowJob"
     SET "leaseExpiresAt" = now() + (${leaseSeconds}::int * interval '1 second'),
         "updatedAt" = now()
@@ -392,7 +410,7 @@ export async function heartbeatJob({
 
   if (rows[0]) return { held: true, leaseExpiresAt: rows[0].leaseExpiresAt };
 
-  const reason = await diagnoseLostLease(jobId, workerId);
+  const reason = await diagnoseLostLease(jobId, workerId, client);
   countFence(reason);
   return { held: false, reason };
 }
@@ -406,18 +424,43 @@ export async function heartbeatJob({
  * does not depend on which it says — the worker aborts either way — so a
  * best-effort answer is the right trade against holding a lock to get a perfect
  * one.
+ *
+ * ⚠️ **Raw, not `prisma.workflowJob.findUnique`, and that is not a style
+ * choice.** This was the only model-delegate call in the module, and it sits on
+ * the HEARTBEAT's failing path — the one call that must be able to run on the
+ * worker's small control-plane pool while its runs saturate the execution pool.
+ * A delegate cannot be reached through `SqlRunner`, so keeping it would have
+ * forced that type wide enough to admit a whole `PrismaClient`. One indexed
+ * single-row SELECT in the style of every other statement here was the cheaper
+ * end of that trade.
  */
 async function diagnoseLostLease(
   jobId: string,
   workerId: string,
+  client: SqlRunner,
 ): Promise<HeartbeatLossReason> {
-  const row = await prisma.workflowJob.findUnique({
-    where: { id: jobId },
-    select: { lockedBy: true, status: true },
-  });
+  const rows = await client.$queryRaw<{ lockedBy: string | null }[]>`
+    SELECT "lockedBy" FROM "WorkflowJob" WHERE id = ${jobId}
+  `;
 
+  const row = rows[0];
   if (!row) return "job-row-gone";
+
+  // ⚠️ **A NULL `lockedBy` is NOT a stolen lease, and reading it as one made
+  // `not-running` unreachable.** Every release path in this module — the
+  // reaper, `failJob`, `completeJob` — clears `lockedBy` in the same statement
+  // that changes the status. So a plain `lockedBy !== workerId` test answers
+  // "lease-stolen" for a reaper reclaim, which is the single most likely reason
+  // a heartbeat ever fails, and the honest `not-running` answer could only be
+  // produced by a row state nothing in the codebase writes.
+  //
+  // That mattered because the distinction is the whole reason the third reason
+  // exists: `lease-stolen` sends an operator after a host or lease-length
+  // problem, and a reclaim is neither.
+  if (row.lockedBy === null) return "not-running";
   if (row.lockedBy !== workerId) return "lease-stolen";
+  // Still ours, so the status clause is what failed: cancelled, or reclaimed
+  // and re-claimed by this same worker.
   return "not-running";
 }
 
@@ -441,12 +484,14 @@ export async function attachExecutionToJob({
   jobId,
   workerId,
   executionId,
+  client = prisma,
 }: {
   jobId: string;
   workerId: string;
   executionId: string;
+  client?: SqlRunner;
 }): Promise<boolean> {
-  const rows = await prisma.$queryRaw<{ id: string }[]>`
+  const rows = await client.$queryRaw<{ id: string }[]>`
     UPDATE "WorkflowJob"
     SET "executionId" = ${executionId},
         "updatedAt" = now()
@@ -471,11 +516,13 @@ export async function attachExecutionToJob({
 export async function completeJob({
   jobId,
   workerId,
+  client = prisma,
 }: {
   jobId: string;
   workerId: string;
+  client?: SqlRunner;
 }): Promise<boolean> {
-  const rows = await prisma.$queryRaw<{ id: string }[]>`
+  const rows = await client.$queryRaw<{ id: string }[]>`
     UPDATE "WorkflowJob"
     SET status = 'SUCCEEDED'::"JobStatus",
         "lockedBy" = NULL,
@@ -532,12 +579,14 @@ export async function failJob({
   workerId,
   error,
   random = Math.random,
+  client = prisma,
 }: {
   job: Pick<WorkflowJob, "id" | "attempt" | "maxAttempts">;
   workerId: string;
   error: unknown;
   /** Injectable jitter, so the backoff schedule can be asserted exactly. */
   random?: () => number;
+  client?: SqlRunner;
 }): Promise<FailResult> {
   const message = failureMessage(error);
 
@@ -550,7 +599,7 @@ export async function failJob({
 
   const delayMs = terminal ? 0 : nextDelayMs(job.attempt, error, random);
 
-  const rows = await prisma.$queryRaw<{ status: string; runAt: Date }[]>`
+  const rows = await client.$queryRaw<{ status: string; runAt: Date }[]>`
     UPDATE "WorkflowJob"
     SET status = ${terminal ? "FAILED" : "PENDING"}::"JobStatus",
         attempt = ${attempt},
@@ -688,18 +737,57 @@ export function parseRetryAfterMs(
  * The `lastError` written when a job is killed by the reaper rather than by a
  * failure. Nothing else can describe this run: the worker that was executing it
  * never got to report anything.
+ *
+ * ⚠️ Exported because the run's `Execution.error` — and therefore the alert
+ * email the user actually reads — must say the SAME thing as the job row. They
+ * are written by different processes at different layers (this module writes
+ * `lastError`; the worker's reaper tick settles the execution), and a second
+ * copy of these sentences would let one event tell the user two stories.
  */
-const POISON_JOB_ERROR =
+export const POISON_JOB_ERROR =
   "This run was stopped because the worker executing it stopped responding " +
   "once for every attempt it had. That usually means the run is killing its " +
   "worker outright — an out-of-memory on a very large context, or a crash " +
   "inside the Code node's sandbox — rather than failing normally.";
 
+/**
+ * A job the reaper gave up on, with everything needed to settle the RUN it was
+ * executing — see `ReclaimResult.exhausted` for why the caller must.
+ */
+export type ExhaustedJob = {
+  id: string;
+  /**
+   * The run this job produced, or `null` when it died before
+   * `attachExecutionToJob` fired. Null means there is no `Execution` row to
+   * settle and the job row's `lastError` is the whole record.
+   */
+  executionId: string | null;
+  workflowId: string;
+  /** Carried because the fan-out chain the settle must advance lives in it. */
+  payload: WorkflowExecutionPayload;
+};
+
 export type ReclaimResult = {
   /** Lease losses returned to the queue, resumable from their stored steps. */
   reclaimed: number;
-  /** Lease losses that had no attempts left and were marked FAILED. */
-  exhausted: number;
+  /**
+   * Lease losses that had no attempts left and were marked FAILED.
+   *
+   * ⚠️ **The caller MUST settle each one's `Execution` row** — with
+   * `settleFailedExecution`, exactly as it would for a job `failJob` exhausted.
+   * Returning the rows rather than a count is what makes that possible, and it
+   * closes a hole that is invisible from inside this module: marking the JOB
+   * FAILED says nothing to the `Execution` row, so a job that kills its worker
+   * on every attempt would otherwise leave the user's run reading RUNNING
+   * forever, with no failure email, and any fan-out chain it held silently
+   * dropping every remaining item. Nothing else can report that run — the
+   * process that was executing it is gone.
+   *
+   * Settling is deliberately NOT done here. This module is pure functions over
+   * rows and is imported by the Next app; `settleFailedExecution` pulls in
+   * email, Sentry and the fan-out dispatcher.
+   */
+  exhausted: ExhaustedJob[];
 };
 
 /**
@@ -746,10 +834,20 @@ export type ReclaimResult = {
  */
 export async function reclaimExpiredJobs({
   limit = 50,
+  client = prisma,
 }: {
   limit?: number;
+  client?: SqlRunner;
 } = {}): Promise<ReclaimResult> {
-  const rows = await prisma.$queryRaw<{ status: string }[]>`
+  const rows = await client.$queryRaw<
+    {
+      status: string;
+      id: string;
+      executionId: string | null;
+      workflowId: string;
+      payload: WorkflowExecutionPayload | null;
+    }[]
+  >`
     WITH expired AS (
       SELECT
         c.id,
@@ -800,7 +898,18 @@ export async function reclaimExpiredJobs({
         "updatedAt" = now()
     FROM expired e
     WHERE j.id = e.id
-    RETURNING j.status::text AS "status"
+    -- Every reference here is to the NEW row, so the status below is the one
+    -- the CASE above just decided.
+    RETURNING
+      j.status::text AS "status",
+      j.id AS "id",
+      j."executionId" AS "executionId",
+      j."workflowId" AS "workflowId",
+      -- Only the caller's settle needs a payload, and only exhausted rows get
+      -- settled. Shipping every reclaimed row's payload would put the common
+      -- case (a rolling deploy reclaims everything in flight) on the wire
+      -- forever to serve the rare one.
+      CASE WHEN j.status = 'FAILED' THEN j.payload ELSE NULL END AS "payload"
   `;
 
   // Both outcomes lost a lease, so both count as reclaims — that counter is the
@@ -808,6 +917,16 @@ export async function reclaimExpiredJobs({
   // than a handover.
   if (rows.length > 0) countReclaims(rows.length);
 
-  const exhausted = rows.filter((row) => row.status === "FAILED").length;
-  return { reclaimed: rows.length - exhausted, exhausted };
+  const exhausted = rows
+    .filter((row) => row.status === "FAILED")
+    .map(({ id, executionId, workflowId, payload }) => ({
+      id,
+      executionId,
+      workflowId,
+      // `?? {}` rather than a non-null assertion: the CASE guarantees a payload
+      // on exactly these rows, but that guarantee lives in SQL where no type
+      // checks it, and an empty payload settles correctly (no chain to advance).
+      payload: payload ?? {},
+    }));
+  return { reclaimed: rows.length - exhausted.length, exhausted };
 }

@@ -617,7 +617,7 @@ describe("reclaim", () => {
   it("returns an expired lease to the queue, immediately claimable", async () => {
     const job = await abandoned({ executionId: "exec_1", attempt: 1 });
 
-    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 1, exhausted: 0 });
+    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 1, exhausted: [] });
 
     const row = await readJob(job.id);
     expect(row.status).toBe("PENDING");
@@ -638,14 +638,14 @@ describe("reclaim", () => {
       lockedBy: "worker-1",
       leaseExpiresAt: new Date(Date.now() + 60_000),
     });
-    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 0, exhausted: 0 });
+    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 0, exhausted: [] });
   });
 
   it("rescues a RUNNING job that has no lease at all", async () => {
     // Nothing writes this row today. It is guarded because NULL < now() is NULL,
     // so such a row would otherwise be stuck RUNNING forever with no owner.
     const job = await seedJob({ status: "RUNNING", lockedBy: "worker-1" });
-    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 1, exhausted: 0 });
+    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 1, exhausted: [] });
     expect((await readJob(job.id)).status).toBe("PENDING");
   });
 
@@ -662,7 +662,7 @@ describe("reclaim", () => {
 
     expect(await reclaimExpiredJobs({ limit: 1 })).toEqual({
       reclaimed: 1,
-      exhausted: 0,
+      exhausted: [],
     });
     expect((await readJob(noLease.id)).status).toBe("PENDING");
   });
@@ -679,9 +679,24 @@ describe("reclaim", () => {
       attempt: 4,
       maxAttempts: 4,
       reclaims: MAX_FREE_RECLAIMS, // past the refunds
+      executionId: "exec_poison",
+      payload: { idempotencyKey: "poison-1" },
     });
 
-    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 0, exhausted: 1 });
+    // The ROWS, not a count — the caller has to settle each one's `Execution`,
+    // and cannot do that from a number. Without this the user's run reads
+    // RUNNING forever: the job is correctly FAILED, but nothing told the run.
+    expect(await reclaimExpiredJobs()).toEqual({
+      reclaimed: 0,
+      exhausted: [
+        {
+          id: poison.id,
+          executionId: "exec_poison",
+          workflowId,
+          payload: { idempotencyKey: "poison-1" },
+        },
+      ],
+    });
 
     const row = await readJob(poison.id);
     // FAILED, not "PENDING but unclaimable": a row no worker will ever take is
@@ -702,7 +717,7 @@ describe("reclaim", () => {
     // and the job lives.
     const job = await abandoned({ attempt: 4, maxAttempts: 4, reclaims: 0 });
 
-    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 1, exhausted: 0 });
+    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 1, exhausted: [] });
     expect(await readJob(job.id)).toMatchObject({
       status: "PENDING",
       attempt: 3,
@@ -731,7 +746,7 @@ describe("reclaim", () => {
     });
 
     const countersBefore = readQueueCounters().reclaims;
-    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 3, exhausted: 0 });
+    expect(await reclaimExpiredJobs()).toEqual({ reclaimed: 3, exhausted: [] });
 
     expect(await readJob(first.id)).toMatchObject({ attempt: 2, reclaims: 1 });
     expect(await readJob(second.id)).toMatchObject({
