@@ -598,9 +598,22 @@ model FanOutItem {
 // deleted while executions persist 30 days, and a cascade FK would erase
 // history. Cascade from Execution means pruneOldExecutions cleans these up.
 //
-// Intentionally NO @@unique([executionId, nodeId]): retry idempotency comes from
-// stable per-node Inngest step ids, and a unique constraint would block Tier 2
-// loops / branch re-entry (a node running more than once per run).
+// This block used to say the opposite of the model below it — "intentionally NO
+// @@unique([executionId, nodeId])" directly above a model that HAS that
+// constraint (see it at the bottom, with its own correct explanation). Worth
+// naming rather than deleting, because the claim it made was a spec: it said
+// retry idempotency came from "stable per-node Inngest step ids". It does not,
+// and increasingly will not. Idempotency has two independent sources now:
+//
+//   * the constraint below, which is what stops a retried segment accumulating
+//     duplicate rows, and
+//   * `StepResult` (keyed `(executionId, stepId)`), which is what stops a
+//     completed step re-executing — the self-hosted runtime's replacement for
+//     Inngest's step memoization, and the same guarantee whichever runtime runs.
+//
+// The loops caveat survives intact and is restated below: three tables now
+// encode "a node runs at most once per execution", and a loops feature has to
+// change all of them together.
 model NodeExecution {
   id          String    @id @default(cuid())
   executionId String
@@ -636,8 +649,11 @@ model NodeExecution {
   //
   // Deliberately NOT keyed on `sequence`: a node runs at most once per
   // execution today, which is what makes (executionId, nodeId) the natural
-  // identity. A future loops feature would have to add it here AND to
-  // `NodeInputSnapshot`, which is keyed on the same pair.
+  // identity. A future loops feature would have to add it here, to
+  // `NodeInputSnapshot` (keyed on the same pair) AND to `StepResult`, whose
+  // `(executionId, stepId)` key encodes the same assumption one layer down —
+  // and whose violation is the silent one, since a second pass through a node
+  // would be served the first pass's stored values instead of executing.
   @@unique([executionId, nodeId])
   @@index([executionId, sequence])
   // On-demand canvas failure lookup: latest FAILED run for a given node

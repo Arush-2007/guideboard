@@ -68,13 +68,15 @@ A single node feature is split across two locations by convention:
 
 ### Workflow execution (Inngest)
 
-`src/inngest/functions.ts` is the engine. `executeWorkflow` is triggered by the `workflows/execute.workflow` event (sent via `sendWorkflowExecution` in `src/inngest/utils.ts`). It:
+`src/inngest/functions.ts` registers the Inngest functions; the run itself lives in **`src/execution/run-execution.ts`**, which is runtime-neutral so the same body serves Inngest today and the self-hosted worker being built alongside it. `executeWorkflow` is triggered by the `workflows/execute.workflow` event (sent via `sendWorkflowExecution` in `src/inngest/utils.ts`) and calls `runExecution`, which:
 1. Creates an `Execution` row (with optional `idempotencyKey` dedup — used heavily by pollers).
 2. Loads the workflow's nodes + connections and `topologicalSort`s them (cycles throw).
 3. Runs each node's executor **sequentially**, threading a `context` object (`WorkflowContext = Record<string, unknown>`) from one node to the next. Each executor returns the next context, conventionally writing its output under a key like `<nodetype>_<nodeId>`.
-4. Marks the `Execution` SUCCESS/FAILED; `onFailure` records the error. Retries are 3 in production, 0 in dev.
+4. Marks the `Execution` SUCCESS. Failure is `settleFailedExecution` (`src/execution/failure.ts`) — the chain advance, the FAILED write, the single Sentry capture and the alert email — which `onFailure` wraps. Retries are 3 in production, 0 in dev.
 
-A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so Inngest can checkpoint it, and `publish(channel(userId).status({ nodeId, status }))` to stream UI status (channels are user-scoped — see the registration notes above). Throw `NonRetriableError` for config/validation failures so Inngest doesn't retry them.
+A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so it can be checkpointed, and `publish(channel(userId).status({ nodeId, status }))` to stream UI status (channels are user-scoped — see the registration notes above). Throw `NonRetriableError` for config/validation failures so it isn't retried.
+
+**A completed `step.run` never executes twice, and that is the guarantee, not an Inngest detail.** Under Inngest it comes from their memoized run state; under the worker from `StepResult` (`src/queue/step-store.ts`), keyed `(executionId, "<nodeId>:<stepId>")`. This is what makes a read/write split replay-safe — see `GOOGLE_SHEETS_ACTION` in `src/config/node-kinds.ts` for the three bugs it prevents, and `src/execution/run-execution.integration.test.ts` for the crash-resume test that pins it.
 
 **Templating:** action executors render user-authored fields (message bodies, etc.) against the `context` through **`renderTemplate` (`src/lib/templating.ts`)** — never by calling Handlebars directly. It resolves two syntaxes:
 

@@ -256,8 +256,15 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
 ### Setup
 
 - **Client:** `src/inngest/client.ts` — Inngest instance with `realtimeMiddleware()`
-- **Functions:** `src/inngest/functions.ts` — single function `executeWorkflow` on event `workflows/execute.workflow`
-- **Serve:** `/api/inngest` — registers the function with Inngest's HTTP adapter
+- **Functions:** `src/inngest/functions.ts` — registers `executeWorkflow` on event `workflows/execute.workflow`, plus the pollers and the pruner
+- **The run itself:** `src/execution/run-execution.ts` — `runExecution`, the runtime-neutral body `executeWorkflow` calls. Everything between "a run was requested" and "the row says SUCCESS" lives here, with no knowledge of which runtime invoked it; failure is `src/execution/failure.ts`.
+- **Serve:** `/api/inngest` — registers the functions with Inngest's HTTP adapter
+
+> ℹ️ The split exists because a self-hosted execution runtime (a Postgres job
+> queue + a long-lived worker, in `src/queue/` and `src/worker/`) is being built
+> to replace Inngest. It is **not wired to anything** — no routing exists, so
+> every production run today is Inngest, start to finish. The extraction is what
+> lets both execute byte-identical runs when routing lands.
 
 ### Execution Flow
 
@@ -558,11 +565,22 @@ guideboard/
 │   │   └── workflows/             # Workflow CRUD views
 │   ├── generated/prisma/          # Auto-generated Prisma client
 │   ├── hooks/                     # useIsMobile, useEntitySearch, useUpgradeModal
+│   ├── execution/                 # Runtime-neutral run body (see §8)
+│   │   ├── run-execution.ts       # runExecution — items 1-6 of a run
+│   │   ├── failure.ts             # settleFailedExecution + the alert email
+│   │   ├── fan-out-dispatch.ts    # fan-out dispatcher + chain advance
+│   │   ├── node-recorder.ts       # Prisma-backed NodeExecution recorder
+│   │   ├── topological-sort.ts    # topologicalSort
+│   │   ├── passthrough-step.ts    # the non-memoizing ExecutorStep shim
+│   │   └── payload.ts             # WorkflowExecutionPayload
 │   ├── inngest/
 │   │   ├── client.ts              # Inngest instance
-│   │   ├── functions.ts           # executeWorkflow function
-│   │   ├── utils.ts               # topologicalSort, sendWorkflowExecution
+│   │   ├── functions.ts           # executeWorkflow + pollers + pruner
+│   │   ├── run-workflow.ts        # the node-execution engine
+│   │   ├── utils.ts               # sendWorkflowExecution
 │   │   └── channels/              # 14 realtime channel definitions
+│   ├── queue/                     # Postgres job queue (built, not wired)
+│   ├── worker/                    # Self-hosted worker step store (not wired)
 │   ├── lib/
 │   │   ├── auth.ts                # Better Auth server config
 │   │   ├── auth-client.ts         # Better Auth React client
