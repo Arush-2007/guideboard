@@ -1,0 +1,19 @@
+-- Index for `readQueueGauges`' `failedInWindow` (src/queue/metrics.ts), which
+-- counts FAILED jobs whose `updatedAt` falls inside a rolling window.
+--
+-- Without it that aggregate reads EVERY failed row and filters in the heap. The
+-- gauge query narrows to `status IN ('PENDING','RUNNING','FAILED')` — deliberately,
+-- to exclude SUCCEEDED/CANCELLED history — but FAILED is precisely the bucket
+-- that accumulates, because `WorkflowJob` has no retention yet (parent plan §9.8).
+--
+-- The cost this avoids is not theoretical: the self-hosted worker runs that query
+-- every 60 seconds for the life of the process, on the deliberately tiny
+-- (connection_limit=2) control-plane pool that the lease heartbeat also depends
+-- on. An O(all failures ever) scan there is how a metrics line ends up starving
+-- the fence it was added to make visible.
+--
+-- Hand-written rather than produced by `prisma migrate dev`: this developer's
+-- database carries a migration from another branch, so `migrate dev` offered only
+-- to RESET it. The statement below is exactly what Prisma generates for
+-- `@@index([status, updatedAt])` on this model.
+CREATE INDEX "WorkflowJob_status_updatedAt_idx" ON "WorkflowJob"("status", "updatedAt");

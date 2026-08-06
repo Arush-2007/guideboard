@@ -782,6 +782,16 @@ model WorkflowJob {
   @@unique([workflowId, idempotencyKey])
   @@index([status, runAt])
   @@index([workflowId, status])
+  // For `readQueueGauges`' `failedInWindow`, which counts FAILED jobs whose
+  // `updatedAt` falls inside a rolling window. Without it that aggregate reads
+  // EVERY failed row and filters in the heap — and FAILED is the one status the
+  // gauge query does not exclude, so it accumulates until retention exists.
+  //
+  // ⚠️ Not micro-optimization: a long-lived worker runs that query every 60
+  // seconds forever, on the deliberately tiny control-plane pool the heartbeat
+  // depends on. An O(all failures ever) scan there is how a metrics line
+  // becomes the thing that starves the fence.
+  @@index([status, updatedAt])
 }
 
 // One memoized `step.run` / `step.ai.wrap` result — the durable-step store that
