@@ -42,6 +42,26 @@ export const isTriggerNodeType = (type: string | null | undefined): boolean =>
   Boolean(type) && TRIGGER_NODE_TYPES.has(type as NodeType);
 
 /**
+ * Triggers whose credential is a per-workflow row in `WebhookTrigger` — an
+ * unguessable URL token plus an HMAC signing secret.
+ *
+ * These are the triggers fired by a caller WE hand a URL to, rather than by a
+ * provider we hold an API credential for. That caller has no account and no
+ * session, so the URL token is the whole of its identity, and the signature is
+ * what binds a request to its body.
+ *
+ * Listing a type here is what makes `syncTriggerPollsForWorkflow` provision and
+ * clean its row. **A type missing from this list gets no token**, so its webhook
+ * can never authenticate — which is exactly how the Google Form trigger came to
+ * be broken: the route demanded a credential that nothing was provisioning and
+ * nothing was sending.
+ */
+export const TOKEN_WEBHOOK_TRIGGER_TYPES: readonly NodeType[] = [
+  NodeType.WEBHOOK_TRIGGER,
+  NodeType.GOOGLE_FORM_TRIGGER,
+];
+
+/**
  * Whether a node type must get its OWN Inngest step, or may run inline inside a
  * shared one.
  *

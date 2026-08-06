@@ -281,17 +281,32 @@ model SchedulePoll {
   @@index([nextRunAt])
 }
 
-// Generic inbound webhook. One row per workflow that has a WEBHOOK_TRIGGER
-// node, provisioned/cleaned by `syncTriggerPollsForWorkflow`. `token` is the
-// public, unguessable URL segment (cuid) used for O(1) lookup at
-// `/api/webhooks/generic/<token>`; `secret` is encrypted at rest (cryptr) and
-// used for the optional HMAC-SHA256 signature check on inbound requests.
+// Inbound webhook credentials. One row per (workflow, trigger node type),
+// provisioned/cleaned by `syncTriggerPollsForWorkflow`. `token` is the public,
+// unguessable URL segment (cuid) used for O(1) lookup at
+// `/api/webhooks/<provider>/<token>`; `secret` is encrypted at rest (cryptr)
+// and used for the HMAC-SHA256 signature check on inbound requests.
 model WebhookTrigger {
   id         String   @id @default(cuid())
   userId     String
-  workflowId String   @unique
+  workflowId String
   token      String   @unique
   secret     String
+
+  // Which trigger node this row belongs to, so one table serves every
+  // token-authenticated webhook instead of one near-identical table per
+  // provider.
+  //
+  // Defaults to WEBHOOK_TRIGGER because that is what every row predating this
+  // column is: the table held generic-webhook credentials exclusively, so the
+  // default restates the existing meaning rather than guessing at it.
+  //
+  // This is what replaced `workflowId @unique` with a composite key. The old
+  // single-column constraint quietly encoded "a workflow has at most one
+  // webhook", which stopped being true the moment a second trigger type needed
+  // a token — and would have let a Google Form and a generic webhook on the
+  // same workflow collide on insert.
+  nodeType NodeType @default(WEBHOOK_TRIGGER)
 
   // Whether an `X-Guideboard-Signature` HMAC is REQUIRED, or merely verified
   // when the caller chooses to send one.
@@ -315,6 +330,8 @@ model WebhookTrigger {
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, nodeType])
 }
 
 enum CredentialType {

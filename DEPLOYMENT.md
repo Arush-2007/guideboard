@@ -183,9 +183,14 @@ RESEND_API_KEY
 EMAIL_FROM
 ```
 
-Per the triggers actually in use: `GOOGLE_FORM_WEBHOOK_SECRET`,
-`TYPEFORM_WEBHOOK_SECRET`, `TELEGRAM_WEBHOOK_SECRET`. Add an AI provider key only
-if a live workflow contains an AI node.
+Per the triggers actually in use: `TYPEFORM_WEBHOOK_SECRET`,
+`TELEGRAM_WEBHOOK_SECRET`. Add an AI provider key only if a live workflow
+contains an AI node.
+
+Google Form triggers need **no** environment variable — each is issued its own
+webhook token + signing secret when its workflow is saved.
+`GOOGLE_FORM_WEBHOOK_SECRET` is no longer read anywhere and can be deleted from
+any environment that still sets it.
 
 Optional: `SENTRY_ORG` / `SENTRY_PROJECT` / `SENTRY_AUTH_TOKEN`.
 

@@ -39,6 +39,7 @@ const givenTrigger = (requireSignature: boolean) => {
     workflowId: "wf_1",
     secret: `enc:${SECRET}`,
     requireSignature,
+    nodeType: "WEBHOOK_TRIGGER",
   });
 };
 
@@ -113,6 +114,24 @@ describe("generic webhook — signature REQUIRED (new triggers)", () => {
 describe("generic webhook — unknown token", () => {
   it("404s before any signature work", async () => {
     findUnique.mockResolvedValue(null);
+    const res = await call({ "x-guideboard-signature": sign(BODY) });
+    expect(res.status).toBe(404);
+    expect(sendWorkflowExecution).not.toHaveBeenCalled();
+  });
+
+  it("refuses a token belonging to a DIFFERENT trigger type", async () => {
+    // Tokens are unique across the whole table, so a Google Form's token is a
+    // valid row here — and its secret would verify a correct signature. Without
+    // the nodeType check this endpoint would accept it and run that workflow
+    // with `initialData.webhook` instead of the `googleForm` context its nodes
+    // reference, i.e. succeed while producing blanks everywhere.
+    findUnique.mockResolvedValue({
+      workflowId: "wf_1",
+      secret: `enc:${SECRET}`,
+      requireSignature: true,
+      nodeType: "GOOGLE_FORM_TRIGGER",
+    });
+
     const res = await call({ "x-guideboard-signature": sign(BODY) });
     expect(res.status).toBe(404);
     expect(sendWorkflowExecution).not.toHaveBeenCalled();
