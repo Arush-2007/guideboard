@@ -1,5 +1,10 @@
 import { createId } from "@paralleldrive/cuid2";
 import type { WorkflowExecutionPayload } from "@/execution/payload";
+import {
+  CANCELLED_JOB_RETENTION_DAYS,
+  FAILED_JOB_RETENTION_DAYS,
+  SUCCEEDED_JOB_RETENTION_DAYS,
+} from "@/execution/retention";
 import { Prisma, type WorkflowJob } from "@/generated/prisma";
 import { resolveWorkflowRetries } from "@/inngest/retry-policy";
 import prisma from "@/lib/db";
@@ -108,9 +113,14 @@ const MAX_LAST_ERROR_CHARS = 4_000;
  *
  * Two unrelated capabilities ride on this one parameter, and both need it:
  *
- * 1. **Enqueue can sit inside the CALLER's transaction** — the thing an
+ * 1. **Enqueue COULD sit inside the caller's transaction** — the thing an
  *    off-the-shelf queue library could not give us, since its enqueue holds its
- *    own pool.
+ *    own pool. ⚠️ **No production caller does this today**, and one structurally
+ *    cannot: `sendWorkflowExecution` is the single enqueue seam, and it retries
+ *    a transient failure, which §9.19's aborted-transaction rule makes
+ *    impossible inside someone else's transaction. Kept because the capability
+ *    is free and the option is worth preserving — but it is currently
+ *    unexercised surface, not a live guarantee.
  * 2. **The worker can run its claim loop and heartbeat on a pool of their own**,
  *    separate from the one its runs execute against. That is a correctness
  *    requirement, not tuning: if the execution pool saturates, a heartbeat
@@ -159,14 +169,12 @@ export type EnqueueResult =
  * is not going anywhere; this one is not permanent, and must not be allowed to
  * tempt anyone into removing the execution-level check.
  *
- * ⚠️ **`WorkflowJob` has no retention yet** (parent plan §9.8 — it belongs in
- * `pruneOldExecutions`, which Step 3 is not allowed to touch), so today these
- * rows outlive the `Execution` rows they mirror, which are deleted at 30 days.
- * Two consequences until it is built: the table grows without bound, and a key
- * re-sent more than 30 days later is dropped HERE while the Inngest path — whose
- * only dedup is that deleted `Execution` — would run it. **The retention window
- * for SUCCEEDED jobs must therefore be shorter than `Execution`'s 30 days, not
- * longer**, or the two runtimes disagree about the same input.
+ * ⚠️ **These rows are pruned on a schedule, and the window is load-bearing.**
+ * A job row deduplicates its key for as long as it survives, so a SUCCEEDED job
+ * outliving the `Execution` it produced would have the worker drop a re-sent
+ * key that Inngest would run. `pruneWorkflowJobs` (below) therefore deletes
+ * SUCCEEDED rows at 7 days against `Execution`'s 30 — see
+ * `src/execution/retention.ts`, which owns that inequality and explains it.
  *
  * The `idempotencyKey` COLUMN is derived from the payload rather than passed
  * separately, so the row and the payload cannot disagree about what this run
@@ -385,9 +393,10 @@ export type HeartbeatResult =
  * appending rows to a client's spreadsheet.
  *
  * This module reports the loss; turning it into an abort belongs to the worker.
- * `FencedError` is deliberately not imported here: it lives in `src/worker/`
- * because `src/queue/` is shared with the Next app, which has no business
- * carrying a worker-abort class.
+ * `FencedError` is deliberately not imported here: it lives in
+ * `src/execution/fenced-error.ts`, which the shared engine can reach without
+ * importing anything runtime-specific. (It was under `src/worker/` until the
+ * engine itself became a consumer — parent plan §9.61.)
  */
 export async function heartbeatJob({
   jobId,
@@ -434,7 +443,7 @@ export async function heartbeatJob({
  * single-row SELECT in the style of every other statement here was the cheaper
  * end of that trade.
  */
-async function diagnoseLostLease(
+export async function diagnoseLostLease(
   jobId: string,
   workerId: string,
   client: SqlRunner,
@@ -929,4 +938,119 @@ export async function reclaimExpiredJobs({
       payload: payload ?? {},
     }));
   return { reclaimed: rows.length - exhausted.length, exhausted };
+}
+
+// ---------------------------------------------------------------------------
+// Retention
+// ---------------------------------------------------------------------------
+
+/**
+ * How many rows one prune call may delete. Bounded for the same reason the
+ * execution prune is: the daily cron drains any remainder on later runs, and an
+ * unbounded DELETE against a backlog is a long lock on a table the worker's
+ * claim loop is reading every few hundred milliseconds.
+ */
+export const JOB_PRUNE_BATCH = 5_000;
+
+/**
+ * How many batches one prune call may drain before stopping.
+ *
+ * The batch bounds a single DELETE; this bounds the whole call, so a
+ * pathological backlog cannot turn one cron tick into an unbounded write
+ * against a table the claim loop reads every few hundred milliseconds. At the
+ * default that is 100k rows per night, comfortably above any plausible daily
+ * production rate while still terminating.
+ */
+export const JOB_PRUNE_MAX_BATCHES = 20;
+
+/**
+ * Deletes terminal job rows past their retention window.
+ *
+ * ⚠️ **Pruning is not optional bookkeeping here — it is what keeps the two
+ * runtimes agreeing.** The windows and the reasoning behind them live in
+ * `src/execution/retention.ts`; the short one for SUCCEEDED exists because a
+ * job row deduplicates its idempotency key for as long as it survives, so a job
+ * outliving its `Execution` would have the worker drop a re-sent key that
+ * Inngest would run.
+ *
+ * Only terminal rows are touched. PENDING and RUNNING are excluded by omission
+ * rather than by an explicit clause — a row still in play has no age at which
+ * deleting it is correct, and a RUNNING row deleted from under its worker
+ * fences that worker (`job-row-gone`), which is a real abort caused by a
+ * housekeeping job.
+ *
+ * `updatedAt` rather than `createdAt` is the age being measured: it is when the
+ * row reached its terminal status, which is what the retention window is about.
+ * The `@@index([status, updatedAt])` added for the metrics gauge serves this
+ * too — and unlike that gauge's `FILTER`, this is a plain WHERE predicate, so
+ * the planner can actually reach the index (parent plan §9.46).
+ *
+ * ⚠️ **That anchor is why `FAILED_JOB_RETENTION_DAYS` is a day SHORTER than
+ * `Execution`'s window rather than equal to it.** `pruneOldExecutions` measures
+ * `Execution.startedAt`; this measures the later `WorkflowJob.updatedAt`. Equal
+ * numbers against unequal anchors would let a FAILED job outlive the execution
+ * it mirrors, leaving the job row as the only holder of the idempotency key —
+ * the divergence the whole window exists to prevent. See `retention.ts`.
+ */
+export async function pruneWorkflowJobs({
+  now,
+  limit = JOB_PRUNE_BATCH,
+  maxBatches = JOB_PRUNE_MAX_BATCHES,
+  client = prisma,
+}: {
+  /**
+   * Treat this instant as "now". Injectable so a test can age rows without
+   * waiting a week.
+   *
+   * ⚠️ **Undefined means Postgres' `now()`, and that is the production path.**
+   * Every other time comparison in this module runs on the server's clock, for
+   * the reason `failJob` states: mixing a worker-side `new Date()` in makes
+   * retention depend on the container's clock agreeing with the database's.
+   * A test supplying a value is knowingly opting out of that.
+   */
+  now?: Date;
+  limit?: number;
+  maxBatches?: number;
+  client?: SqlRunner;
+} = {}): Promise<{ deleted: number }> {
+  // `${now}::timestamptz` when a test pins the clock, `now()` otherwise — the
+  // cutoffs are then computed by Postgres from Postgres' clock in both cases,
+  // so only the ORIGIN is injectable, never the arithmetic.
+  const clock = now ? Prisma.sql`${now}::timestamptz` : Prisma.sql`now()`;
+  const cutoff = (days: number) =>
+    Prisma.sql`(${clock} - (${days}::int * interval '1 day'))`;
+
+  let deleted = 0;
+
+  // Drains rather than deleting one batch and trusting tomorrow. "The daily
+  // cron catches the remainder" only holds while the daily PRODUCTION rate is
+  // below one batch; above it the table grows forever, which is the exact
+  // failure this function exists to prevent. Bounded by `maxBatches` so a
+  // pathological backlog still cannot turn one cron tick into an unbounded
+  // write against the table the claim loop is reading.
+  for (let batch = 0; batch < maxBatches; batch++) {
+    const rows = await client.$queryRaw<{ deleted: number }[]>`
+      WITH doomed AS (
+        SELECT id FROM "WorkflowJob"
+        WHERE (status = 'SUCCEEDED' AND "updatedAt" < ${cutoff(SUCCEEDED_JOB_RETENTION_DAYS)})
+           OR (status = 'FAILED'    AND "updatedAt" < ${cutoff(FAILED_JOB_RETENTION_DAYS)})
+           OR (status = 'CANCELLED' AND "updatedAt" < ${cutoff(CANCELLED_JOB_RETENTION_DAYS)})
+        LIMIT ${limit}::int
+      ), removed AS (
+        DELETE FROM "WorkflowJob" j USING doomed d WHERE j.id = d.id
+        RETURNING 1
+      )
+      -- Counted in SQL rather than by returning ids: the caller wants a number
+      -- for its log line, and a full backlog's worth of cuids on the wire to
+      -- produce one is the kind of cost that only shows up on the bad day.
+      SELECT count(*)::int AS "deleted" FROM removed
+    `;
+
+    const removed = rows[0]?.deleted ?? 0;
+    deleted += removed;
+    // A short batch means the backlog is drained; anything else would spin.
+    if (removed < limit) break;
+  }
+
+  return { deleted };
 }

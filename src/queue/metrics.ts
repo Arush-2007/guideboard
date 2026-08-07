@@ -58,7 +58,7 @@ export type QueueGauges = {
  * Every reason a worker abandons a run mid-flight.
  *
  * ⚠️ Stated here as `HeartbeatLossReason` plus one, rather than imported from
- * `src/worker/fenced-error.ts` where the matching `FenceReason` lives. That is
+ * `src/execution/fenced-error.ts` where the matching `FenceReason` lives. That is
  * layering, not laziness: `src/queue/` is imported by the Next app, and a
  * worker-abort concept must not travel into it — the same rule that keeps
  * `FencedError` out of this folder. The extra member is `lease-expired`, which
@@ -143,8 +143,9 @@ export function readQueueCounters(): QueueCounters {
  * ⚠️ **`failedInWindow` is separated deliberately, and the reason is measured
  * rather than argued.** It was originally a seventh `FILTER` in the query below,
  * which forced that query's `WHERE` to include `'FAILED'` — and FAILED is the
- * one status here that ACCUMULATES, because `WorkflowJob` has no retention yet
- * (parent plan §9.8). So the cost of a gauge read grew with every failure the
+ * status here that accumulates most, bounded now only by `pruneWorkflowJobs`'
+ * 29-day window (parent plan §9.8, shipped at Step 6) rather than by what is
+ * queued right now. So the cost of a gauge read grew with every failure the
  * service had ever had, on a query the worker runs every 60 seconds, on the
  * deliberately tiny pool its lease heartbeat depends on.
  *
@@ -210,9 +211,10 @@ export async function readQueueGauges({
     -- (status, runAt) index instead of scanning the table.
     --
     -- ⚠️ **'FAILED' is deliberately NOT in this list** — see the header. These
-    -- two statuses are bounded by what is queued right now; FAILED is unbounded
-    -- history until §9.8's retention exists, and including it made the cost of
-    -- every gauge read grow with every failure the service had ever had.
+    -- two statuses are bounded by what is queued right now; FAILED is bounded
+    -- only by retention (29 days, via pruneWorkflowJobs), so including it made
+    -- the cost of every gauge read grow with most of the failure history.
+    -- (No backticks in here: this is a tagged template, and one would end it.)
     WHERE status IN ('PENDING', 'RUNNING')
   `;
 

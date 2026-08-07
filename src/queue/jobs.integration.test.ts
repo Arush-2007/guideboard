@@ -11,6 +11,10 @@ vi.mock("@/lib/auth", () => ({
   auth: { api: { getSession: async () => null } },
 }));
 
+import {
+  FAILED_JOB_RETENTION_DAYS,
+  SUCCEEDED_JOB_RETENTION_DAYS,
+} from "@/execution/retention";
 import type { Prisma } from "@/generated/prisma";
 import { resolveWorkflowRetries } from "@/inngest/retry-policy";
 import prisma from "@/lib/db";
@@ -23,6 +27,7 @@ import {
   failJob,
   heartbeatJob,
   MAX_FREE_RECLAIMS,
+  pruneWorkflowJobs,
   reclaimExpiredJobs,
 } from "./jobs";
 import { readQueueCounters, readQueueGauges } from "./metrics";
@@ -861,5 +866,130 @@ describe("metrics", () => {
     expect((await readQueueGauges({ windowMinutes: 60 })).failedInWindow).toBe(
       0,
     );
+  });
+});
+
+describe("pruneWorkflowJobs", () => {
+  /**
+   * Retention is the thing that keeps the two runtimes agreeing, not just
+   * housekeeping — see `src/execution/retention.ts`. The windows are reached by
+   * moving `now` forward rather than by back-dating rows, so every fixture here
+   * is a row in exactly the state the real code writes.
+   */
+  const daysFromNow = (n: number) =>
+    new Date(Date.now() + n * 24 * 60 * 60 * 1000);
+
+  it("deletes a SUCCEEDED job once past its window", async () => {
+    const job = await seedJob({ status: "SUCCEEDED" });
+
+    expect(await pruneWorkflowJobs({ now: daysFromNow(1) })).toEqual({
+      deleted: 0,
+    });
+    expect(await readJob(job.id)).toBeTruthy();
+
+    expect(
+      await pruneWorkflowJobs({
+        now: daysFromNow(SUCCEEDED_JOB_RETENTION_DAYS + 1),
+      }),
+    ).toEqual({ deleted: 1 });
+    expect(
+      await prisma.workflowJob.findUnique({ where: { id: job.id } }),
+    ).toBeNull();
+  });
+
+  it("keeps a FAILED job for the full execution window", async () => {
+    const job = await seedJob({ status: "FAILED" });
+
+    // Past the SUCCEEDED window but well inside its own: the case that would
+    // break if the three statuses shared one cutoff.
+    await pruneWorkflowJobs({
+      now: daysFromNow(SUCCEEDED_JOB_RETENTION_DAYS + 1),
+    });
+    expect(await readJob(job.id)).toBeTruthy();
+
+    expect(
+      await pruneWorkflowJobs({
+        now: daysFromNow(FAILED_JOB_RETENTION_DAYS + 1),
+      }),
+    ).toEqual({ deleted: 1 });
+  });
+
+  it("never deletes a job that is still in play", async () => {
+    // No age makes deleting these correct. A RUNNING row removed from under its
+    // worker fences that worker (`job-row-gone`) — a real abort caused by a
+    // housekeeping job — and a PENDING row deleted is a trigger silently lost.
+    const pending = await seedJob({ status: "PENDING" });
+    const running = await seedJob({
+      workflowId: otherWorkflowId,
+      status: "RUNNING",
+      lockedBy: "worker-1",
+      leaseExpiresAt: minutesFromNow(1),
+    });
+
+    expect(await pruneWorkflowJobs({ now: daysFromNow(365) })).toEqual({
+      deleted: 0,
+    });
+    expect(await readJob(pending.id)).toBeTruthy();
+    expect(await readJob(running.id)).toBeTruthy();
+  });
+
+  it("frees the idempotency key it was holding", async () => {
+    // The reason the window exists at all. While the row survives it dedups its
+    // key; once pruned, the same external event can be enqueued again — which
+    // is what stops the worker dropping a key Inngest would run.
+    await seedJob({ status: "SUCCEEDED", idempotencyKey: "gmail:m1" });
+
+    const blocked = await enqueueWorkflowJob({
+      workflowId,
+      payload: { idempotencyKey: "gmail:m1" },
+    });
+    expect(blocked).toEqual({ enqueued: false, reason: "duplicate" });
+
+    await pruneWorkflowJobs({
+      now: daysFromNow(SUCCEEDED_JOB_RETENTION_DAYS + 1),
+    });
+
+    const allowed = await enqueueWorkflowJob({
+      workflowId,
+      payload: { idempotencyKey: "gmail:m1" },
+    });
+    expect(allowed.enqueued).toBe(true);
+  });
+
+  it("drains past a single batch in one call", async () => {
+    // The reason the batch is not the whole story: capping a call at one batch
+    // capped RETENTION at one batch per day, so any install producing more
+    // terminal jobs than that per day grew forever — the exact failure pruning
+    // exists to prevent. One call must drain the backlog, not defer it.
+    for (let i = 0; i < 3; i++) {
+      await seedJob({ status: "SUCCEEDED", idempotencyKey: `k${i}` });
+    }
+
+    expect(
+      await pruneWorkflowJobs({
+        now: daysFromNow(SUCCEEDED_JOB_RETENTION_DAYS + 1),
+        limit: 2,
+      }),
+    ).toEqual({ deleted: 3 });
+  });
+
+  it("still bounds one call, so a backlog cannot become an unbounded write", async () => {
+    // The other half: draining must not mean "delete until finished". This is
+    // a table the claim loop reads every few hundred milliseconds.
+    for (let i = 0; i < 5; i++) {
+      await seedJob({ status: "SUCCEEDED", idempotencyKey: `b${i}` });
+    }
+
+    expect(
+      await pruneWorkflowJobs({
+        now: daysFromNow(SUCCEEDED_JOB_RETENTION_DAYS + 1),
+        limit: 2,
+        maxBatches: 2,
+      }),
+    ).toEqual({ deleted: 4 });
+
+    // The remainder survives to the next call rather than being deleted in a
+    // loop that does not stop.
+    expect(await prisma.workflowJob.count({ where: { workflowId } })).toBe(1);
   });
 });

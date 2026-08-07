@@ -1,6 +1,7 @@
 import { NonRetriableError } from "inngest";
 import { settleFailedExecution } from "@/execution/failure";
 import type { WorkflowExecutionPayload } from "@/execution/payload";
+import { EXECUTION_RETENTION_DAYS } from "@/execution/retention";
 import { runExecution } from "@/execution/run-execution";
 import { NodeType, type Prisma } from "@/generated/prisma";
 import { deleteBlobsByPrefix, isBlobConfigured } from "@/lib/blob";
@@ -17,6 +18,7 @@ import { logger } from "@/lib/logger";
 import type { RowScope } from "@/lib/sheets-trigger-options";
 import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
+import { pruneWorkflowJobs } from "@/queue/jobs";
 import { inngest } from "./client";
 import type { FanOutChain } from "./fan-out";
 import { resolveWorkflowRetries } from "./retry-policy";
@@ -773,8 +775,14 @@ export const pruneOldExecutions = inngest.createFunction(
   { id: "prune-old-executions", retries: 0 },
   { cron: "0 3 * * *" }, // 3 AM UTC daily
   async ({ step }) => {
-    const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const cutoff = new Date(
+      Date.now() - EXECUTION_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
 
+    // Queue rows first, and deliberately BEFORE the early return below: job
+    // retention must not be conditional on there being old executions to prune
+    // the same day. A quiet week for executions is not a quiet week for the
+    // queue, and skipping this is how the table that deduplicates idempotency
     // Bounded batch so one giant backlog can't blow the step; the daily cron
     // drains any remainder on subsequent runs. userId is needed to address the
     // per-user conversions prefix.
@@ -786,15 +794,11 @@ export const pruneOldExecutions = inngest.createFunction(
       });
     });
 
-    if (prunable.length === 0) {
-      return { deletedCount: 0, cutoff: cutoff.toISOString() };
-    }
-
     // Row deletion (below) is what enforces retention; blob GC is best-effort
     // so an R2 hiccup never blocks pruning. Blobs are deleted first — their
     // lifetime must not exceed the rows that reference them, and a failed
     // prefix is retried implicitly if row deletion also fails this run.
-    if (isBlobConfigured()) {
+    if (prunable.length > 0 && isBlobConfigured()) {
       await step.run("delete-execution-blobs", async () => {
         let deleted = 0;
         for (const execution of prunable) {
@@ -822,12 +826,46 @@ export const pruneOldExecutions = inngest.createFunction(
       });
     }
 
-    const result = await step.run("delete-old-executions", async () => {
-      return prisma.execution.deleteMany({
-        where: { id: { in: prunable.map((e) => e.id) } },
-      });
-    });
+    const result =
+      prunable.length === 0
+        ? { count: 0 }
+        : await step.run("delete-old-executions", async () => {
+            return prisma.execution.deleteMany({
+              where: { id: { in: prunable.map((e) => e.id) } },
+            });
+          });
 
-    return { deletedCount: result.count, cutoff: cutoff.toISOString() };
+    // Queue rows LAST, and that ordering is load-bearing rather than tidy.
+    //
+    // This function is `retries: 0`. Running the job prune first meant a single
+    // failure in it — a lock wait, a pool timeout on a large DELETE — aborted
+    // the whole run before any execution was pruned, with no retry. A persistent
+    // condition would then stop execution retention indefinitely while the
+    // dashboard showed one failed cron a day. Last, it can only ever cost
+    // itself. (An earlier comment here claimed the step was "retried
+    // independently"; `retries: 0` means nothing in this function is.)
+    //
+    // Deliberately NOT behind an early return on `prunable.length`: a quiet week
+    // for executions is not a quiet week for the queue, and skipping this is how
+    // the table that deduplicates idempotency keys grows unbounded.
+    //
+    // ⚠️ **INTERIM HOME.** `WorkflowJob` is the worker's table — the worker
+    // claims from it, heartbeats it, and already reaps expired leases from it
+    // on its own timer (`reapOnce`, src/worker/main.ts), which is the slot this
+    // belongs in. It sits here only because execution retention already did,
+    // and that is fine for all of Part 1 (Inngest stays deployed and serving
+    // throughout). **Move it to the worker's reaper loop when Inngest is
+    // deleted** — otherwise a fully worker-routed install still needs the
+    // Inngest scheduler alive purely to bound this table, which is exactly the
+    // dependency the migration exists to remove.
+    const jobs = await step.run("prune-workflow-jobs", () =>
+      pruneWorkflowJobs(),
+    );
+
+    return {
+      deletedCount: result.count,
+      prunedJobs: jobs.deleted,
+      cutoff: cutoff.toISOString(),
+    };
   },
 );
