@@ -30,9 +30,16 @@ import { topologicalSort } from "./topological-sort";
  * longer drag the client in — true of each of them alone, and misleading about
  * the folder as a whole.
  *
- * The edge closes in the step that makes dispatch runtime-aware; until then it
- * is one import, and it is cheap (constructing the client performs no I/O).
- * Nothing here should GROW a second such edge in the meantime.
+ * ⚠️ **This was predicted to close "in the step that makes dispatch
+ * runtime-aware". That step shipped (Step 6) and the edge did NOT close** —
+ * necessarily so: `sendWorkflowExecution` now owns BOTH branches, so it must
+ * import the Inngest client for value, and dispatch must go through it. The
+ * edge closes when Inngest is deleted, not before.
+ *
+ * It stays one import, and it is cheap (constructing the client performs no
+ * I/O). Nothing here should GROW a second such edge in the meantime — which is
+ * why the routing vocabulary the fan-out types need lives in
+ * `src/execution/runtime.ts` rather than beside the seam.
  */
 
 /**

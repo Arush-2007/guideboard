@@ -1,3 +1,4 @@
+import { FencedError, isFencedError } from "@/execution/fenced-error";
 import { unavailableAi } from "@/execution/passthrough-step";
 import type { ExecutorStep } from "@/features/executions/types";
 import {
@@ -6,7 +7,6 @@ import {
   type StepResultMap,
   toStoredJson,
 } from "@/queue/step-store";
-import { FencedError, isFencedError } from "./fenced-error";
 
 /**
  * The step API the self-hosted worker hands to the engine — the replacement for

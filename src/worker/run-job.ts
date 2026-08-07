@@ -1,12 +1,19 @@
 import type { Realtime } from "@inngest/realtime";
 import { settleFailedExecution } from "@/execution/failure";
+import {
+  FencedError,
+  type FenceReason,
+  isFencedError,
+} from "@/execution/fenced-error";
 import type { WorkflowExecutionPayload } from "@/execution/payload";
 import { passthroughRunStep, runExecution } from "@/execution/run-execution";
+import { workerEventId } from "@/execution/runtime";
 import type { WorkflowJob } from "@/generated/prisma";
 import { logger } from "@/lib/logger";
 import {
   attachExecutionToJob,
   completeJob,
+  diagnoseLostLease,
   failJob,
   heartbeatJob,
   type SqlRunner,
@@ -14,7 +21,6 @@ import {
 import { countFence } from "@/queue/metrics";
 import { BEATS_PER_LEASE, LEASE_SECONDS, WORKER_ID } from "./config";
 import { controlPlaneDb } from "./db";
-import { FencedError, type FenceReason, isFencedError } from "./fenced-error";
 import { createWorkerStep } from "./worker-step";
 
 /**
@@ -131,7 +137,10 @@ export async function runJob({
       // crashed attempt made rather than creating a second one — and a plain
       // `create` would instead strand the job on that unique constraint for
       // every remaining attempt, turning a transient fault permanent.
-      inngestEventId: `job_${job.id}`,
+      //
+      // Built by the shared helper because the routing seam READS this format
+      // back (`isWorkerEventId`) to keep a fan-out chain on one runtime.
+      inngestEventId: workerEventId(job.id),
       payload,
       // Safe only because items 1-4 are pure reads and item 6 is idempotent.
       // Read its comment before substituting anything.
@@ -152,12 +161,7 @@ export async function runJob({
         // letting it execute a whole workflow it does not own.
         if (!held) {
           throw new FencedError(
-            await probeFenceReason({
-              jobId: job.id,
-              workerId,
-              client,
-              leaseSeconds,
-            }),
+            await probeFenceReason({ jobId: job.id, workerId, client }),
             "This worker no longer held the job when its execution row was " +
               "created; abandoning the run before any node executes.",
           );
@@ -361,12 +365,12 @@ export async function settleRunFailure({
 /**
  * Why an ownership-guarded write matched no row.
  *
- * Reuses the heartbeat rather than restating its three-way diagnosis: the guard
- * that just failed is the same predicate the heartbeat renews on, so asking it
- * gives the same honest answer with no second copy of the logic to drift.
+ * Reuses the heartbeat's own diagnosis rather than restating its three-way
+ * logic, so there is no second copy to drift — but calls it directly rather
+ * than through `heartbeatJob`, which would also issue a renewal that cannot
+ * succeed just to read the answer. See the body for the metric consequence.
  *
- * ⚠️ It is not cheap — the renew UPDATE, then `diagnoseLostLease`'s SELECT, on
- * top of the write that already failed. Three statements to name a reason. That
+ * ⚠️ It is not cheap — a SELECT on top of the write that already failed — which
  * is affordable only because this runs exclusively on a path that has already
  * gone wrong and is about to abandon the run; do not reach for it anywhere warm.
  */
@@ -374,18 +378,32 @@ async function probeFenceReason({
   jobId,
   workerId,
   client,
-  leaseSeconds,
 }: {
   jobId: string;
   workerId: string;
   client: SqlRunner;
-  leaseSeconds: number;
+  // No `leaseSeconds`: it existed only to feed the renewal this no longer does.
 }): Promise<FenceReason> {
-  const probe = await heartbeatJob({ jobId, workerId, leaseSeconds, client });
-  // `held: true` cannot happen — it renews on the predicate that just failed —
-  // but the type admits it, and guessing "lease-stolen" is the safe read of an
-  // impossible answer.
-  return probe.held ? "lease-stolen" : probe.reason;
+  // `diagnoseLostLease` directly rather than `heartbeatJob`, then count once
+  // here. We already KNOW the lease is gone — `attachExecutionToJob` just
+  // returned false on the same ownership predicate — so the only thing wanted
+  // is the NAME, and routing that through `heartbeatJob` issued a renewal that
+  // cannot succeed purely as a way of reading it.
+  //
+  // The count is kept (rather than dropped along with the renewal) because this
+  // is a real fence and `heartbeatJob`'s loss path is what used to record it.
+  // Removing both would under-count, which is worse than over-counting for a
+  // number whose job is to say "this host is unhealthy".
+  //
+  // ⚠️ Residual, and deliberately left: if the heartbeat TIMER already observed
+  // the same loss on an earlier tick, that tick counted too, so one logical
+  // fence can still register twice. Fixing it properly means counting where a
+  // fence becomes an OUTCOME rather than in each discovery site — a change
+  // across three functions in the path Step 5's worst defects lived in, which
+  // is not something to fold into this step. Parent plan §9.68.
+  const reason = await diagnoseLostLease(jobId, workerId, client);
+  countFence(reason);
+  return reason;
 }
 
 /**

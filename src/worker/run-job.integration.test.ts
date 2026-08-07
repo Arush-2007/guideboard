@@ -348,6 +348,75 @@ describe("runJob — fencing", () => {
     expect(sentEmails).toEqual([]);
   });
 
+  it("records no node failure for the node it was fenced in", async () => {
+    // Parent plan §9.45, fixed in Step 6. The engine's catch records a FAILED
+    // `NodeExecution` and rethrows, and a `FencedError` used to travel that
+    // path like any other error — so a fenced worker's last act was to write
+    // "this node failed" into a run ANOTHER worker now owns.
+    //
+    // Two costs, and the second is the frequent one. If the new owner succeeds
+    // this node BEFORE this process finishes unwinding, the FAILED record
+    // supersedes the SUCCESS permanently. And a run that later fails at some
+    // OTHER node can have its alert email name this node instead, carrying an
+    // internal lease-reclaimed message the user cannot act on.
+    const job = await claimOne();
+
+    executors.set(NodeType.GOOGLE_SHEETS_ACTION, async (params) => {
+      const { step, context, outputKey } = params;
+      await step.run("before", async () => ({ ok: true }));
+      await steal(job.id);
+      await sleep(SHORT_BEAT_MS * 3);
+      // Fences here, inside the action node — so if a node failure were going
+      // to be recorded for anything, it would be recorded for this one.
+      await step.run("after", async () => ({ ok: true }));
+      return { ...context, [outputKey]: { done: true } };
+    });
+
+    const result = await runJob({
+      job,
+      workerId: WORKER,
+      leaseSeconds: SHORT_LEASE_SECONDS,
+    });
+    expect(result).toEqual({ outcome: "fenced", reason: "lease-stolen" });
+
+    const execution = await prisma.execution.findUniqueOrThrow({
+      where: { inngestEventId: `job_${job.id}` },
+      select: { id: true },
+    });
+    const records = await prisma.nodeExecution.findMany({
+      where: { executionId: execution.id },
+      orderBy: { sequence: "asc" },
+    });
+
+    // THE assertion: nothing anywhere in this run is marked FAILED.
+    expect(records.some((r) => r.status === "FAILED")).toBe(false);
+
+    // Stronger, and NOT implied by the line above: the fenced node has no
+    // record at all. The guard returns before the push rather than rewriting
+    // the status, so a future change recording it as (say) SKIPPED would
+    // satisfy the aggregate check while still writing into a run this process
+    // does not own.
+    const actionId = `act_${workflowId}`;
+    expect(records.find((r) => r.nodeId === actionId)).toBeUndefined();
+
+    // The trigger's record IS here, and that is not a contradiction: it was
+    // written during NORMAL operation, at the action node's first step
+    // boundary, long before the lease was stolen. A fenced worker cannot
+    // un-write what it legitimately wrote while it still owned the run.
+    //
+    // What the guard changes is only what happens FROM the fence onward — it
+    // returns before the catch's `flushPending()`, so no write is issued by a
+    // process that no longer owns the execution. That matters because the
+    // recorder's flush opens with a `deleteMany` clearing FAILED rows for the
+    // node ids in its batch: with anything still buffered, a fenced worker
+    // could delete a legitimate failure the NEW owner had just recorded, and
+    // that run would end FAILED with no failed node — "cause unknown" in the
+    // alert email. This fixture drains the buffer before the fence, so it pins
+    // the guard rather than that race.
+    const triggerId = `trig_${workflowId}`;
+    expect(records.find((r) => r.nodeId === triggerId)?.status).toBe("SUCCESS");
+  });
+
   it("stops before any node runs when the job was lost before the attach", async () => {
     // The window between claiming and creating the execution row. Catching it
     // here is what stops a fenced worker executing an entire workflow it does

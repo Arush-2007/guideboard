@@ -44,7 +44,7 @@ vi.mock("@/queue/step-store", async (importOriginal) => ({
   insertStepResultOrReadExisting,
 }));
 
-import { FencedError } from "./fenced-error";
+import { FencedError } from "@/execution/fenced-error";
 import { createWorkerStep } from "./worker-step";
 
 const EXECUTION_ID = "exec_1";

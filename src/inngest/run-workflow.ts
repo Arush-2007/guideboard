@@ -1,6 +1,9 @@
 import type { Realtime } from "@inngest/realtime";
 import { NonRetriableError } from "inngest";
 import { requiresCheckpoint, TRIGGER_NODE_TYPES } from "@/config/node-kinds";
+// Lives in `src/execution/` rather than `src/worker/` precisely so the shared
+// engine can name this condition without importing a runtime-specific module.
+import { isFencedError } from "@/execution/fenced-error";
 import { createPassthroughStep } from "@/execution/passthrough-step";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
@@ -766,6 +769,40 @@ export async function runWorkflowNodes({
 
       context = after;
     } catch (error) {
+      // A fence is NOT this node failing, and must not be recorded as one.
+      //
+      // Being fenced means another worker now owns this execution (see
+      // `FencedError`). Pushing a FAILED record here writes "this node failed"
+      // into a run somebody else is at that moment executing successfully. It
+      // is mostly self-healing — `createPrismaNodeRecorder` treats a FAILED row
+      // as stale and a later SUCCESS supersedes it — but it costs two things
+      // that are not worth a record nobody asked for. The narrow one: if the new
+      // owner succeeds this node BEFORE this process finishes unwinding, the
+      // FAILED record supersedes the SUCCESS permanently. The frequent one: a
+      // run that later fails at some OTHER node can have its alert email name
+      // this node instead, carrying an internal lease-reclaimed message the
+      // user cannot act on.
+      //
+      // ⚠️ A FENCED WORKER WRITES NOTHING — not the failure, and not the
+      // buffered successes either. It must return before the flush below.
+      //
+      // Being fenced means another worker owns this execution now, so the only
+      // safe act is to stop touching its rows. Recording the node as FAILED
+      // would put "this node failed" into a run somebody else is at that moment
+      // finishing successfully.
+      //
+      // Flushing the buffered SUCCESSES is not the harmless half it looks like.
+      // `createPrismaNodeRecorder.flush` opens with a `deleteMany` clearing any
+      // FAILED row for the node ids in its batch — correct when an attempt
+      // supersedes its own earlier failure, catastrophic here: the new owner may
+      // already have re-run one of those nodes and recorded a legitimate
+      // failure, and this flush would delete it and reinstate SUCCESS. Its run
+      // would then end FAILED with no failed node anywhere, so
+      // `resolveFailureCause` prepends "cause unknown" and the alert email can
+      // name nothing. Nothing is lost by staying silent: the new owner re-runs
+      // from the durable step results and records every node itself.
+      if (isFencedError(error)) throw error;
+
       pending.push({
         ...base,
         input: before,

@@ -15,6 +15,16 @@
  * should have to pull the other in just to name this condition — and with no
  * imports at all, nothing can form a cycle with it.
  *
+ * ⚠️ **In `src/execution/` rather than `src/worker/`, though only the worker
+ * can RAISE one.** The shared engine (`runWorkflowNodes`) has to recognise this
+ * error to know not to record a node failure for it, and it serves both
+ * runtimes — so putting the type in the worker's directory would mean the
+ * neutral engine importing from a runtime-specific module, an edge that would
+ * have to be unwound again when the engine finishes moving into this directory.
+ * The reasons below are worker vocabulary; the *condition* — "this process no
+ * longer owns the run, stop touching the world" — is not, and any future
+ * runtime with leases has it.
+ *
  * ⚠️ TWO RULES FOR WHOEVER CATCHES THIS. Both are the fencing bug reappearing
  * one layer up if broken:
  *
