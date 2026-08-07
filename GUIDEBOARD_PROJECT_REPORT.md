@@ -262,15 +262,20 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
 
 > ℹ️ The split exists because a self-hosted execution runtime (a Postgres job
 > queue + a long-lived worker, in `src/queue/` and `src/worker/`) is being built
-> to replace Inngest. It is **not wired to anything** — no routing exists, so
-> every production run today is Inngest, start to finish. The extraction is what
-> lets both execute byte-identical runs when routing lands.
+> to replace Inngest. The extraction is what lets both execute byte-identical
+> runs.
 >
-> The worker itself is now complete and runnable (`npm run worker:dev`): it
-> claims jobs, holds them with a fenced heartbeat, resumes a reclaimed job from
-> its stored steps, and shuts down gracefully. What it lacks is anyone sending
-> it work. `Workflow.executionRuntime` exists in the schema and is **read by
-> nothing** until the routing step.
+> The worker is complete and runnable (`npm run worker:dev`): it claims jobs,
+> holds them with a fenced heartbeat, resumes a reclaimed job from its stored
+> steps, and shuts down gracefully. **Routing now exists too** —
+> `sendWorkflowExecution` (`src/inngest/utils.ts`) reads
+> `Workflow.executionRuntime` and sends a run to one runtime or the other.
+>
+> **Every production run today is still Inngest**, because that column is NULL
+> on every workflow and NULL means Inngest. Nothing moves until a row is
+> deliberately flipped; see DEPLOYMENT.md's "Moving a workflow between
+> runtimes", which also carries the rollback runbook. The worker is not yet
+> deployed anywhere — that is the next step.
 
 ### Execution Flow
 
