@@ -12,6 +12,7 @@
  */
 
 import { type NextRequest, NextResponse } from "next/server";
+import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
 import prisma from "@/lib/db";
 import { decrypt } from "@/lib/encryption";
@@ -57,9 +58,20 @@ export async function POST(
 
     const webhook = await prisma.webhookTrigger.findUnique({
       where: { token },
-      select: { workflowId: true, secret: true, requireSignature: true },
+      select: {
+        workflowId: true,
+        secret: true,
+        requireSignature: true,
+        nodeType: true,
+      },
     });
-    if (!webhook) {
+    // A token belongs to ONE endpoint. `token` is globally unique across trigger
+    // types, so without this check a Google Form's token would authenticate here
+    // too — and this route shapes the body as `initialData.webhook`, so that
+    // workflow would run with its `googleForm` context missing entirely rather
+    // than refusing. Answering 404 (not 403) keeps a wrong-endpoint token
+    // indistinguishable from an unknown one, which is what a probe should see.
+    if (!webhook || webhook.nodeType !== NodeType.WEBHOOK_TRIGGER) {
       return NextResponse.json(
         { success: false, error: "Unknown webhook" },
         { status: 404 },

@@ -1,99 +1,62 @@
 /**
- * Google Form webhook endpoint.
+ * Retired Google Form webhook endpoint — `POST /api/webhooks/google-form`.
  *
- * Callers must authenticate by passing the shared secret via either:
- *   - `x-webhook-secret` request header (preferred), OR
- *   - `?secret=` query parameter
+ * Superseded by `/api/webhooks/google-form/<token>`, which authenticates with a
+ * per-workflow token + HMAC instead of a global shared secret and a forgeable
+ * `?workflowId=` parameter. See that route's docblock for the full reasoning.
  *
- * The secret must match GOOGLE_FORM_WEBHOOK_SECRET, compared in constant time.
+ * ## Why this stays instead of being deleted
  *
- * **Fails CLOSED when the secret is unset**, matching every other webhook in
- * this directory (Telegram, Typeform, YouTube, Instagram all refuse rather than
- * run unauthenticated). This route used to skip verification entirely in that
- * case, which was survivable only for as long as an unedited `.env` still
- * counted as "set" — the placeholder was a non-empty string, so requests that
- * did not present it were rejected. Once `env()` began collapsing placeholders
- * to `undefined` (correctly — see `lib/env.ts`), that accident stopped holding
- * and the endpoint became fully open: any unauthenticated POST could start a
- * workflow run. An endpoint that starts billable, side-effecting work must
- * never be the one that treats "no credential configured" as "allow".
+ * Every Apps Script already installed in a user's Google Form still posts here,
+ * and those scripts cannot be updated remotely — the user has to re-copy the
+ * script from the node. So this path keeps receiving traffic from forms that
+ * are, from the user's point of view, "connected".
+ *
+ * What it does about that is the point:
+ *
+ *  - **410, not 503.** The endpoint is gone, not misconfigured. A 503 invited
+ *    the operator to go looking for a missing environment variable, which is
+ *    exactly the wrong place — that was the confusing symptom this whole change
+ *    started from.
+ *  - **It says what to do**, in a message aimed at the person reading an Apps
+ *    Script execution log, who is the form owner rather than an operator.
+ *  - **It logs at warn**, so the number of forms still on the old script is
+ *    observable while the migration is in flight, rather than being guessed at.
+ *
+ * Deletable once no form is posting here — the log is what says when.
  */
 
 import { type NextRequest, NextResponse } from "next/server";
-import { sendWorkflowExecution } from "@/inngest/utils";
-import { normalizeResponseKeys } from "@/lib/form-responses";
 import { logger } from "@/lib/logger";
 import { isAllowed } from "@/lib/rate-limit";
-import { googleFormIdempotencyKey } from "@/lib/webhook-idempotency";
-import { verifyWebhookRequest } from "@/lib/webhook-verify";
+
+const MIGRATION_MESSAGE =
+  "This Google Form webhook URL has been retired. Open the workflow in " +
+  "Guideboard, click the Google Form trigger, and use 'Copy Apps Script' to " +
+  "get the current script — then replace the script in your form (Extensions " +
+  "> Apps Script) and run setup once. The new script uses a private per-form " +
+  "URL and signs each submission.";
 
 export async function POST(request: NextRequest) {
-  try {
-    if (!isAllowed("webhook:google-form", 100, 60_000)) {
-      return NextResponse.json(
-        { success: false, error: "Too many requests" },
-        { status: 429 },
-      );
-    }
-
-    const url = new URL(request.url);
-
-    // The query-parameter fallback exists because Apps Script's simplest
-    // `UrlFetchApp` call cannot set headers; the header is preferred, since a
-    // URL secret reaches proxy logs and browser history that a header does not.
-    const auth = verifyWebhookRequest({
-      request,
-      scheme: {
-        kind: "shared-secret",
-        header: "x-webhook-secret",
-        queryParam: "secret",
-      },
-      secret: process.env.GOOGLE_FORM_WEBHOOK_SECRET,
-      secretName: "GOOGLE_FORM_WEBHOOK_SECRET",
-    });
-    if (!auth.ok) return auth.response;
-
-    const workflowId = url.searchParams.get("workflowId");
-
-    if (!workflowId) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Missing required query parameter: workflowId",
-        },
-        { status: 400 },
-      );
-    }
-
-    const body = await request.json();
-
-    const formData = {
-      formId: body.formId,
-      formTitle: body.formTitle,
-      responseId: body.responseId,
-      timestamp: body.timestamp,
-      respondentEmail: body.respondentEmail,
-      // Keys are trimmed to match the picker's paths, which are built from the
-      // question title trimmed — the Apps Script keys them raw, so a title with
-      // a stray space produced an unreachable key. `raw` keeps the original.
-      responses: normalizeResponseKeys(body.responses),
-      raw: body,
-    };
-
-    await sendWorkflowExecution({
-      workflowId,
-      initialData: {
-        googleForm: formData,
-      },
-      idempotencyKey: googleFormIdempotencyKey(body.responseId),
-    });
-
-    return NextResponse.json({ success: true }, { status: 200 });
-  } catch (error) {
-    logger.error("Google form webhook error", error);
+  // Rate-limited like any public endpoint: this refuses every caller, but it is
+  // still reachable by anyone and should not be a free way to generate log volume.
+  if (!isAllowed("webhook:google-form:retired", 100, 60_000)) {
     return NextResponse.json(
-      { success: false, error: "Failed to process Google Form submission" },
-      { status: 500 },
+      { success: false, error: "Too many requests" },
+      { status: 429 },
     );
   }
+
+  // The workflow id is the only identifying thing the old script sent, and it is
+  // unauthenticated — so it is logged as a migration breadcrumb, never trusted.
+  const workflowId = new URL(request.url).searchParams.get("workflowId");
+  logger.warn(
+    "Google Form webhook hit the retired URL — the form is still on the old Apps Script",
+    { workflowId },
+  );
+
+  return NextResponse.json(
+    { success: false, error: MIGRATION_MESSAGE },
+    { status: 410 },
+  );
 }

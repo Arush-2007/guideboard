@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
+import { NodeType } from "@/generated/prisma";
 import { useTRPC } from "@/trpc/client";
 import { generateGoogleFormScript } from "./utils";
 
@@ -55,7 +56,25 @@ export const GoogleFormTriggerDialog = ({
   const workflowId = params.workflowId as string;
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  const webhookUrl = `${baseUrl}/api/webhooks/google-form?workflowId=${workflowId}`;
+
+  // The token + signing secret are server-owned, provisioned when a workflow
+  // holding this node is saved. They are null until that first save — which is
+  // why the button below prompts to save rather than handing over a script that
+  // could not authenticate. Handing out an unauthenticated script is precisely
+  // the failure this trigger just came out of.
+  //
+  // `nodeType` matters: one workflow can also hold a generic webhook's row, and
+  // a read scoped by workflow alone could return that one's credentials.
+  const { data: webhookCreds } = useQuery(
+    trpc.webhook.get.queryOptions({
+      workflowId,
+      nodeType: NodeType.GOOGLE_FORM_TRIGGER,
+    }),
+  );
+
+  const webhookUrl = webhookCreds
+    ? `${baseUrl}/api/webhooks/google-form/${webhookCreds.token}`
+    : null;
 
   const [formId, setFormId] = useState(defaultValues.formId ?? "");
   const [formTitle, setFormTitle] = useState(defaultValues.formTitle ?? "");
@@ -219,14 +238,28 @@ export const GoogleFormTriggerDialog = ({
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() =>
-                    copy(generateGoogleFormScript(webhookUrl), "Apps Script")
-                  }
+                  disabled={!webhookUrl}
+                  onClick={() => {
+                    // Guarded by `disabled`, but re-checked because a script
+                    // without credentials is silently rejected by the webhook —
+                    // never generate one on a nullish token.
+                    if (!webhookUrl || !webhookCreds) return;
+                    copy(
+                      generateGoogleFormScript(webhookUrl, webhookCreds.secret),
+                      "Apps Script",
+                    );
+                  }}
                 >
                   <CopyIcon className="mr-2 size-4" />
                   Copy Apps Script
                 </Button>
               </div>
+              {webhookUrl ? null : (
+                <p className="text-xs text-muted-foreground">
+                  Save the workflow once to generate this form's private webhook
+                  URL, then copy the script.
+                </p>
+              )}
               <ol className="list-inside list-decimal space-y-1 text-sm text-muted-foreground">
                 <li>Open your form → ⋮ menu → Apps Script</li>
                 <li>Paste the script and Save</li>

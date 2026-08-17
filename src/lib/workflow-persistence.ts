@@ -2,7 +2,10 @@ import { randomBytes } from "node:crypto";
 import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
-import { TRIGGER_NODE_TYPES } from "@/config/node-kinds";
+import {
+  TOKEN_WEBHOOK_TRIGGER_TYPES,
+  TRIGGER_NODE_TYPES,
+} from "@/config/node-kinds";
 import { NodeType, type Prisma } from "@/generated/prisma";
 import {
   findDanglingRefsByNode,
@@ -419,32 +422,45 @@ export async function syncTriggerPollsForWorkflow(
     await prisma.schedulePoll.deleteMany({ where: { workflowId } });
   }
 
-  // Generic webhook: presence of the node alone provisions a row. The `update`
-  // is intentionally a no-op on token/secret so the public URL stays STABLE
-  // across edits — rotation only happens via the explicit `webhook.regenerate`
-  // mutation. The token is an unguessable cuid; the secret is encrypted at rest.
-  const webhookTrigger = nodes.find((n) => n.type === "WEBHOOK_TRIGGER");
+  // Token-authenticated webhooks: presence of the node alone provisions a row.
+  // The `update` is intentionally a no-op on token/secret so the public URL
+  // stays STABLE across edits — rotation only happens via the explicit
+  // `webhook.regenerate` mutation. The token is an unguessable cuid; the secret
+  // is encrypted at rest.
+  //
+  // Driven by a list rather than written out per type. When this was a single
+  // hardcoded `WEBHOOK_TRIGGER` block, the `else` branch deleted by workflowId
+  // alone — so saving a workflow whose trigger was any OTHER token-authenticated
+  // type would delete that type's credentials, had one existed. Scoping both
+  // branches by `nodeType` is what lets two such triggers coexist on one
+  // workflow without either save erasing the other.
+  for (const nodeType of TOKEN_WEBHOOK_TRIGGER_TYPES) {
+    const triggerNode = nodes.find((n) => n.type === nodeType);
 
-  if (webhookTrigger) {
-    await prisma.webhookTrigger.upsert({
-      where: { workflowId },
-      // `update` deliberately touches neither the credentials nor
-      // `requireSignature`: an existing integration must keep working exactly
-      // as its caller was built, and the signing setting is the user's to
-      // change from the dialog, not something a workflow save rewrites.
-      update: { userId },
-      create: {
-        userId,
-        workflowId,
-        token: createId(),
-        secret: encrypt(randomBytes(32).toString("hex")),
-        // Secure by default for anything new. Rows that already exist keep the
-        // column default (false), so this cannot break a live webhook — see the
-        // field's comment in the schema.
-        requireSignature: true,
-      },
-    });
-  } else {
-    await prisma.webhookTrigger.deleteMany({ where: { workflowId } });
+    if (triggerNode) {
+      await prisma.webhookTrigger.upsert({
+        where: { workflowId_nodeType: { workflowId, nodeType } },
+        // `update` deliberately touches neither the credentials nor
+        // `requireSignature`: an existing integration must keep working exactly
+        // as its caller was built, and the signing setting is the user's to
+        // change from the dialog, not something a workflow save rewrites.
+        update: { userId },
+        create: {
+          userId,
+          workflowId,
+          nodeType,
+          token: createId(),
+          secret: encrypt(randomBytes(32).toString("hex")),
+          // Secure by default for anything new. Rows that already exist keep the
+          // column default (false), so this cannot break a live webhook — see the
+          // field's comment in the schema.
+          requireSignature: true,
+        },
+      });
+    } else {
+      await prisma.webhookTrigger.deleteMany({
+        where: { workflowId, nodeType },
+      });
+    }
   }
 }
