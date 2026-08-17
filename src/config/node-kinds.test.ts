@@ -1,10 +1,15 @@
+import { existsSync, readdirSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { NodeType } from "@/generated/prisma";
 import {
   CHECKPOINTED_NODE_TYPES,
   isTriggerNodeType,
   requiresCheckpoint,
+  TOKEN_WEBHOOK_ROUTE_SEGMENTS,
+  TOKEN_WEBHOOK_TRIGGER_TYPES,
   TRIGGER_NODE_TYPES,
+  tokenWebhookPath,
 } from "./node-kinds";
 import { triggerNodeOptions } from "./node-options";
 
@@ -33,6 +38,68 @@ describe("TRIGGER_NODE_TYPES", () => {
     expect(TRIGGER_NODE_TYPES.has(NodeType.AI_TEXT)).toBe(false);
     // INITIAL is a canvas placeholder, not a trigger — it must not be a root.
     expect(TRIGGER_NODE_TYPES.has(NodeType.INITIAL)).toBe(false);
+  });
+});
+
+describe("TOKEN_WEBHOOK_TRIGGER_TYPES", () => {
+  // The registry with no compiler backstop, and the one whose drift already
+  // shipped: a type listed with no route gets a credential nobody can use, and a
+  // route shipped without listing its type gets no row, so it 404s every caller.
+  // That second one is exactly how the Google Form trigger came to be dead in
+  // production. Neither direction fails to compile, so it is checked here.
+
+  const WEBHOOKS_DIR = path.join(
+    process.cwd(),
+    "src",
+    "app",
+    "api",
+    "webhooks",
+  );
+
+  /** Every `/api/webhooks/<segment>/[token]/route.ts` that actually exists. */
+  const routeSegmentsOnDisk = () =>
+    readdirSync(WEBHOOKS_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .filter((name) =>
+        existsSync(path.join(WEBHOOKS_DIR, name, "[token]", "route.ts")),
+      );
+
+  it("matches the token routes on disk exactly (drift in either direction)", () => {
+    // Deliberately an equality, not two subset checks: a route without a listed
+    // type and a listed type without a route are both failures, and reading it
+    // as one assertion is what keeps the next author from adding just one side.
+    expect(sorted(Object.values(TOKEN_WEBHOOK_ROUTE_SEGMENTS))).toEqual(
+      sorted(routeSegmentsOnDisk()),
+    );
+  });
+
+  it("finds the routes it claims exist", () => {
+    // Guards the guard: if the directory layout moves, the check above would
+    // compare two empty lists and pass while proving nothing.
+    expect(routeSegmentsOnDisk().length).toBeGreaterThan(0);
+  });
+
+  it("lists only triggers", () => {
+    for (const type of TOKEN_WEBHOOK_TRIGGER_TYPES) {
+      expect(TRIGGER_NODE_TYPES.has(type)).toBe(true);
+    }
+  });
+
+  it("gives each type its own segment", () => {
+    // Two types sharing a segment would mean one route serving both, which the
+    // per-nodeType token scoping exists to prevent.
+    const segments = Object.values(TOKEN_WEBHOOK_ROUTE_SEGMENTS);
+    expect(new Set(segments).size).toBe(segments.length);
+  });
+
+  it("builds the public path both dialogs show the user", () => {
+    expect(tokenWebhookPath(NodeType.GOOGLE_FORM_TRIGGER, "tok_1")).toBe(
+      "/api/webhooks/google-form/tok_1",
+    );
+    expect(tokenWebhookPath(NodeType.WEBHOOK_TRIGGER, "tok_2")).toBe(
+      "/api/webhooks/generic/tok_2",
+    );
   });
 });
 

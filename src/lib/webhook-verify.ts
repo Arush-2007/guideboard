@@ -124,13 +124,30 @@ type VerifyWebhookRequestArgs = {
    * The configured secret, passed as a VALUE — never looked up by name here.
    * Next.js statically replaces `process.env.X` at build time and a dynamic
    * `process.env[key]` defeats that, so callers write
-   * `secret: process.env.TELEGRAM_WEBHOOK_SECRET`. Placeholders are collapsed
-   * to "unset" by `env()` below, so an unedited `.env.example` value — which is
-   * PUBLIC, and therefore no secret at all — can never authenticate anyone.
+   * `secret: process.env.TELEGRAM_WEBHOOK_SECRET`.
    */
   secret: string | undefined;
-  /** The variable's name, so the 503 tells an operator what to go and set. */
+  /** What to name in the 503, so the reader knows what to go and fix. */
   secretName: string;
+  /**
+   * Where the secret came from. Decides two things that must agree, and got
+   * them both wrong for the token webhooks when there was only one answer.
+   *
+   * `"env"` (default) runs the value through `env()`, which collapses an
+   * unedited `.env.example` placeholder to "unset" — a published value is
+   * PUBLIC and therefore no secret at all, so it must never authenticate
+   * anyone.
+   *
+   * `"database"` is a per-row secret (`WebhookTrigger.secret`, decrypted). The
+   * placeholder filter is meaningless there — nothing seeds a DB column from
+   * `.env.example`, and a generated hex secret cannot match those patterns
+   * anyway — while the 503 it produces was actively misleading: a row whose
+   * secret decrypts to empty (a bad `ENCRYPTION_KEY` rotation, a truncated
+   * column, a hand-seeded row) told the operator to go and edit a `.env` file
+   * for a problem that is in Postgres. Blank is still refused; only the advice
+   * changes, and it changes to advice that works.
+   */
+  secretSource?: "env" | "database";
   /**
    * `"required"` (default) refuses when no credential is presented.
    * `"if-present"` verifies only when the caller chose to sign, for the generic
@@ -167,16 +184,24 @@ export function verifyWebhookRequest(
     request,
     scheme,
     secretName,
+    secretSource = "env",
     mode = "required",
     invalidStatus = 401,
     invalidMessage,
   } = args;
 
-  const secret = env(args.secret);
+  // A DB-sourced secret is only ever blank-checked: `env()` is an
+  // ENVIRONMENT-placeholder filter, and applying it to a database value both
+  // tests for something that cannot be there and misnames the fix. See
+  // `secretSource`.
+  const secret =
+    secretSource === "database"
+      ? args.secret?.trim() || undefined
+      : env(args.secret);
 
   // Unset (or still a placeholder) => refuse. 503, not 401: the caller's
-  // credentials are not the problem, the server is unconfigured, and an
-  // operator reading the log needs to know which of the two it is.
+  // credentials are not the problem, the server is unusable for this webhook,
+  // and whoever reads the log needs to know which of the two it is.
   if (!secret) {
     return {
       ok: false,
@@ -184,8 +209,12 @@ export function verifyWebhookRequest(
         {
           success: false,
           error:
-            `This webhook is not configured. Set ${secretName} to a real ` +
-            "value (the placeholder from .env.example does not count).",
+            secretSource === "database"
+              ? `This webhook's signing secret (${secretName}) is missing or ` +
+                "unreadable. Regenerate the webhook from its trigger in the " +
+                "editor to issue a new URL and secret."
+              : `This webhook is not configured. Set ${secretName} to a real ` +
+                "value (the placeholder from .env.example does not count).",
         },
         { status: 503 },
       ),

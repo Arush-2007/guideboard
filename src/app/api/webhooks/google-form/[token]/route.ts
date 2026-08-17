@@ -3,8 +3,8 @@
  *
  * The caller is an Apps Script bound to the user's form (see
  * `generateGoogleFormScript`). It authenticates with a **per-workflow token** in
- * the URL plus an HMAC-SHA256 signature over the raw body — the same pair the
- * generic webhook uses, read from the same `WebhookTrigger` table.
+ * the URL plus an HMAC-SHA256 signature over the raw body — resolved and
+ * verified by `authenticateTokenWebhook`, which every token webhook shares.
  *
  * ## Why this replaced `?workflowId=<id>` + a global shared secret
  *
@@ -33,17 +33,10 @@
 import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
-import prisma from "@/lib/db";
-import { decrypt } from "@/lib/encryption";
 import { normalizeResponseKeys } from "@/lib/form-responses";
 import { logger } from "@/lib/logger";
-import { isAllowed } from "@/lib/rate-limit";
+import { authenticateTokenWebhook } from "@/lib/token-webhook";
 import { googleFormIdempotencyKey } from "@/lib/webhook-idempotency";
-import { verifyWebhookRequest } from "@/lib/webhook-verify";
-
-// 1 MB cap, matching the generic webhook. A form response is small; anything
-// larger is abuse and would bloat the persisted Execution.input.
-const MAX_BODY_BYTES = 1_000_000;
 
 export async function POST(
   request: NextRequest,
@@ -52,79 +45,44 @@ export async function POST(
   try {
     const { token } = await params;
 
-    // Per-token rate limit, before any DB work so a flood can't drive load.
-    if (!isAllowed(`webhook:google-form:${token}`, 100, 60_000)) {
-      return NextResponse.json(
-        { success: false, error: "Too many requests" },
-        { status: 429 },
-      );
-    }
-
-    const declaredLength = Number(request.headers.get("content-length"));
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-      return NextResponse.json(
-        { success: false, error: "Payload too large" },
-        { status: 413 },
-      );
-    }
-
-    // Read the body as TEXT: the signature covers the exact bytes sent, and a
-    // re-serialized object would not reproduce them.
-    const rawBody = await request.text();
-    if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
-      return NextResponse.json(
-        { success: false, error: "Payload too large" },
-        { status: 413 },
-      );
-    }
-
-    const trigger = await prisma.webhookTrigger.findUnique({
-      where: { token },
-      select: {
-        workflowId: true,
-        secret: true,
-        requireSignature: true,
-        nodeType: true,
-      },
-    });
-    // Tokens are globally unique across trigger types, so a generic webhook's
-    // token must not authenticate here — it would run a workflow whose trigger
-    // shapes context differently. 404 for both cases keeps a wrong-endpoint
-    // token indistinguishable from an unknown one.
-    if (!trigger || trigger.nodeType !== NodeType.GOOGLE_FORM_TRIGGER) {
-      return NextResponse.json(
-        { success: false, error: "Unknown webhook" },
-        { status: 404 },
-      );
-    }
-
-    // The secret is per-trigger and comes from the database, not the
-    // environment, so the seam's unset branch is unreachable — `secretName`
-    // names the column for a message that cannot be produced.
-    //
-    // `requireSignature` is per-row: everything provisioned from here on is
-    // created with it true, so a form connected with the current script is
-    // always signed. The `if-present` branch exists for rows carrying the
-    // column default, and verifies a signature whenever one is offered.
-    const auth = verifyWebhookRequest({
+    const auth = await authenticateTokenWebhook({
       request,
-      rawBody,
-      scheme: { kind: "hmac-sha256", header: "x-guideboard-signature" },
-      secret: decrypt(trigger.secret),
-      secretName: "WebhookTrigger.secret",
-      ...(trigger.requireSignature
-        ? {
-            mode: "required" as const,
-            invalidMessage:
-              "This webhook requires a signed request. Re-copy the Apps " +
-              "Script from the Google Form node — the current one signs each " +
-              "submission.",
-          }
-        : { mode: "if-present" as const, invalidMessage: "Invalid signature" }),
+      token,
+      nodeType: NodeType.GOOGLE_FORM_TRIGGER,
+      signatureRequiredMessage:
+        "This webhook requires a signed request. Re-copy the Apps Script from " +
+        "the Google Form node — the current one signs each submission.",
     });
     if (!auth.ok) return auth.response;
 
-    let body: {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(auth.rawBody);
+    } catch {
+      return NextResponse.json(
+        { success: false, error: "Body must be JSON" },
+        { status: 400 },
+      );
+    }
+
+    // Parsed, but not necessarily an OBJECT. `null`, `42` and `"hi"` are all
+    // valid JSON, so the catch above does not fire for them — and asserting the
+    // parse straight into a shape would turn the first `body.formId` into a
+    // TypeError, surfacing as a 500 and an error-level log where the code
+    // plainly means 400. An array is rejected for the same reason: it cannot be
+    // a form submission, so the only thing it can be is a malformed caller.
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      return NextResponse.json(
+        { success: false, error: "Body must be a JSON object" },
+        { status: 400 },
+      );
+    }
+
+    const body = parsed as {
       formId?: string;
       formTitle?: string;
       responseId?: string;
@@ -132,14 +90,6 @@ export async function POST(
       respondentEmail?: string;
       responses?: unknown;
     };
-    try {
-      body = JSON.parse(rawBody);
-    } catch {
-      return NextResponse.json(
-        { success: false, error: "Body must be JSON" },
-        { status: 400 },
-      );
-    }
 
     const formData = {
       formId: body.formId,
@@ -155,7 +105,7 @@ export async function POST(
     };
 
     await sendWorkflowExecution({
-      workflowId: trigger.workflowId,
+      workflowId: auth.workflowId,
       initialData: {
         googleForm: formData,
       },

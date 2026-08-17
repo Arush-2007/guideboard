@@ -55,11 +55,55 @@ export const isTriggerNodeType = (type: string | null | undefined): boolean =>
  * can never authenticate — which is exactly how the Google Form trigger came to
  * be broken: the route demanded a credential that nothing was provisioning and
  * nothing was sending.
+ *
+ * `as const` is load-bearing, not stylistic: it makes this a tuple of literal
+ * types, which is what lets `z.enum()` consume it directly and narrow to these
+ * two members. Typed as a plain `readonly NodeType[]` the element type is the
+ * whole `NodeType` union, so the tRPC input it feeds accepted ANY node type at
+ * compile time and only zod caught the mistake at runtime. `satisfies` keeps
+ * the compiler checking that every entry is a real `NodeType`.
  */
-export const TOKEN_WEBHOOK_TRIGGER_TYPES: readonly NodeType[] = [
+export const TOKEN_WEBHOOK_TRIGGER_TYPES = [
   NodeType.WEBHOOK_TRIGGER,
   NodeType.GOOGLE_FORM_TRIGGER,
-];
+] as const satisfies readonly NodeType[];
+
+export type TokenWebhookTriggerType =
+  (typeof TOKEN_WEBHOOK_TRIGGER_TYPES)[number];
+
+/**
+ * The URL segment each token webhook is served at:
+ * `/api/webhooks/<segment>/<token>`.
+ *
+ * Two jobs, and both are about the list above being CHECKABLE.
+ *
+ * Provisioning a token for a type whose route does not exist mints a credential
+ * nobody can use; shipping a route for a type not on the list gives it no row at
+ * all, so its endpoint 404s every caller — which is verbatim how the Google Form
+ * trigger came to be dead in production. Neither direction failed to compile and
+ * neither failed a test. So: this is a total `Record` over the tuple, which makes
+ * the compiler demand a segment for every listed type, and `node-kinds.test.ts`
+ * checks the segments against the route files actually on disk, which catches
+ * the other direction.
+ *
+ * It is also the single place a segment is written. Both trigger dialogs built
+ * the public URL from their own hardcoded literal, so a renamed route directory
+ * would have gone on handing users a URL that 404s, with the copy button
+ * cheerfully working.
+ */
+export const TOKEN_WEBHOOK_ROUTE_SEGMENTS: Record<
+  TokenWebhookTriggerType,
+  string
+> = {
+  [NodeType.WEBHOOK_TRIGGER]: "generic",
+  [NodeType.GOOGLE_FORM_TRIGGER]: "google-form",
+};
+
+/** The public path a token webhook is reachable at. Origin is the caller's. */
+export const tokenWebhookPath = (
+  type: TokenWebhookTriggerType,
+  token: string,
+): string => `/api/webhooks/${TOKEN_WEBHOOK_ROUTE_SEGMENTS[type]}/${token}`;
 
 /**
  * Whether a node type must get its OWN Inngest step, or may run inline inside a

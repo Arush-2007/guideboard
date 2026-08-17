@@ -15,6 +15,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { tokenWebhookPath } from "@/config/node-kinds";
+import { NodeType } from "@/generated/prisma";
 import { useTRPC } from "@/trpc/client";
 
 interface Props {
@@ -35,8 +37,11 @@ export const WebhookTriggerDialog = ({
   const params = useParams();
   const workflowId = params.workflowId as string;
 
+  // `nodeType` is explicit on every call: one workflow can hold a row per
+  // trigger type, so an unscoped read or rotate could touch a Google Form's
+  // credentials instead of this webhook's.
   const getOptions = trpc.webhook.get.queryOptions(
-    { workflowId },
+    { workflowId, nodeType: NodeType.WEBHOOK_TRIGGER },
     { enabled: open && !!workflowId },
   );
   const { data, isLoading } = useQuery(getOptions);
@@ -69,7 +74,12 @@ export const WebhookTriggerDialog = ({
     }),
   );
 
-  const url = data ? `${baseUrl}/api/webhooks/generic/${data.token}` : "";
+  // Path from the registry, not a literal: this is the URL the user installs in
+  // a third-party system, so it must be built from the same place the route is
+  // declared. See TOKEN_WEBHOOK_ROUTE_SEGMENTS.
+  const url = data
+    ? `${baseUrl}${tokenWebhookPath(NodeType.WEBHOOK_TRIGGER, data.token)}`
+    : "";
 
   const copyToClipboard = async (text: string, successMessage: string) => {
     try {
@@ -169,7 +179,11 @@ export const WebhookTriggerDialog = ({
                 checked={data.requireSignature}
                 disabled={setRequireSignature.isPending}
                 onCheckedChange={(requireSignature) =>
-                  setRequireSignature.mutate({ workflowId, requireSignature })
+                  setRequireSignature.mutate({
+                    workflowId,
+                    nodeType: NodeType.WEBHOOK_TRIGGER,
+                    requireSignature,
+                  })
                 }
               />
             </div>
@@ -179,7 +193,12 @@ export const WebhookTriggerDialog = ({
               variant="outline"
               size="sm"
               disabled={regenerate.isPending}
-              onClick={() => regenerate.mutate({ workflowId })}
+              onClick={() =>
+                regenerate.mutate({
+                  workflowId,
+                  nodeType: NodeType.WEBHOOK_TRIGGER,
+                })
+              }
             >
               <RefreshCwIcon className="size-4" />
               Regenerate URL &amp; secret

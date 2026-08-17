@@ -9,53 +9,59 @@
  * A green suite proved only that a hypothetical correct caller would work.
  *
  * So `describe("the generated Apps Script")` below does not hand-roll a request.
- * It EXECUTES the generated script against Apps Script shims, captures the exact
- * `UrlFetchApp.fetch` call it makes, and replays that at the real route handler.
- * If the script stops signing, stops sending the header, changes its hex
- * encoding, or posts to the wrong URL, this fails — none of which a hand-written
- * request can detect.
+ * It EXECUTES the generated script (via the shared Apps Script harness),
+ * captures the exact `UrlFetchApp.fetch` call it makes, and replays that at the
+ * real route handler. If the script stops signing, stops sending the header,
+ * changes its hex encoding, or posts to the wrong URL, this fails — none of
+ * which a hand-written request can detect.
  */
 
-import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { sendWorkflowExecution, findUnique } = vi.hoisted(() => ({
+const { sendWorkflowExecution, findFirst } = vi.hoisted(() => ({
   sendWorkflowExecution: vi.fn(async () => ({ ids: ["evt"] })),
-  findUnique: vi.fn(),
+  findFirst: vi.fn(),
 }));
 
 vi.mock("@/inngest/utils", () => ({ sendWorkflowExecution }));
 vi.mock("@/lib/rate-limit", () => ({ isAllowed: () => true }));
-vi.mock("@/lib/db", () => ({ default: { webhookTrigger: { findUnique } } }));
+vi.mock("@/lib/db", () => ({ default: { webhookTrigger: { findFirst } } }));
 vi.mock("@/lib/encryption", () => ({
   decrypt: (value: string) => value.replace(/^enc:/, ""),
 }));
 
 import { generateGoogleFormScript } from "@/features/triggers/components/google-form-trigger/utils";
+import {
+  type CapturedFetch,
+  requireRequest,
+  runGeneratedFormScript,
+  signBody,
+} from "@/test/apps-script-harness";
 import { POST } from "./route";
 
 const SECRET = "per-form-signing-secret";
 const TOKEN = "tok_gform_123";
 const URL_FOR_TOKEN = `https://app.test/api/webhooks/google-form/${TOKEN}`;
 
-const sign = (body: string, secret = SECRET) =>
-  `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
+const sign = (body: string, secret = SECRET) => signBody(body, secret);
 
+/**
+ * The row the lookup finds. Scoping by nodeType now happens in the WHERE, so a
+ * token belonging to another trigger simply does not match — `givenNoTrigger`
+ * is what that looks like from here.
+ */
 const givenTrigger = (
-  overrides: Partial<{
-    requireSignature: boolean;
-    nodeType: string;
-    workflowId: string;
-  }> = {},
+  overrides: Partial<{ requireSignature: boolean; workflowId: string }> = {},
 ) => {
-  findUnique.mockResolvedValue({
+  findFirst.mockResolvedValue({
     workflowId: "wf_1",
     secret: `enc:${SECRET}`,
     requireSignature: true,
-    nodeType: "GOOGLE_FORM_TRIGGER",
     ...overrides,
   });
 };
+
+const givenNoTrigger = () => findFirst.mockResolvedValue(null);
 
 const post = (body: string, headers: Record<string, string> = {}) =>
   POST(
@@ -67,115 +73,35 @@ const post = (body: string, headers: Record<string, string> = {}) =>
     { params: Promise.resolve({ token: TOKEN }) },
   );
 
+/** Generates the real script for this token/secret and runs it. */
+const submit = (answers: Record<string, string>, server = {}) =>
+  runGeneratedFormScript(generateGoogleFormScript(URL_FOR_TOKEN, SECRET), {
+    answers,
+    ...server,
+  });
+
+/** Replays a captured script request at the real handler. */
+const deliver = (call: CapturedFetch | null) => {
+  const sent = requireRequest({ call });
+  return post(sent.options.payload, sent.options.headers);
+};
+
 beforeEach(() => {
   sendWorkflowExecution.mockClear();
-  findUnique.mockReset();
+  findFirst.mockReset();
 });
 
 // ---------------------------------------------------------------------------
 // The regression this file exists for
 // ---------------------------------------------------------------------------
 
-/**
- * Runs the generated script's `onFormSubmit` under Apps Script shims and returns
- * the HTTP call it made. Everything the script touches is stubbed at the same
- * boundary Google provides, so the script itself runs unmodified.
- */
-function runGeneratedScript(answers: Record<string, string>) {
-  const script = generateGoogleFormScript(URL_FOR_TOKEN, SECRET);
-
-  let captured: { url: string; options: Record<string, never> } | null = null;
-  let thrown: Error | null = null;
-
-  const Utilities = {
-    // Apps Script returns SIGNED bytes (-128..127). Reproducing that exactly is
-    // what makes this a real test of the script's hex encoding: a script that
-    // forgot to mask with 0xFF would produce "-3a"-style garbage here too, and
-    // the route would reject it — which is the whole point.
-    computeHmacSha256Signature: (value: string, key: string) =>
-      Array.from(createHmac("sha256", key).update(value, "utf8").digest()).map(
-        (b) => (b > 127 ? b - 256 : b),
-      ),
-  };
-
-  const UrlFetchApp = {
-    fetch: (url: string, options: Record<string, never>) => {
-      captured = { url, options };
-      return {
-        getResponseCode: () => responseCode,
-        getContentText: () => responseBody,
-      };
-    },
-  };
-
-  let responseCode = 200;
-  let responseBody = '{"success":true}';
-
-  const itemResponses = Object.entries(answers).map(([title, value]) => ({
-    getItem: () => ({ getTitle: () => title }),
-    getResponse: () => value,
-  }));
-
-  const event = {
-    response: {
-      getItemResponses: () => itemResponses,
-      getId: () => "resp_abc",
-      getTimestamp: () => "2026-08-06T00:00:00.000Z",
-      getRespondentEmail: () => "respondent@example.com",
-    },
-    source: { getId: () => "form_1", getTitle: () => "Mahindra Form" },
-  };
-
-  // The script is a plain function/var declaration body — evaluating it defines
-  // `onFormSubmit` without side effects, and we invoke it ourselves.
-  const load = new Function(
-    "Utilities",
-    "UrlFetchApp",
-    `${script}\nreturn { onFormSubmit: onFormSubmit, setup: setup, WEBHOOK_URL: WEBHOOK_URL };`,
-  );
-  const mod = load(Utilities, UrlFetchApp);
-
-  const invoke = () => {
-    try {
-      mod.onFormSubmit(event);
-    } catch (error) {
-      thrown = error as Error;
-    }
-  };
-  invoke();
-
-  return {
-    get call() {
-      return captured as unknown as {
-        url: string;
-        options: Record<string, string | Record<string, string> | boolean>;
-      };
-    },
-    get thrown(): Error | null {
-      return thrown;
-    },
-    webhookUrl: mod.WEBHOOK_URL as string,
-    replayServerError(code: number, text: string): { thrown: Error | null } {
-      responseCode = code;
-      responseBody = text;
-      captured = null;
-      thrown = null;
-      invoke();
-      return { thrown };
-    },
-  };
-}
-
 describe("the generated Apps Script", () => {
   it("posts a request the real route ACCEPTS", async () => {
     // The end-to-end assertion. Not a hand-built request — the bytes and headers
     // the script itself produced, fed to the handler that actually runs.
     givenTrigger();
-    const run = runGeneratedScript({ Name: "Ada", Email: "ada@example.com" });
-
-    const res = await post(
-      run.call.options.payload as string,
-      run.call.options.headers as Record<string, string>,
+    const res = await deliver(
+      submit({ Name: "Ada", Email: "ada@example.com" }).call,
     );
 
     expect(res.status).toBe(200);
@@ -183,19 +109,14 @@ describe("the generated Apps Script", () => {
   });
 
   it("posts to the token URL, carrying no workflowId to forge", () => {
-    const run = runGeneratedScript({ Name: "Ada" });
-    expect(run.call.url).toBe(URL_FOR_TOKEN);
-    expect(run.call.url).not.toContain("workflowId");
+    const sent = requireRequest(submit({ Name: "Ada" }));
+    expect(sent.url).toBe(URL_FOR_TOKEN);
+    expect(sent.url).not.toContain("workflowId");
   });
 
   it("forwards the form's answers under the keys the picker offers", async () => {
     givenTrigger();
-    const run = runGeneratedScript({ "  Full Name  ": "Ada" });
-
-    await post(
-      run.call.options.payload as string,
-      run.call.options.headers as Record<string, string>,
-    );
+    await deliver(submit({ "  Full Name  ": "Ada" }).call);
 
     // Titles are trimmed on both sides so the reference path resolves.
     expect(sendWorkflowExecution).toHaveBeenCalledWith(
@@ -212,12 +133,7 @@ describe("the generated Apps Script", () => {
 
   it("dedupes on the form's responseId, so a retry does not run twice", async () => {
     givenTrigger();
-    const run = runGeneratedScript({ Name: "Ada" });
-
-    await post(
-      run.call.options.payload as string,
-      run.call.options.headers as Record<string, string>,
-    );
+    await deliver(submit({ Name: "Ada" }).call);
 
     expect(sendWorkflowExecution).toHaveBeenCalledWith(
       expect.objectContaining({ idempotencyKey: "google-form:resp_abc" }),
@@ -228,8 +144,10 @@ describe("the generated Apps Script", () => {
     // The reason a fully-broken trigger went unnoticed until a client complained.
     // Throwing is what marks the Apps Script run failed and makes Google email
     // the form owner.
-    const run = runGeneratedScript({ Name: "Ada" });
-    const { thrown } = run.replayServerError(401, '{"error":"Unauthorized"}');
+    const { thrown } = submit(
+      { Name: "Ada" },
+      { responseCode: 401, responseBody: '{"error":"Unauthorized"}' },
+    );
 
     expect(thrown).toBeInstanceOf(Error);
     expect(thrown?.message).toContain("401");
@@ -237,8 +155,63 @@ describe("the generated Apps Script", () => {
   });
 
   it("does not throw on success", () => {
-    const run = runGeneratedScript({ Name: "Ada" });
-    expect(run.thrown).toBeNull();
+    expect(submit({ Name: "Ada" }).thrown).toBeNull();
+  });
+
+  it("signs NON-ASCII answers so the route still accepts them", async () => {
+    // Every other fixture here is ASCII, where a signature agrees with the
+    // route's UTF-8 hash no matter which charset the script happened to use.
+    // These answers are the case that separates them — and the consequence of
+    // getting it wrong is no longer a silent skip but a 401, which this script
+    // (correctly) turns into a failed submission and an email to the form owner.
+    givenTrigger();
+    const { call, thrown } = submit({
+      Name: "José Ströaß",
+      "पूरा नाम": "अरव जैन",
+      Feedback: "Works great 🎉 — 90% faster",
+    });
+
+    expect(thrown).toBeNull();
+    const res = await deliver(call);
+
+    expect(res.status).toBe(200);
+    expect(sendWorkflowExecution).toHaveBeenCalledWith(
+      expect.objectContaining({
+        initialData: {
+          googleForm: expect.objectContaining({
+            responses: {
+              Name: "José Ströaß",
+              "पूरा नाम": "अरव जैन",
+              Feedback: "Works great 🎉 — 90% faster",
+            },
+          }),
+        },
+      }),
+    );
+  });
+
+  it("states the charset instead of relying on an overload's default", () => {
+    // The harness refuses `computeHmacSha256Signature(value, key)` outright, so
+    // this is belt-and-braces on the reason: the bytes signed must be the bytes
+    // the route hashes, and only the 4-argument call says which those are.
+    const script = generateGoogleFormScript(URL_FOR_TOKEN, SECRET);
+    expect(script).toContain("Utilities.Charset.UTF_8");
+    expect(script).not.toContain("computeHmacSha256Signature");
+  });
+
+  it("would FAIL this suite if it reverted to the charset-less overload", () => {
+    // Proves the backstop, rather than trusting it. A guard nobody has seen
+    // reject anything is how the original bug survived a green suite: the
+    // charset-less call is what a future "simplification" reaches for, and it
+    // passes every ASCII fixture in this file.
+    const reverted = generateGoogleFormScript(URL_FOR_TOKEN, SECRET).replace(
+      /Utilities\.computeHmacSignature\([\s\S]*?\)/,
+      "Utilities.computeHmacSha256Signature(body, SIGNING_SECRET)",
+    );
+
+    expect(() =>
+      runGeneratedFormScript(reverted, { answers: { Name: "Ada" } }),
+    ).toThrow(/does not state a charset/);
   });
 });
 
@@ -248,6 +221,30 @@ describe("the generated Apps Script", () => {
 
 describe("google-form webhook auth", () => {
   const BODY = JSON.stringify({ responseId: "r1", responses: { Name: "Ada" } });
+
+  it("looks the token up SCOPED TO THIS TRIGGER TYPE", async () => {
+    // The guarantee that keeps a generic webhook's token from authenticating
+    // here. It is in the WHERE, not a check after the fact, so a route cannot
+    // resolve a token without saying which trigger it serves.
+    givenTrigger();
+    await post(BODY, { "x-guideboard-signature": sign(BODY) });
+
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { token: TOKEN, nodeType: "GOOGLE_FORM_TRIGGER" },
+      }),
+    );
+  });
+
+  it("404s a token that matches no Google Form trigger", async () => {
+    // Covers both an unknown token and one belonging to another trigger type —
+    // indistinguishable by design, so a probe learns nothing.
+    givenNoTrigger();
+    const res = await post(BODY, { "x-guideboard-signature": sign(BODY) });
+
+    expect(res.status).toBe(404);
+    expect(sendWorkflowExecution).not.toHaveBeenCalled();
+  });
 
   it("rejects an unsigned request", async () => {
     givenTrigger();
@@ -280,22 +277,6 @@ describe("google-form webhook auth", () => {
     });
   });
 
-  it("404s an unknown token before any signature work", async () => {
-    findUnique.mockResolvedValue(null);
-    const res = await post(BODY, { "x-guideboard-signature": sign(BODY) });
-    expect(res.status).toBe(404);
-    expect(sendWorkflowExecution).not.toHaveBeenCalled();
-  });
-
-  it("refuses a token belonging to a DIFFERENT trigger type", async () => {
-    // A generic webhook's token would otherwise authenticate here and run its
-    // workflow with a `googleForm` context its nodes never reference.
-    givenTrigger({ nodeType: "WEBHOOK_TRIGGER" });
-    const res = await post(BODY, { "x-guideboard-signature": sign(BODY) });
-    expect(res.status).toBe(404);
-    expect(sendWorkflowExecution).not.toHaveBeenCalled();
-  });
-
   it("takes the workflow from the TOKEN, not from the request", async () => {
     // The old route read `?workflowId=`, so anyone holding the one global secret
     // could aim a submission at any workflow. The token names its own workflow.
@@ -312,5 +293,91 @@ describe("google-form webhook auth", () => {
     givenTrigger({ requireSignature: false });
     const res = await post(BODY, { "x-guideboard-signature": "sha256=nope" });
     expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Body handling
+// ---------------------------------------------------------------------------
+
+describe("google-form webhook body handling", () => {
+  it("400s a body that is valid JSON but not an object", async () => {
+    // `null`, `42` and `"hi"` all parse, so the JSON catch never fires for
+    // them. Dereferencing the result would make each a 500 plus an error log,
+    // where the intent is plainly a 400 for a malformed caller.
+    givenTrigger();
+    for (const scalar of ["null", "42", '"hi"', "[]"]) {
+      const res = await post(scalar, {
+        "x-guideboard-signature": sign(scalar),
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(sendWorkflowExecution).not.toHaveBeenCalled();
+  });
+
+  it("400s a body that is not JSON at all", async () => {
+    givenTrigger();
+    const res = await post("not json", {
+      "x-guideboard-signature": sign("not json"),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("413s an oversized body that declares its size", async () => {
+    givenTrigger();
+    const res = await POST(
+      new Request(URL_FOR_TOKEN, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(2_000_000),
+        },
+        body: JSON.stringify({ responseId: "r1" }),
+      }) as never,
+      { params: Promise.resolve({ token: TOKEN }) },
+    );
+
+    expect(res.status).toBe(413);
+    expect(sendWorkflowExecution).not.toHaveBeenCalled();
+  });
+
+  it("413s an oversized body that declares NOTHING, without buffering it whole", async () => {
+    // The gap this closes: `Number(null)` is 0, so a request with no
+    // `content-length` — which is every chunked request — passed the declared
+    // size check, and the read that followed was unbounded. The stream below
+    // would produce 2 GB if drained; the read must abandon it near the 1 MB cap
+    // instead, so the test finishing at all is part of the assertion.
+    givenTrigger();
+
+    const chunk = new Uint8Array(64 * 1024).fill(0x61); // 64 KB of "a"
+    let produced = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (produced >= 2_000 * 1024 * 1024) return controller.close();
+        produced += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+
+    const res = await POST(
+      new Request(URL_FOR_TOKEN, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+        // @ts-expect-error — undici requires this for a streaming body.
+        duplex: "half",
+      }) as never,
+      { params: Promise.resolve({ token: TOKEN }) },
+    );
+
+    expect(res.status).toBe(413);
+    expect(cancelled).toBe(true);
+    // Bounded by the cap, not by what the sender chose to send.
+    expect(produced).toBeLessThan(2 * 1024 * 1024);
+    expect(sendWorkflowExecution).not.toHaveBeenCalled();
   });
 });

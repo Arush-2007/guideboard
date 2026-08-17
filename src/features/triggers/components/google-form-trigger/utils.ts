@@ -1,7 +1,7 @@
 /**
  * The Apps Script a user pastes into their Google Form to connect it.
  *
- * Two things here are load-bearing, and the trigger was fully broken in
+ * Three things here are load-bearing, and the trigger was fully broken in
  * production for want of the first:
  *
  * 1. **It authenticates.** The script posts to a per-workflow token URL and
@@ -17,6 +17,19 @@
  *    said so. It took a client reporting silence to find it. Now a non-2xx
  *    throws, which marks the run failed in the Apps Script dashboard AND makes
  *    Google email the form owner its trigger-failure notice.
+ *
+ * 3. **It signs UTF-8 bytes, explicitly.** `signBody` calls the four-argument
+ *    `Utilities.computeHmacSignature(..., Charset.UTF_8)` rather than the
+ *    shorter `computeHmacSha256Signature(value, key)`, which does not state how
+ *    it decodes the string into bytes. The route hashes the raw request body as
+ *    UTF-8 (`webhook-verify.ts`), so for an all-ASCII form the two agree
+ *    whatever the short overload picks — and diverge the moment a respondent
+ *    types an accented name, Devanagari, or an emoji. Point 2 is what makes
+ *    that expensive: a mismatch used to be a silent skip and is now a 401, a
+ *    failed submission, and an email to the form owner.
+ *
+ *    `apps-script-harness` refuses the short overload outright, so a script
+ *    that reverts to it fails the suite instead of passing on ASCII fixtures.
  */
 
 export const generateGoogleFormScript = (
@@ -44,7 +57,14 @@ function setup() {
 // Guideboard verifies. Signed over the EXACT string that is sent as the
 // payload; re-serializing the object here would change bytes and fail.
 function signBody(body) {
-  var bytes = Utilities.computeHmacSha256Signature(body, SIGNING_SECRET);
+  // UTF_8 is named on purpose — it must match how the server reads the body,
+  // or any answer with an accent, a non-Latin script, or an emoji is rejected.
+  var bytes = Utilities.computeHmacSignature(
+    Utilities.MacAlgorithm.HMAC_SHA_256,
+    body,
+    SIGNING_SECRET,
+    Utilities.Charset.UTF_8
+  );
   var hex = '';
   for (var i = 0; i < bytes.length; i++) {
     // Apps Script bytes are SIGNED (-128..127); the & 0xFF is what turns a

@@ -33,6 +33,7 @@ vi.mock("@/lib/encryption", () => ({
   decrypt: (s: string) => s,
 }));
 
+import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
 import { POST } from "./[token]/route";
@@ -59,9 +60,18 @@ afterEach(async () => {
 
 // Each test uses a distinct token so the module-global in-memory rate limiter
 // can't bleed counts across tests.
+// `nodeType` is spelled out because the column has no default: a row must say
+// which trigger it belongs to, or it is not insertable. That is deliberate —
+// see the field's comment in schema.prisma.
 const provisionWebhook = (token: string) =>
   prisma.webhookTrigger.create({
-    data: { userId, workflowId, token, secret: SECRET },
+    data: {
+      userId,
+      workflowId,
+      token,
+      secret: SECRET,
+      nodeType: NodeType.WEBHOOK_TRIGGER,
+    },
   });
 
 const call = (

@@ -1,0 +1,15 @@
+-- Drop the DEFAULT from WebhookTrigger.nodeType.
+--
+-- The default existed to serve one step of 20260806120000: label the rows that
+-- predated the column, all of which were generic webhooks by construction. That
+-- has run, every row is labelled, and nothing else should ever be labelled by
+-- omission.
+--
+-- Keeping it would mean an INSERT that forgets `nodeType` silently produces a
+-- WEBHOOK_TRIGGER credential. Such a row authenticates at the generic endpoint
+-- and runs its workflow with the wrong `initialData` shape — a run that succeeds
+-- with every reference blank, which is the failure mode the token routes scope
+-- their lookups to make impossible. Better a NOT NULL violation at the insert.
+--
+-- The column stays NOT NULL; only the default goes. No row is rewritten.
+ALTER TABLE "WebhookTrigger" ALTER COLUMN "nodeType" DROP DEFAULT;
