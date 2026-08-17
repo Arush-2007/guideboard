@@ -5,24 +5,18 @@
  * segment). POSTing to `/api/webhooks/generic/<token>` runs that token's
  * workflow with the request body + headers as `initialData.webhook`.
  *
- * This is a public, unauthenticated endpoint on a paid service, so the order of
- * checks matters: cheap in-memory rate-limit and a payload-size cap run BEFORE
- * the DB lookup, token secrecy is the baseline auth, and an optional
- * `X-Guideboard-Signature` HMAC adds payload integrity when present.
+ * This is a public endpoint on a paid service, so the order of checks matters —
+ * cheap in-memory guards before the DB lookup, token secrecy as the baseline
+ * auth, and an `X-Guideboard-Signature` HMAC for payload integrity. All of that
+ * lives in `authenticateTokenWebhook`, shared with every other token webhook, so
+ * this file holds only what is specific to the generic contract.
  */
 
 import { type NextRequest, NextResponse } from "next/server";
 import { NodeType } from "@/generated/prisma";
 import { sendWorkflowExecution } from "@/inngest/utils";
-import prisma from "@/lib/db";
-import { decrypt } from "@/lib/encryption";
 import { logger } from "@/lib/logger";
-import { isAllowed } from "@/lib/rate-limit";
-import { verifyWebhookRequest } from "@/lib/webhook-verify";
-
-// 1 MB cap — generic webhooks carry small JSON payloads; anything larger is
-// almost certainly abuse and would bloat the persisted Execution.input.
-const MAX_BODY_BYTES = 1_000_000;
+import { authenticateTokenWebhook } from "@/lib/token-webhook";
 
 export async function POST(
   request: NextRequest,
@@ -31,87 +25,24 @@ export async function POST(
   try {
     const { token } = await params;
 
-    // Per-token rate limit, before any DB work so a flood can't drive load.
-    if (!isAllowed(`webhook:generic:${token}`, 100, 60_000)) {
-      return NextResponse.json(
-        { success: false, error: "Too many requests" },
-        { status: 429 },
-      );
-    }
-
-    // Early reject on declared size, then enforce the real size after reading.
-    const declaredLength = Number(request.headers.get("content-length"));
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
-      return NextResponse.json(
-        { success: false, error: "Payload too large" },
-        { status: 413 },
-      );
-    }
-
-    const rawBody = await request.text();
-    if (Buffer.byteLength(rawBody, "utf8") > MAX_BODY_BYTES) {
-      return NextResponse.json(
-        { success: false, error: "Payload too large" },
-        { status: 413 },
-      );
-    }
-
-    const webhook = await prisma.webhookTrigger.findUnique({
-      where: { token },
-      select: {
-        workflowId: true,
-        secret: true,
-        requireSignature: true,
-        nodeType: true,
-      },
-    });
-    // A token belongs to ONE endpoint. `token` is globally unique across trigger
-    // types, so without this check a Google Form's token would authenticate here
-    // too — and this route shapes the body as `initialData.webhook`, so that
-    // workflow would run with its `googleForm` context missing entirely rather
-    // than refusing. Answering 404 (not 403) keeps a wrong-endpoint token
-    // indistinguishable from an unknown one, which is what a probe should see.
-    if (!webhook || webhook.nodeType !== NodeType.WEBHOOK_TRIGGER) {
-      return NextResponse.json(
-        { success: false, error: "Unknown webhook" },
-        { status: 404 },
-      );
-    }
-
-    // Per-trigger policy, not a global one. Triggers created from 2026-08-04
-    // REQUIRE a signature; rows that predate that keep the opt-in behaviour
-    // their caller was built against, until the user turns it on in the dialog.
-    // See `WebhookTrigger.requireSignature`.
-    //
-    // The secret is per-trigger and comes from the database rather than the
-    // environment, so the seam's unset branch is unreachable — `secretName`
-    // names the column for a message that cannot be produced.
-    const auth = verifyWebhookRequest({
+    const auth = await authenticateTokenWebhook({
       request,
-      rawBody,
-      scheme: { kind: "hmac-sha256", header: "x-guideboard-signature" },
-      secret: decrypt(webhook.secret),
-      secretName: "WebhookTrigger.secret",
-      ...(webhook.requireSignature
-        ? {
-            mode: "required" as const,
-            invalidMessage:
-              "This webhook requires a signed request. Send " +
-              "X-Guideboard-Signature as sha256=<HMAC of the raw body> using " +
-              "the signing secret.",
-          }
-        : { mode: "if-present" as const, invalidMessage: "Invalid signature" }),
+      token,
+      nodeType: NodeType.WEBHOOK_TRIGGER,
+      signatureRequiredMessage:
+        "This webhook requires a signed request. Send X-Guideboard-Signature " +
+        "as sha256=<HMAC of the raw body> using the signing secret.",
     });
     if (!auth.ok) return auth.response;
 
     // Lenient body: parse JSON when possible, otherwise pass the raw string
     // through so non-JSON callers still work.
     let body: unknown = {};
-    if (rawBody.length > 0) {
+    if (auth.rawBody.length > 0) {
       try {
-        body = JSON.parse(rawBody);
+        body = JSON.parse(auth.rawBody);
       } catch {
-        body = rawBody;
+        body = auth.rawBody;
       }
     }
 
@@ -125,7 +56,7 @@ export async function POST(
     const idempotencyKey = request.headers.get("idempotency-key") ?? undefined;
 
     await sendWorkflowExecution({
-      workflowId: webhook.workflowId,
+      workflowId: auth.workflowId,
       initialData: { webhook: { body, headers } },
       idempotencyKey,
     });

@@ -15,7 +15,6 @@
  * broken trigger shipped green.
  */
 
-import { createHmac } from "node:crypto";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -48,6 +47,11 @@ import { generateGoogleFormScript } from "@/features/triggers/components/google-
 import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { syncTriggerPollsForWorkflow } from "@/lib/workflow-persistence";
+import {
+  type CapturedFetch,
+  requireRequest,
+  runGeneratedFormScript,
+} from "@/test/apps-script-harness";
 import { cleanupDb, createTestUser } from "@/test/trpc-harness";
 import { POST } from "./[token]/route";
 
@@ -75,57 +79,25 @@ const saveWorkflowWithGoogleForm = () =>
     { type: NodeType.GOOGLE_FORM_TRIGGER, data: {} },
   ]);
 
-/** Runs the generated script under Apps Script shims; returns its HTTP call. */
-function submitForm(script: string, answers: Record<string, string>) {
-  let captured!: { url: string; options: Record<string, string> };
-
-  const Utilities = {
-    computeHmacSha256Signature: (value: string, key: string) =>
-      Array.from(createHmac("sha256", key).update(value, "utf8").digest()).map(
-        (b) => (b > 127 ? b - 256 : b),
-      ),
-  };
-  const UrlFetchApp = {
-    fetch: (url: string, options: Record<string, string>) => {
-      captured = { url, options };
-      return { getResponseCode: () => 200, getContentText: () => "{}" };
-    },
-  };
-
-  const event = {
-    response: {
-      getItemResponses: () =>
-        Object.entries(answers).map(([title, value]) => ({
-          getItem: () => ({ getTitle: () => title }),
-          getResponse: () => value,
-        })),
-      getId: () => "resp_live_1",
-      getTimestamp: () => "2026-08-06T00:00:00.000Z",
-      getRespondentEmail: () => "client@example.com",
-    },
-    source: { getId: () => "form_1", getTitle: () => "Mahindra Form" },
-  };
-
-  const load = new Function(
-    "Utilities",
-    "UrlFetchApp",
-    `${script}\nreturn { onFormSubmit: onFormSubmit };`,
+/** Submits the form, using the SAME Apps Script harness as the unit suite. */
+const submitForm = (script: string, answers: Record<string, string>) =>
+  requireRequest(
+    runGeneratedFormScript(script, {
+      answers,
+      responseId: "resp_live_1",
+      respondentEmail: "client@example.com",
+      formId: "form_1",
+      formTitle: "Mahindra Form",
+    }),
   );
-  load(Utilities, UrlFetchApp).onFormSubmit(event);
 
-  return captured;
-}
-
-const deliver = (call: { url: string; options: Record<string, string> }) => {
+const deliver = (call: CapturedFetch) => {
   const token = call.url.split("/").pop() as string;
   return POST(
     new NextRequest(call.url, {
       method: "POST",
       body: call.options.payload,
-      headers: {
-        "content-type": "application/json",
-        ...(call.options.headers as unknown as Record<string, string>),
-      },
+      headers: { "content-type": "application/json", ...call.options.headers },
     }),
     { params: Promise.resolve({ token }) },
   );

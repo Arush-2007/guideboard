@@ -297,16 +297,24 @@ model WebhookTrigger {
   // token-authenticated webhook instead of one near-identical table per
   // provider.
   //
-  // Defaults to WEBHOOK_TRIGGER because that is what every row predating this
-  // column is: the table held generic-webhook credentials exclusively, so the
-  // default restates the existing meaning rather than guessing at it.
+  // REQUIRED, with no default, and that is load-bearing. A default of
+  // WEBHOOK_TRIGGER was needed exactly once — to label the rows predating this
+  // column, which were all generic webhooks by construction — and the migration
+  // that added it has run. Leaving it in place afterwards would let any
+  // `create()` that forgets this field silently mint a GENERIC credential: a row
+  // that then authenticates at `/api/webhooks/generic/<token>` and runs the
+  // workflow with `initialData.webhook` where its nodes reference `googleForm`,
+  // so every reference resolves blank and the run "succeeds". That is the exact
+  // silent failure `authenticateTokenWebhook` scopes its WHERE clause to
+  // prevent, and a column default would reopen it one layer down. A dropped
+  // insert is a loud error; a mislabelled row is not.
   //
-  // This is what replaced `workflowId @unique` with a composite key. The old
-  // single-column constraint quietly encoded "a workflow has at most one
+  // This is also what replaced `workflowId @unique` with a composite key. The
+  // old single-column constraint quietly encoded "a workflow has at most one
   // webhook", which stopped being true the moment a second trigger type needed
   // a token — and would have let a Google Form and a generic webhook on the
   // same workflow collide on insert.
-  nodeType NodeType @default(WEBHOOK_TRIGGER)
+  nodeType NodeType
 
   // Whether an `X-Guideboard-Signature` HMAC is REQUIRED, or merely verified
   // when the caller chooses to send one.

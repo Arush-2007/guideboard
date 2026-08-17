@@ -3,7 +3,6 @@ import { createId } from "@paralleldrive/cuid2";
 import { TRPCError } from "@trpc/server";
 import z from "zod";
 import { TOKEN_WEBHOOK_TRIGGER_TYPES } from "@/config/node-kinds";
-import { NodeType } from "@/generated/prisma";
 import prisma from "@/lib/db";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
@@ -26,13 +25,19 @@ import { createTRPCRouter, protectedProcedure } from "@/trpc/init";
  */
 
 /**
- * Which trigger's credentials to act on. Defaults to the generic webhook so the
- * existing dialog — written before this was a choice — keeps addressing the row
- * it always did, without a client change.
+ * Which trigger's credentials to act on. **Required, deliberately.**
+ *
+ * This carried a `.default(WEBHOOK_TRIGGER)` so the pre-existing dialog needed
+ * no change. That saved three lines in one file in this repo — there is no
+ * published API here to keep compatible — and bought a silent hazard: the
+ * argument that decides WHICH ROW you touch was optional. A new dialog omitting
+ * it would read, or `regenerate` would rotate, the generic webhook's
+ * credentials on that workflow, invalidating a live third-party URL with
+ * nothing failing at compile time.
+ *
+ * No default: the compiler now asks every caller which trigger it means.
  */
-const nodeTypeInput = z
-  .enum(TOKEN_WEBHOOK_TRIGGER_TYPES as unknown as [NodeType, ...NodeType[]])
-  .default(NodeType.WEBHOOK_TRIGGER);
+const nodeTypeInput = z.enum(TOKEN_WEBHOOK_TRIGGER_TYPES);
 export const webhookRouter = createTRPCRouter({
   // Returns null until the workflow (with the webhook node) has been saved, so
   // the dialog can prompt the user to save first.

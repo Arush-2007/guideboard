@@ -7,7 +7,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { isAllowed } from "./rate-limit";
+import { __rateLimitKeyCount, isAllowed } from "./rate-limit";
 
 describe("isAllowed", () => {
   beforeAll(() => vi.useFakeTimers());
@@ -42,5 +42,22 @@ describe("isAllowed", () => {
     isAllowed("test-rl-5a", 1, 1000);
     expect(isAllowed("test-rl-5a", 1, 1000)).toBe(false);
     expect(isAllowed("test-rl-5b", 1, 1000)).toBe(true);
+  });
+
+  it("evicts keys that go idle, so a caller-controlled key cannot grow the store forever", () => {
+    // The shape of the attack this guards: several routes key by something the
+    // requester supplies (a webhook token, a `?workflowId=`), so an anonymous
+    // flood of distinct values must not be a permanent allocation.
+    const before = __rateLimitKeyCount();
+    for (let i = 0; i < 500; i++) {
+      isAllowed(`test-rl-flood-${i}`, 100, 1000);
+    }
+    expect(__rateLimitKeyCount()).toBeGreaterThanOrEqual(before + 500);
+
+    // Past both the window and the sweep interval, one more call reclaims them.
+    vi.advanceTimersByTime(61_000);
+    isAllowed("test-rl-after-sweep", 1, 1000);
+
+    expect(__rateLimitKeyCount()).toBe(1);
   });
 });

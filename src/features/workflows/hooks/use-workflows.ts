@@ -124,6 +124,15 @@ export const useUpdateWorkflow = () => {
         queryClient.invalidateQueries(
           trpc.workflows.getOne.queryOptions({ id: data.id }),
         );
+        // A save is what PROVISIONS a token webhook's credentials
+        // (`syncTriggerPollsForWorkflow`), so the row a webhook dialog reads
+        // exists only after this resolves. Without invalidating, the 30s
+        // `staleTime` keeps serving the `null` cached before the save: the
+        // dialog still says "save the workflow once to generate this URL" and
+        // still disables the copy button, for the half-minute right after the
+        // save that fixed it. Unfiltered by input on purpose — one save can add
+        // or remove a row for any trigger type.
+        queryClient.invalidateQueries(trpc.webhook.get.queryFilter());
       },
       onError: (error) => {
         toast.error(`Failed to save workflow: ${error.message}`);

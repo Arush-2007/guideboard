@@ -429,38 +429,45 @@ export async function syncTriggerPollsForWorkflow(
   // is encrypted at rest.
   //
   // Driven by a list rather than written out per type. When this was a single
-  // hardcoded `WEBHOOK_TRIGGER` block, the `else` branch deleted by workflowId
+  // hardcoded `WEBHOOK_TRIGGER` block, the delete branch matched by workflowId
   // alone — so saving a workflow whose trigger was any OTHER token-authenticated
-  // type would delete that type's credentials, had one existed. Scoping both
-  // branches by `nodeType` is what lets two such triggers coexist on one
-  // workflow without either save erasing the other.
-  for (const nodeType of TOKEN_WEBHOOK_TRIGGER_TYPES) {
-    const triggerNode = nodes.find((n) => n.type === nodeType);
+  // type would delete that type's credentials, had one existed. Scoping by
+  // `nodeType` is what lets two such triggers coexist on one workflow without
+  // either save erasing the other.
+  const presentTypes = TOKEN_WEBHOOK_TRIGGER_TYPES.filter((nodeType) =>
+    nodes.some((n) => n.type === nodeType),
+  );
 
-    if (triggerNode) {
-      await prisma.webhookTrigger.upsert({
-        where: { workflowId_nodeType: { workflowId, nodeType } },
-        // `update` deliberately touches neither the credentials nor
-        // `requireSignature`: an existing integration must keep working exactly
-        // as its caller was built, and the signing setting is the user's to
-        // change from the dialog, not something a workflow save rewrites.
-        update: { userId },
-        create: {
-          userId,
-          workflowId,
-          nodeType,
-          token: createId(),
-          secret: encrypt(randomBytes(32).toString("hex")),
-          // Secure by default for anything new. Rows that already exist keep the
-          // column default (false), so this cannot break a live webhook — see the
-          // field's comment in the schema.
-          requireSignature: true,
-        },
-      });
-    } else {
-      await prisma.webhookTrigger.deleteMany({
-        where: { workflowId, nodeType },
-      });
-    }
+  // ONE delete for everything no longer on the canvas, rather than one query per
+  // registered type. Same semantics, and it says "remove what is gone" once
+  // instead of once per type. It also stops this scaling with the registry: the
+  // previous loop issued a round trip per entry on EVERY save of EVERY workflow,
+  // so the common case — a workflow with no webhook node at all — paid for the
+  // whole list, and each future token webhook would have added a query to saves
+  // that have nothing to do with it. Now the cost tracks what is on the canvas.
+  await prisma.webhookTrigger.deleteMany({
+    where: { workflowId, nodeType: { notIn: presentTypes } },
+  });
+
+  for (const nodeType of presentTypes) {
+    await prisma.webhookTrigger.upsert({
+      where: { workflowId_nodeType: { workflowId, nodeType } },
+      // `update` deliberately touches neither the credentials nor
+      // `requireSignature`: an existing integration must keep working exactly
+      // as its caller was built, and the signing setting is the user's to
+      // change from the dialog, not something a workflow save rewrites.
+      update: { userId },
+      create: {
+        userId,
+        workflowId,
+        nodeType,
+        token: createId(),
+        secret: encrypt(randomBytes(32).toString("hex")),
+        // Secure by default for anything new. Rows that already exist keep the
+        // value they were created with, so this cannot break a live webhook —
+        // see the field's comment in the schema.
+        requireSignature: true,
+      },
+    });
   }
 }

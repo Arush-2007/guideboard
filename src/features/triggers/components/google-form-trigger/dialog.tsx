@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { WideOverlayPanel } from "@/components/wide-overlay-panel";
+import { tokenWebhookPath } from "@/config/node-kinds";
 import { NodeType } from "@/generated/prisma";
 import { useTRPC } from "@/trpc/client";
 import { generateGoogleFormScript } from "./utils";
@@ -65,15 +66,24 @@ export const GoogleFormTriggerDialog = ({
   //
   // `nodeType` matters: one workflow can also hold a generic webhook's row, and
   // a read scoped by workflow alone could return that one's credentials.
+  //
+  // `enabled` guards the cast on `workflowId` above, which is an assertion
+  // rather than a check. Mounted anywhere without a `[workflowId]` route param,
+  // an unguarded call sends undefined, fails `z.string()` at the tRPC boundary,
+  // and leaves the user staring at a disabled button under a "save the workflow
+  // once" hint that no amount of saving will clear.
   const { data: webhookCreds } = useQuery(
-    trpc.webhook.get.queryOptions({
-      workflowId,
-      nodeType: NodeType.GOOGLE_FORM_TRIGGER,
-    }),
+    trpc.webhook.get.queryOptions(
+      { workflowId, nodeType: NodeType.GOOGLE_FORM_TRIGGER },
+      { enabled: open && !!workflowId },
+    ),
   );
 
+  // Path from the registry, not a literal — this URL is baked into the Apps
+  // Script the user pastes into their form, so a renamed route directory must
+  // not be able to leave it pointing at a 404. See TOKEN_WEBHOOK_ROUTE_SEGMENTS.
   const webhookUrl = webhookCreds
-    ? `${baseUrl}/api/webhooks/google-form/${webhookCreds.token}`
+    ? `${baseUrl}${tokenWebhookPath(NodeType.GOOGLE_FORM_TRIGGER, webhookCreds.token)}`
     : null;
 
   const [formId, setFormId] = useState(defaultValues.formId ?? "");

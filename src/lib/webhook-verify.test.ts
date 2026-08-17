@@ -82,6 +82,79 @@ describe("verifyWebhookRequest", () => {
     });
   });
 
+  describe("a DATABASE-sourced secret", () => {
+    // Per-row secrets (`WebhookTrigger.secret`) are not environment values, and
+    // treating them as such produced a 503 that sent the reader to a `.env`
+    // file for a problem sitting in Postgres.
+
+    it("still refuses a blank one", () => {
+      const result = verifyWebhookRequest({
+        request: post({ headers: { "x-sig": "sha256=whatever" } }),
+        scheme: { kind: "hmac-sha256", header: "x-sig" },
+        rawBody: "{}",
+        secret: "",
+        secretName: "WebhookTrigger.secret",
+        secretSource: "database",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.response.status).toBe(503);
+    });
+
+    it("names a fix that exists, instead of pointing at .env.example", async () => {
+      const result = verifyWebhookRequest({
+        request: post(),
+        scheme: { kind: "hmac-sha256", header: "x-sig" },
+        rawBody: "{}",
+        secret: undefined,
+        secretName: "WebhookTrigger.secret",
+        secretSource: "database",
+      });
+
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      const { error } = (await result.response.json()) as { error: string };
+      expect(error).toContain("Regenerate the webhook");
+      expect(error).not.toContain(".env");
+    });
+
+    it("does not apply the env placeholder filter to a row's value", () => {
+      // Contrived, since generated secrets are hex — but the filter has no
+      // business judging a database column, and a value it happens to match
+      // must not be refused as if it were an unedited `.env`.
+      const dbSecret = "your-imported-legacy-secret";
+      const body = "{}";
+
+      const result = verifyWebhookRequest({
+        request: post({ headers: { "x-sig": sign(body, dbSecret) }, body }),
+        scheme: { kind: "hmac-sha256", header: "x-sig" },
+        rawBody: body,
+        secret: dbSecret,
+        secretName: "WebhookTrigger.secret",
+        secretSource: "database",
+      });
+
+      expect(result.ok).toBe(true);
+    });
+
+    it("still filters placeholders when the secret comes from the env", () => {
+      // The default must not have shifted: an unedited `.env` value is public.
+      const placeholder = "your-random-secret-here";
+      const body = "{}";
+
+      const result = verifyWebhookRequest({
+        request: post({ headers: { "x-sig": sign(body, placeholder) }, body }),
+        scheme: { kind: "hmac-sha256", header: "x-sig" },
+        rawBody: body,
+        secret: placeholder,
+        secretName: "SOME_SECRET",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.response.status).toBe(503);
+    });
+  });
+
   describe("shared secret", () => {
     it("accepts a matching header", () => {
       expect(

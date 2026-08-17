@@ -1,15 +1,15 @@
 import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { sendWorkflowExecution, findUnique } = vi.hoisted(() => ({
+const { sendWorkflowExecution, findFirst } = vi.hoisted(() => ({
   sendWorkflowExecution: vi.fn(async () => ({ ids: ["evt"] })),
-  findUnique: vi.fn(),
+  findFirst: vi.fn(),
 }));
 
 vi.mock("@/inngest/utils", () => ({ sendWorkflowExecution }));
 vi.mock("@/lib/rate-limit", () => ({ isAllowed: () => true }));
 vi.mock("@/lib/db", () => ({
-  default: { webhookTrigger: { findUnique } },
+  default: { webhookTrigger: { findFirst } },
 }));
 // The stored secret is encrypted at rest; the route decrypts before verifying.
 vi.mock("@/lib/encryption", () => ({
@@ -35,7 +35,7 @@ const call = (headers?: Record<string, string>) =>
   );
 
 const givenTrigger = (requireSignature: boolean) => {
-  findUnique.mockResolvedValue({
+  findFirst.mockResolvedValue({
     workflowId: "wf_1",
     secret: `enc:${SECRET}`,
     requireSignature,
@@ -45,7 +45,7 @@ const givenTrigger = (requireSignature: boolean) => {
 
 beforeEach(() => {
   sendWorkflowExecution.mockClear();
-  findUnique.mockReset();
+  findFirst.mockReset();
 });
 
 describe("generic webhook — signature NOT required (existing triggers)", () => {
@@ -113,27 +113,30 @@ describe("generic webhook — signature REQUIRED (new triggers)", () => {
 
 describe("generic webhook — unknown token", () => {
   it("404s before any signature work", async () => {
-    findUnique.mockResolvedValue(null);
+    findFirst.mockResolvedValue(null);
     const res = await call({ "x-guideboard-signature": sign(BODY) });
     expect(res.status).toBe(404);
     expect(sendWorkflowExecution).not.toHaveBeenCalled();
   });
 
-  it("refuses a token belonging to a DIFFERENT trigger type", async () => {
+  it("looks the token up SCOPED TO THIS TRIGGER TYPE", async () => {
     // Tokens are unique across the whole table, so a Google Form's token is a
-    // valid row here — and its secret would verify a correct signature. Without
-    // the nodeType check this endpoint would accept it and run that workflow
-    // with `initialData.webhook` instead of the `googleForm` context its nodes
-    // reference, i.e. succeed while producing blanks everywhere.
-    findUnique.mockResolvedValue({
-      workflowId: "wf_1",
-      secret: `enc:${SECRET}`,
-      requireSignature: true,
-      nodeType: "GOOGLE_FORM_TRIGGER",
-    });
+    // real row — and its secret would verify a correct signature. Accepted here
+    // it would run that workflow with `initialData.webhook` instead of the
+    // `googleForm` context its nodes reference: a "successful" run with every
+    // reference blank.
+    //
+    // The scoping is in the WHERE rather than a check after the lookup, so the
+    // wrong-type row is never returned in the first place. That is what this
+    // asserts — a route cannot resolve a token without saying which trigger it
+    // serves, so the next token webhook gets the guarantee for free.
+    givenTrigger(true);
+    await call({ "x-guideboard-signature": sign(BODY) });
 
-    const res = await call({ "x-guideboard-signature": sign(BODY) });
-    expect(res.status).toBe(404);
-    expect(sendWorkflowExecution).not.toHaveBeenCalled();
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { token: "tok", nodeType: "WEBHOOK_TRIGGER" },
+      }),
+    );
   });
 });
