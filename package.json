@@ -14,6 +14,7 @@
     "ngrok:dev": "ngrok http --url=https://nonvolatile-dayle-edictally.ngrok-free.dev 3000",
     "format": "biome format --write",
     "inngest:dev": "inngest-cli dev",
+    "worker:dev": "dotenv -- tsx --tsconfig tsconfig.worker.json src/worker/main.ts",
     "dev:all": "dotenv -- mprocs"
   },
   "dependencies": {

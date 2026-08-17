@@ -1,3 +1,4 @@
+import type { ExecutionRuntimeName } from "@/execution/runtime";
 import type { WorkflowContext } from "@/features/executions/types";
 import type { OnItemFailure } from "@/lib/multi-match";
 
@@ -114,6 +115,28 @@ export type FanOutChain = {
   executionId: string;
   /** Whether a failed item stops the chain or lets it continue. */
   onItemFailure: OnItemFailure;
+  /**
+   * The runtime that started this chain. Every link finishes where item 0
+   * began, whatever `Workflow.executionRuntime` says by then.
+   *
+   * ⚠️ **This is a correctness pin, not a lineage note.** The two runtimes each
+   * enforce "one run of this workflow at a time" — the partial unique index
+   * `WorkflowJob_one_running_per_workflow` on one side, Inngest's
+   * `concurrency: { key: event.data.workflowId, limit: 1 }` on the other — and
+   * NEITHER can see the other's. That interlock is what makes a chain ordered:
+   * item 5's run cannot start while item 4's is still running. Split a chain
+   * across both runtimes and the interlock disappears, so two items run at once
+   * and the ordering the chain exists to preserve is gone.
+   *
+   * Stamped by `sendWorkflowExecution` when item 0 is dispatched and inherited
+   * by every later link through `planChainAdvance`'s spread, so the resolution
+   * costs one lookup per CHAIN rather than one per link.
+   *
+   * Optional only for chains already in flight across the deploy that
+   * introduced it. Those predate any routing, so absent correctly reads as
+   * `"inngest"` — see `resolveExecutionRuntime`.
+   */
+  runtime?: ExecutionRuntimeName;
 };
 
 /** The shared payload a chain's children read, written once by the parent. */

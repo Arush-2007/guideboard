@@ -256,8 +256,26 @@ Billing (Polar) was previously integrated and has been cleanly removed; the `pre
 ### Setup
 
 - **Client:** `src/inngest/client.ts` — Inngest instance with `realtimeMiddleware()`
-- **Functions:** `src/inngest/functions.ts` — single function `executeWorkflow` on event `workflows/execute.workflow`
-- **Serve:** `/api/inngest` — registers the function with Inngest's HTTP adapter
+- **Functions:** `src/inngest/functions.ts` — registers `executeWorkflow` on event `workflows/execute.workflow`, plus the pollers and the pruner
+- **The run itself:** `src/execution/run-execution.ts` — `runExecution`, the runtime-neutral body `executeWorkflow` calls. Everything between "a run was requested" and "the row says SUCCESS" lives here, with no knowledge of which runtime invoked it; failure is `src/execution/failure.ts`.
+- **Serve:** `/api/inngest` — registers the functions with Inngest's HTTP adapter
+
+> ℹ️ The split exists because a self-hosted execution runtime (a Postgres job
+> queue + a long-lived worker, in `src/queue/` and `src/worker/`) is being built
+> to replace Inngest. The extraction is what lets both execute byte-identical
+> runs.
+>
+> The worker is complete and runnable (`npm run worker:dev`): it claims jobs,
+> holds them with a fenced heartbeat, resumes a reclaimed job from its stored
+> steps, and shuts down gracefully. **Routing now exists too** —
+> `sendWorkflowExecution` (`src/inngest/utils.ts`) reads
+> `Workflow.executionRuntime` and sends a run to one runtime or the other.
+>
+> **Every production run today is still Inngest**, because that column is NULL
+> on every workflow and NULL means Inngest. Nothing moves until a row is
+> deliberately flipped; see DEPLOYMENT.md's "Moving a workflow between
+> runtimes", which also carries the rollback runbook. The worker is not yet
+> deployed anywhere — that is the next step.
 
 ### Execution Flow
 
@@ -558,11 +576,31 @@ guideboard/
 │   │   └── workflows/             # Workflow CRUD views
 │   ├── generated/prisma/          # Auto-generated Prisma client
 │   ├── hooks/                     # useIsMobile, useEntitySearch, useUpgradeModal
+│   ├── execution/                 # Runtime-neutral run body (see §8)
+│   │   ├── run-execution.ts       # runExecution — items 1-6 of a run
+│   │   ├── failure.ts             # settleFailedExecution + the alert email
+│   │   ├── fan-out-dispatch.ts    # fan-out dispatcher + chain advance
+│   │   ├── node-recorder.ts       # Prisma-backed NodeExecution recorder
+│   │   ├── topological-sort.ts    # topologicalSort
+│   │   ├── passthrough-step.ts    # the non-memoizing ExecutorStep shim
+│   │   └── payload.ts             # WorkflowExecutionPayload
 │   ├── inngest/
 │   │   ├── client.ts              # Inngest instance
-│   │   ├── functions.ts           # executeWorkflow function
-│   │   ├── utils.ts               # topologicalSort, sendWorkflowExecution
+│   │   ├── functions.ts           # executeWorkflow + pollers + pruner
+│   │   ├── run-workflow.ts        # the node-execution engine
+│   │   ├── utils.ts               # sendWorkflowExecution
 │   │   └── channels/              # 14 realtime channel definitions
+│   ├── queue/                     # Postgres job queue (built, not wired)
+│   │   ├── jobs.ts                # enqueue/claim/heartbeat/complete/fail/reclaim
+│   │   ├── step-store.ts          # StepResult — the durable-step guarantee
+│   │   └── metrics.ts             # queue depth, oldest-claimable age, fences
+│   ├── worker/                    # Self-hosted worker process (not wired)
+│   │   ├── main.ts                # boot, claim loop, reaper, shutdown
+│   │   ├── run-job.ts             # one job: heartbeat, fence, failure triage
+│   │   ├── config.ts              # worker id, concurrency, its own boot check
+│   │   ├── db.ts                  # the separate control-plane Prisma pool
+│   │   ├── worker-step.ts         # createWorkerStep — the ExecutorStep impl
+│   │   └── fenced-error.ts        # FencedError + its four reasons
 │   ├── lib/
 │   │   ├── auth.ts                # Better Auth server config
 │   │   ├── auth-client.ts         # Better Auth React client

@@ -66,15 +66,30 @@ A single node feature is split across two locations by convention:
 
 `actions.ts` files are Next.js `"use server"` actions that mint Inngest realtime subscription tokens so the client can stream node status.
 
-### Workflow execution (Inngest)
+### Workflow execution — two runtimes, one engine
 
-`src/inngest/functions.ts` is the engine. `executeWorkflow` is triggered by the `workflows/execute.workflow` event (sent via `sendWorkflowExecution` in `src/inngest/utils.ts`). It:
+There are **two** execution runtimes, and which one a run uses is decided per workflow by one column.
+
+**`sendWorkflowExecution` (`src/inngest/utils.ts`) is the single enqueue seam** — every webhook, poller, schedule tick, tRPC `execute`/`rerun`/`replayFromNode`, fan-out dispatch and chain advance goes through it, and it is the *only* place routing happens. It reads `Workflow.executionRuntime` (`ExecutionRuntime?` — **NULL means Inngest**, so nothing moves until a row is deliberately flipped) and either sends the Inngest event or inserts a `WorkflowJob` row for the self-hosted worker to claim.
+
+Three rules about that seam, each of which is a correctness measure rather than a preference:
+
+- **It never falls back between runtimes.** If the enqueue INSERT fails it retries once and then throws. Falling back to Inngest would run a workflow *concurrently* with the worker's run of it: each runtime enforces "one run per workflow at a time" through a mechanism the other cannot see — the partial unique index `WorkflowJob_one_running_per_workflow` versus Inngest's `concurrency: { key: event.data.workflowId, limit: 1 }`.
+- **What may be retried is decided by one question, and it is not "is this transient".** It is *"does this error prove the INSERT never executed"* — only `P1001` and `P2024`, both of which mean no connection was obtained. `P1017` (connection closed) is deliberately excluded: the drop can happen after the commit, and since enqueue mints a fresh job id per call and NULLs are distinct in Postgres, retrying a committed insert queues a **second** row for every keyless run. Read `RETRYABLE_ENQUEUE_CODES` before adding a code.
+- **A fan-out chain never splits across runtimes.** `FanOutChain.runtime` pins the whole chain to whatever ran item 0, because that same invisible-to-each-other interlock is what keeps chain items *ordered*. Item 0 resolves it from the parent `Execution` (a worker run's `inngestEventId` is a synthetic `job_<jobId>`), not from the column, since the column can change while the parent is still running.
+- **Rollback is a database change, not a deploy** — but it stops queued runs rather than moving them. See DEPLOYMENT.md's "Moving a workflow between runtimes" for the two statements it actually takes.
+
+`WorkflowJob` rows are pruned by `pruneWorkflowJobs`, and the window is load-bearing: a job row deduplicates its idempotency key while it lives, so SUCCEEDED jobs must expire **sooner** than the `Execution` rows they mirror or the two runtimes disagree about a re-sent key. The numbers and that inequality live in `src/execution/retention.ts`.
+
+`src/inngest/functions.ts` registers the Inngest functions; the run itself lives in **`src/execution/run-execution.ts`**, which is runtime-neutral so the same body serves both. `executeWorkflow` is triggered by the `workflows/execute.workflow` event and calls `runExecution`, which:
 1. Creates an `Execution` row (with optional `idempotencyKey` dedup — used heavily by pollers).
 2. Loads the workflow's nodes + connections and `topologicalSort`s them (cycles throw).
 3. Runs each node's executor **sequentially**, threading a `context` object (`WorkflowContext = Record<string, unknown>`) from one node to the next. Each executor returns the next context, conventionally writing its output under a key like `<nodetype>_<nodeId>`.
-4. Marks the `Execution` SUCCESS/FAILED; `onFailure` records the error. Retries are 3 in production, 0 in dev.
+4. Marks the `Execution` SUCCESS. Failure is `settleFailedExecution` (`src/execution/failure.ts`) — the chain advance, the FAILED write, the single Sentry capture and the alert email — which `onFailure` wraps. Retries are 3 in production, 0 in dev.
 
-A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so Inngest can checkpoint it, and `publish(channel(userId).status({ nodeId, status }))` to stream UI status (channels are user-scoped — see the registration notes above). Throw `NonRetriableError` for config/validation failures so Inngest doesn't retry them.
+A `NodeExecutor` (`src/features/executions/types.ts`) receives `{ data, nodeId, userId, context, step, publish }`. Use `step.run(...)` for any side-effecting work so it can be checkpointed, and `publish(channel(userId).status({ nodeId, status }))` to stream UI status (channels are user-scoped — see the registration notes above). Throw `NonRetriableError` for config/validation failures so it isn't retried.
+
+**A completed `step.run` never executes twice, and that is the guarantee, not an Inngest detail.** Under Inngest it comes from their memoized run state; under the worker from `StepResult` (`src/queue/step-store.ts`), keyed `(executionId, "<nodeId>:<stepId>")`. This is what makes a read/write split replay-safe — see `GOOGLE_SHEETS_ACTION` in `src/config/node-kinds.ts` for the three bugs it prevents, and `src/execution/run-execution.integration.test.ts` for the crash-resume test that pins it.
 
 **Templating:** action executors render user-authored fields (message bodies, etc.) against the `context` through **`renderTemplate` (`src/lib/templating.ts`)** — never by calling Handlebars directly. It resolves two syntaxes:
 
@@ -102,7 +117,7 @@ A SKIPPED node's record carries **no** `input` (`NodeRecord.input` is optional) 
 
 `assertProductionConfig` (`src/lib/production-config.ts`), called from `src/instrumentation.ts`, refuses to start a **production** server when a security-critical secret is unset or still an `.env.example` placeholder. Dev is unaffected, so a fresh clone still runs on an unedited `.env`.
 
-⚠️ Its list is hand-maintained with no compiler backstop — the same hazard as the partial node registries above — and the same knowledge also lives in `.env.example` and `DEPLOYMENT.md`. Adding a security-critical secret means editing all three.
+⚠️ Its list is hand-maintained with no compiler backstop — the same hazard as the partial node registries above — and the same knowledge also lives in `.env.example`, `DEPLOYMENT.md` and `assertWorkerConfig` (`src/worker/config.ts`, the self-hosted worker's own boot check, which needs one because `instrumentation.ts` is a Next hook that process never runs). Adding a security-critical secret means editing all four. The worker's list is a deliberate subset — it serves no HTTP and signs no cookies — but it reuses `missingProductionSettings`, so the checking is one mechanism.
 
 ### API layer (tRPC)
 

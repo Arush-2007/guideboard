@@ -6,8 +6,9 @@ import type { NodeType } from "@/generated/prisma";
  * Would adding a `source -> target` edge close a loop? Walk forward from
  * `target` over the existing edges (`edge.source -> edge.target`); if that walk
  * can already reach `source`, the new edge would create a cycle. Mirrors the
- * semantics of `topologicalSort` in `src/inngest/utils.ts` (which rejects cyclic
- * graphs at runtime) but stays client-only — no engine/server import.
+ * semantics of `topologicalSort` in `src/execution/topological-sort.ts` (which
+ * rejects cyclic graphs at runtime) but stays client-only — no engine/server
+ * import.
  *
  * Iterative stack + visited set, so a graph that already contains a cycle can't
  * make this hang.

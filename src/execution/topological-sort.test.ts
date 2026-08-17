@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Connection, Node } from "@/generated/prisma";
-import { topologicalSort } from "./utils";
+import { topologicalSort } from "./topological-sort";
 
 // Minimal Node/Connection factories — topologicalSort only reads `id`.
 const node = (id: string): Node => ({ id }) as unknown as Node;

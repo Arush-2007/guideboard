@@ -191,7 +191,54 @@ export function asTimeoutError(
  *   }
  */
 export function carriesRetryDecision(error: unknown): boolean {
-  return error instanceof NonRetriableError || error instanceof RetryAfterError;
+  return isNonRetriableError(error) || isRetryAfterError(error);
+}
+
+/**
+ * The two halves of `carriesRetryDecision`, for a caller that must ACT on which
+ * one it is rather than merely notice that one is present.
+ *
+ * The self-hosted worker is that caller: `NonRetriableError` means fail the job
+ * now and burn its remaining attempts, while `RetryAfterError` means schedule
+ * the next attempt no earlier than the provider asked. Ignoring the second is
+ * how a retry storm gets pointed at a client's Sheets quota, and it is easy to
+ * miss because only four sites in this codebase produce one.
+ *
+ * They live HERE, beside `carriesRetryDecision`, rather than in a queue module,
+ * so all three read the same way and cannot drift into disagreeing about what
+ * counts as which.
+ *
+ * ⚠️ Both check `instanceof` **or** `err.name`, and the name check is not
+ * belt-and-braces. `instanceof` compares against one module instance: a
+ * duplicated `inngest` copy in `node_modules` (a transitive dependency
+ * resolving its own) yields a class that fails `instanceof` while being the
+ * same error in every way that matters. Failing it here silently downgrades a
+ * deliberate "never retry this" into "retry it three more times", which for a
+ * non-idempotent write is the duplicate-side-effect bug the timeout classifier
+ * above exists to prevent. Both classes set `this.name` in their constructors
+ * (verified in `inngest/components/*Error.js`), so the name is reliable.
+ *
+ * ⚠️ `RetryAfterError` extends `Error`, NOT `NonRetriableError` (verified in the
+ * installed SDK), so these two are genuinely disjoint and a caller may test them
+ * in either order. That is worth knowing rather than assuming: were it a
+ * subclass, checking non-retriable first would classify every rate-limit hint as
+ * permanent.
+ */
+export function isNonRetriableError(
+  error: unknown,
+): error is NonRetriableError {
+  return (
+    error instanceof NonRetriableError ||
+    (error instanceof Error && error.name === "NonRetriableError")
+  );
+}
+
+/** See `isNonRetriableError` — same contract, the retry-after half. */
+export function isRetryAfterError(error: unknown): error is RetryAfterError {
+  return (
+    error instanceof RetryAfterError ||
+    (error instanceof Error && error.name === "RetryAfterError")
+  );
 }
 
 /**

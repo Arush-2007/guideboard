@@ -8,7 +8,7 @@ import prisma from "@/lib/db";
  * marker.
  *
  * Both sides live here because they are one contract with two distant callers:
- * the engine's recorder writes (src/inngest/functions.ts) and the executions
+ * the engine's recorder writes (src/execution/node-recorder.ts) and the executions
  * router reads (../server/routers.ts). Splitting them meant the size policy and
  * the storage shape were stated twice.
  *

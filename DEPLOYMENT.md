@@ -207,6 +207,156 @@ re-authorises every integration. Back it up in two places.
 this at **sync** time and refuses to register a function declaring more, so a
 value above the plan limit fails the whole deploy. Raise it only after upgrading.
 
+### The self-hosted worker
+
+Not deployed yet. **No workflow routes to it until a row is deliberately
+flipped** — `Workflow.executionRuntime` is NULL on every existing workflow, and
+NULL means Inngest. The switch itself now exists (see "Moving a workflow
+between runtimes" below); what has not happened yet is any workflow being moved.
+
+The worker is a long-lived container, not a Vercel function: it claims
+`WorkflowJob` rows from Postgres and executes them itself. It must run in
+**AWS us-east-1** next to Neon, for the same reason the app does — it is far
+more query-chatty than the app, so an ocean between it and the database is paid
+on every step. Host: **Fly.io `iad`** to begin with, moving to **AWS ECS
+Fargate** when the stack consolidates on AWS.
+
+⚠️ **Running the worker requires Neon's Launch plan. This is a correctness
+requirement, not a budget preference.**
+
+The worker polls the queue every 250 ms–2 s, reaps every 30 s and reports gauges
+every 60 s, so Neon's compute **never sees the 5 idle minutes autosuspend
+needs** — there is no poll interval that is both a working queue and lets the
+compute sleep. On the Free plan that is not merely more expensive, it is a hard
+stop: 100 CU-hours/project/month is roughly **400 hours against a 730-hour
+month**, so the allowance runs out around **day 16** and Neon **suspends the
+project's compute**. `DATABASE_URL` points at that same project, so the whole
+application loses its database for the rest of the month — with no traffic at
+all, because the worker's own heartbeat spent the budget.
+
+**Set the autoscaling MINIMUM to 0.25 CU.** With autosuspend permanently out of
+reach the bill is `min CU × 730 hours`, so the floor is what you actually pay:
+~$19/month at 0.25 CU against ~$77/month at a 1 CU floor, for identical work.
+
+⚠️ **Pin the replica count and disable autoscaling on whatever host.** Extra
+replicas are safe for correctness — one running job per workflow is guaranteed
+by a database index, not by there being one worker — but each multiplies
+connections against Neon's ceiling.
+
+It refuses to start without real values for the first two
+(`assertWorkerConfig`, `src/worker/config.ts`):
+
+```
+DATABASE_URL              same database, but append
+                          ?connection_limit=10&pool_timeout=20
+                          and NOT pgbouncer=true
+ENCRYPTION_KEY            the same value the app uses — see the warning above
+```
+
+⚠️ **Three more are NOT asserted and the worker degrades silently without each.
+Set all three.** Nothing crashes; the worker simply stops doing things you
+would assume it does:
+
+```
+NODE_ENV=production       Without it: Sentry is initialised DISABLED
+                          (`enabled: NODE_ENV === "production"`) AND
+                          `logger.error` skips `captureException` on its own
+                          production gate — so every reaper error, poison job
+                          and thrown run is console-only, and calling
+                          initSentry() before the boot check achieves nothing.
+                          It ALSO halves the retry budget: `enqueueWorkflowJob`
+                          defaults `maxAttempts` from `resolveWorkflowRetries()`,
+                          which reads NODE_ENV, so fan-out links the worker
+                          enqueues get dev retries in production.
+RESEND_API_KEY            Without it: a failed run marks the Execution FAILED
+                          and the owner is NEVER TOLD. `sendEmail` throws, and
+                          `settleFailedExecution` catches and logs it — which,
+                          without NODE_ENV above, does not even reach Sentry.
+BETTER_AUTH_URL           Without it: the failure email's link to the run is
+                          malformed, so the alert arrives unactionable.
+```
+
+These are unasserted because `assertWorkerConfig` was scoped to secrets that are
+security-critical, and none of these three is. That reasoning holds for the boot
+check; it does not make them optional in production.
+
+It deliberately does **not** need `BETTER_AUTH_SECRET` or
+`INNGEST_SIGNING_KEY`: it serves no HTTP and signs no cookies, so demanding
+them would be asking an operator to invent secrets for surface that does not
+exist there.
+
+⚠️ **The worker host is production-secret-bearing.** It decrypts every stored
+third-party API key and OAuth token it touches, so its image, its logs and its
+shell access are as sensitive as the app's.
+
+Optional: `WORKER_CONCURRENCY` (default 4) and `WORKER_ID`. Leave `WORKER_ID`
+unset — the default already appends a random suffix to hostname and pid, and
+that suffix is load-bearing: a container restarting with the same hostname would
+otherwise inherit the identity of the worker that just died, while that worker's
+jobs are still leased to it.
+
+`SENTRY_DSN` is worth setting. The worker calls `Sentry.init` itself, because
+`instrumentation.ts` is a Next hook it never runs — without a DSN every worker
+error is console-only.
+
+### Moving a workflow between runtimes
+
+One column decides, per workflow: `Workflow.executionRuntime`. NULL (the
+default, and every existing row) means Inngest; `'WORKER'` means the
+self-hosted worker. It is a Postgres enum, so a typo is rejected rather than
+silently falling back to Inngest.
+
+```sql
+-- Move one workflow onto the worker.
+UPDATE "Workflow" SET "executionRuntime" = 'WORKER' WHERE id = '<workflowId>';
+```
+
+Takes effect on the **next trigger** — there is no deploy and no cache. Runs
+already in flight are unaffected, and a fan-out chain finishes on the runtime it
+started on whatever the column says by then (that pin is a correctness measure,
+not lineage: see `FanOutChain.runtime`).
+
+⚠️ **Do not flip a workflow while one of its runs is executing.** It is safe for
+ordinary runs, but there is no guard, and the fan-out pin only protects chains
+that have already dispatched their first item.
+
+#### Rolling back
+
+```sql
+-- 1. Stop new runs going to the worker.
+UPDATE "Workflow" SET "executionRuntime" = NULL WHERE "executionRuntime" = 'WORKER';
+
+-- 2. Stop runs ALREADY QUEUED. Statement 1 does not do this: a PENDING
+--    WorkflowJob row is still claimed and run by the worker afterwards.
+--    `fanOutChain IS NULL` is load-bearing — cancelling a chain link strands
+--    every remaining item of that fan-out with nothing recording the
+--    truncation, which is worse than letting the chain drain.
+--    `idempotencyKey` is nulled because a cancelled job has no Execution row
+--    beside it, so while the row survives it would be the only thing
+--    deduplicating that key — silently dropping a redelivery Inngest would run.
+--    The payload keeps the original key for forensics.
+UPDATE "WorkflowJob"
+   SET status = 'CANCELLED', "idempotencyKey" = NULL, "updatedAt" = now()
+ WHERE status = 'PENDING' AND payload->'fanOutChain' IS NULL;
+```
+
+**Jobs already RUNNING are deliberately left alone.** They finish on the worker,
+and their `Execution` rows are correct either way — killing them mid-run is what
+the lease and the fencing exist to make survivable, not something to do by hand.
+
+⚠️ **Rollback STOPS queued runs; it does not move them.** A cancelled PENDING
+job has no `Execution` row yet, so that trigger is dropped with no record it
+ever fired. Acceptable while one or two canary workflows are on the worker;
+before any meaningful volume moves, a drain script (read each PENDING job's
+payload, re-send it through Inngest, then cancel the row) should replace
+statement 2 — it is safe to re-send because `Execution`'s unique constraint
+dedups the keyed ones.
+
+Both runtimes write the same rows to the same tables, so there is nothing to
+migrate in either direction and no reconciliation to run. The Inngest functions
+stay registered and `/api/inngest` keeps serving throughout, which is why this
+is a database change rather than a deploy.
+
 ## Releasing a change
 
 `main` is what clients run. Develop on branches; merge only what you are willing
@@ -229,7 +379,7 @@ curl -s -X PUT https://app.<domain>/api/inngest
 Migrate before pushing, never after: the reverse order runs new code against an
 old schema.
 
-Four things are not protected by Vercel's atomic deploys:
+Five things are not protected by Vercel's atomic deploys:
 
 1. **Schema and code ship separately.** Only ever add columns; never drop one in
    the same release that stops using it, or the old deployment breaks mid-swap.
@@ -240,6 +390,12 @@ Four things are not protected by Vercel's atomic deploys:
    Renaming a field in `node-schemas.ts` makes every saved node with the old name
    fail `parseNodeConfig`.
 4. **`ENCRYPTION_KEY`** — see above.
+5. **The worker ships separately from the app.** Once any workflow is routed to
+   it, the worker image is a second deployable that Vercel knows nothing about:
+   the same migrate-before-code rule applies to it, and a release changing the
+   engine has to reach both or the two runtimes execute different code against
+   one database. Its own in-flight runs are covered by graceful shutdown — a
+   `SIGTERM`ed worker stops claiming and finishes what it holds.
 
 ## Known issue: execution latency
 

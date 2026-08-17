@@ -19,7 +19,7 @@ export default defineConfig({
       // `server-only` throws unless imported from an RSC; stub it to a no-op so
       // integration tests can pull in server-side modules reached via the
       // executor registry (blob, media-convert). Mirrors vitest.config.ts.
-      "server-only": path.resolve(__dirname, "./src/test/server-only-stub.ts"),
+      "server-only": path.resolve(__dirname, "./src/lib/server-only-stub.ts"),
     },
   },
 });

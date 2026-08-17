@@ -1,0 +1,30 @@
+{
+  // How the self-hosted worker resolves modules. `npm run worker:dev` passes
+  // this to tsx; nothing else uses it, and `next build` never sees it.
+  //
+  // It exists for ONE mapping. The worker imports the same executors the Next
+  // app does, and three of the modules they reach — `@/lib/email`,
+  // `@/lib/blob`, `@/lib/media-convert` — begin with `import "server-only"`.
+  // That package's main entry THROWS by design: only Next's `react-server`
+  // export condition resolves to the harmless build, and a plain Node process
+  // applies no such condition. So the worker died on import, before its first
+  // log line, with an error about React Server Components.
+  //
+  // ⚠️ The fix is deliberately scoped to this file rather than to the root
+  // tsconfig. Mapping `server-only` globally would switch the guard off for the
+  // Next app too — and that guard is the only thing stopping a credential-
+  // handling module from being pulled into the browser bundle. It is also
+  // deliberately NOT `node --conditions=react-server`, which would fix this in
+  // one flag and silently change the resolution of every other package that
+  // publishes a `react-server` build (React itself, and `@sentry/nextjs`, whose
+  // conditions are already a known trap here).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // `paths` REPLACES rather than merges when extending, so `@/*` has to be
+    // restated. Dropping it silently breaks every `@/` import in the worker.
+    "paths": {
+      "@/*": ["./src/*"],
+      "server-only": ["./src/lib/server-only-stub.ts"]
+    }
+  }
+}

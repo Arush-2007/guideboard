@@ -59,9 +59,16 @@ type RequiredSetting = {
  *
  * ⚠️ Hand-maintained, with no compiler backstop — the hazard CLAUDE.md
  * describes for the partial node registries. The same knowledge also lives in
- * `.env.example` and `DEPLOYMENT.md`, and nothing links the three. Adding a
- * security-critical secret means editing all of them, and forgetting THIS one
- * is exactly the silent-insecure-boot this module exists to prevent.
+ * `.env.example`, `DEPLOYMENT.md` and — since the self-hosted worker —
+ * `assertWorkerConfig` (`src/worker/config.ts`), and nothing links the four.
+ * Adding a security-critical secret means editing all of them, and forgetting
+ * THIS one is exactly the silent-insecure-boot this module exists to prevent.
+ *
+ * The worker's list is a deliberate SUBSET rather than a copy: it serves no HTTP
+ * and signs no cookies, so `BETTER_AUTH_SECRET` and `INNGEST_SIGNING_KEY` would
+ * be secrets invented for surface that does not exist there. It reuses
+ * `missingProductionSettings` below, so the checking is one mechanism even
+ * though the lists differ.
  */
 export function requiredProductionSettings(): RequiredSetting[] {
   return [

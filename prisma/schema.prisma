@@ -349,6 +349,25 @@ enum CredentialType {
   TYPEFORM
 }
 
+// Which engine executes a workflow's runs. See `Workflow.executionRuntime`.
+//
+// An ENUM rather than free text, and that is a safety property rather than
+// tidiness: this single column decides which runtime executes a client's
+// workflow, and it is set by hand during the migration. As `String?`,
+// `SET "executionRuntime" = 'woker'` fell back to Inngest silently — which is
+// indistinguishable from the routing switch not being deployed at all. As an
+// enum, Postgres rejects the typo outright.
+//
+// `INNGEST` is spelled out even though NULL already means Inngest, so a
+// workflow can be PINNED to it deliberately. That distinction is inert today
+// and becomes load-bearing when the default flips to the worker: "never
+// migrated" and "migrated, then rolled back, leave it alone" are different
+// facts, and only one of them should move when the default changes.
+enum ExecutionRuntime {
+  INNGEST
+  WORKER
+}
+
 model Workflow {
   id String @id @default(cuid())
   name String
@@ -362,9 +381,38 @@ model Workflow {
   // and one click from fixed. Cleared by `workflows.update`.
   pendingFirstSave Boolean @default(false)
 
+  // Which runtime executes this workflow's runs. NULL means Inngest — the
+  // historical path, and the default for every row that predates the
+  // self-hosted worker — so an unset column can never silently move a live
+  // workflow onto new machinery.
+  //
+  // Read by `resolveExecutionRuntime` (src/inngest/utils.ts), which backs
+  // `sendWorkflowExecution` — the single enqueue seam for every trigger,
+  // poller, rerun and fan-out link. Nothing else reads it, and no application
+  // code writes it: it is set by hand while workflows are migrated.
+  //
+  // ⚠️ ONE EXCEPTION to "the column decides", and it is a correctness one: a
+  // fan-out chain already in flight ignores this column and finishes on the
+  // runtime that started it (`FanOutChain.runtime`). The two runtimes enforce
+  // "one run of a workflow at a time" through mechanisms that cannot see each
+  // other — a partial unique index here, Inngest's `concurrency` key there — so
+  // a chain split across both would run two items at once and shuffle the item
+  // order the chain exists to preserve.
+  //
+  // Rolling a workflow back is one UPDATE to this column: both runtimes write
+  // the same rows to the same tables, so there is nothing to migrate in either
+  // direction. It stops NEW runs only — already-queued `WorkflowJob` rows are
+  // still claimed, and DEPLOYMENT.md carries the full rollback runbook.
+  //
+  // Deliberately per-WORKFLOW rather than per-user or per-env: a workflow is
+  // what a client owns and what has a known node mix, so it is the unit whose
+  // blast radius can actually be reasoned about.
+  executionRuntime ExecutionRuntime?
+
   nodes Node[]
   connections Connection[]
   executions Execution[]
+  jobs WorkflowJob[]
   youtubeCommentPolls YoutubeCommentPoll[]
   gmailPolls GmailPoll[]
   googleSheetsPolls GoogleSheetsPoll[]
@@ -535,6 +583,7 @@ model Execution {
   nodeExecutions     NodeExecution[]
   fanOutSources      FanOutSource[]
   nodeInputSnapshots NodeInputSnapshot[]
+  stepResults        StepResult[]
 
   @@unique([workflowId, idempotencyKey])
   @@index([workflowId, startedAt])
@@ -597,9 +646,22 @@ model FanOutItem {
 // deleted while executions persist 30 days, and a cascade FK would erase
 // history. Cascade from Execution means pruneOldExecutions cleans these up.
 //
-// Intentionally NO @@unique([executionId, nodeId]): retry idempotency comes from
-// stable per-node Inngest step ids, and a unique constraint would block Tier 2
-// loops / branch re-entry (a node running more than once per run).
+// This block used to say the opposite of the model below it — "intentionally NO
+// @@unique([executionId, nodeId])" directly above a model that HAS that
+// constraint (see it at the bottom, with its own correct explanation). Worth
+// naming rather than deleting, because the claim it made was a spec: it said
+// retry idempotency came from "stable per-node Inngest step ids". It does not,
+// and increasingly will not. Idempotency has two independent sources now:
+//
+//   * the constraint below, which is what stops a retried segment accumulating
+//     duplicate rows, and
+//   * `StepResult` (keyed `(executionId, stepId)`), which is what stops a
+//     completed step re-executing — the self-hosted runtime's replacement for
+//     Inngest's step memoization, and the same guarantee whichever runtime runs.
+//
+// The loops caveat survives intact and is restated below: three tables now
+// encode "a node runs at most once per execution", and a loops feature has to
+// change all of them together.
 model NodeExecution {
   id          String    @id @default(cuid())
   executionId String
@@ -635,8 +697,11 @@ model NodeExecution {
   //
   // Deliberately NOT keyed on `sequence`: a node runs at most once per
   // execution today, which is what makes (executionId, nodeId) the natural
-  // identity. A future loops feature would have to add it here AND to
-  // `NodeInputSnapshot`, which is keyed on the same pair.
+  // identity. A future loops feature would have to add it here, to
+  // `NodeInputSnapshot` (keyed on the same pair) AND to `StepResult`, whose
+  // `(executionId, stepId)` key encodes the same assumption one layer down —
+  // and whose violation is the silent one, since a second pass through a node
+  // would be served the first pass's stored values instead of executing.
   @@unique([executionId, nodeId])
   @@index([executionId, sequence])
   // On-demand canvas failure lookup: latest FAILED run for a given node
@@ -676,4 +741,155 @@ model NodeInputSnapshot {
   createdAt DateTime @default(now())
 
   @@id([executionId, nodeId])
+}
+
+// ─── Self-hosted execution runtime ──────────────────────────────────────────
+//
+// The queue and the durable-step store that let a long-lived worker process run
+// workflows without Inngest. Both are inert until `Workflow.executionRuntime` is
+// set; see plans/PART1-QUEUE-AND-WORKER.md for the full design.
+
+enum JobStatus {
+  PENDING
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+// One queued workflow run. Replaces the Inngest event as the thing that says
+// "this workflow should execute, with this payload".
+//
+// ⚠️ The per-workflow concurrency guarantee is NOT in this file. It is a PARTIAL
+// UNIQUE INDEX — `("workflowId") WHERE status = 'RUNNING'` — added by hand in the
+// migration that creates this model, because Prisma's DSL cannot express a
+// partial index and will not drift-detect it. It is what replaces Inngest's
+// `concurrency: { key: "event.data.workflowId", limit: 1 }`, and it has to be a
+// row constraint rather than an advisory lock: `pg_advisory_lock` is
+// session-scoped, and PgBouncer in transaction mode hands the session to another
+// client between statements, so on Neon's pooled endpoint a session lock is
+// neither reliably held nor releasable.
+model WorkflowJob {
+  id String @id @default(cuid())
+
+  workflowId String
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  // Exactly `SendWorkflowExecutionInput` minus workflowId — initialData,
+  // initialDataSnapshot, idempotencyKey, replayFromNodeId, replayOfExecutionId,
+  // fanOutChain. One JSON column on purpose: the enqueue seam's shape IS the
+  // queue's shape, so the two cannot drift as that input type grows.
+  payload Json
+
+  // Mirrors `Execution.idempotencyKey`. An OPTIMIZATION only — it drops a
+  // duplicate before it costs a claim. The actual guarantee remains Execution's
+  // own @@unique([workflowId, idempotencyKey]), which the worker re-checks
+  // before creating anything, and which survives this row being pruned.
+  idempotencyKey String?
+
+  status JobStatus @default(PENDING)
+
+  // When this job becomes claimable. Carries both retry backoff and any future
+  // delayed scheduling.
+  runAt DateTime @default(now())
+
+  // Incremented on CLAIM, not on failure, so a job that reliably kills its
+  // worker (an OOM, a native crash) still terminates instead of looping.
+  attempt Int @default(0)
+
+  // Lease losses — a reclaim after the worker died, was fenced, or was
+  // redeployed mid-run. Counted SEPARATELY from `attempt` because they are
+  // infrastructure noise, not failures: a rolling deploy would otherwise burn a
+  // real attempt. The first `MAX_FREE_RECLAIMS` refund the attempt they cost;
+  // past that they stop refunding, which is what preserves the poison-job
+  // property above. Also the number that says the worker host is unhealthy,
+  // which nothing else surfaces.
+  reclaims Int @default(0)
+
+  maxAttempts Int
+
+  // Lease, not a held transaction: a run can take minutes, and holding a
+  // transaction open that long against a pooled endpoint is not viable. The
+  // worker claims in a short transaction, then heartbeats `leaseExpiresAt`.
+  // A heartbeat that updates ZERO rows means this worker has been fenced and
+  // must abort at the next step boundary — without that, reclaim runs one
+  // execution on two workers and double-writes a client's spreadsheet.
+  lockedBy String?
+  leaseExpiresAt DateTime?
+
+  // Set once the run's row exists, so a failure BEFORE that point still has
+  // somewhere to be recorded. Inngest's onFailure updates by `inngestEventId`
+  // and therefore cannot report a pre-row failure at all.
+  executionId String? @unique
+
+  lastError String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([workflowId, idempotencyKey])
+  @@index([status, runAt])
+  @@index([workflowId, status])
+  // For `readQueueGauges`' `failedInWindow`, which counts FAILED jobs whose
+  // `updatedAt` falls inside a rolling window. Without it that aggregate reads
+  // EVERY failed row and filters in the heap — and FAILED is the one status the
+  // gauge query does not exclude, bounded only by retention (`pruneWorkflowJobs`
+  // deletes FAILED at 29 days), so it accumulates far past what is queued now.
+  // That same index serves the retention DELETE's own status/updatedAt predicate.
+  //
+  // ⚠️ Not micro-optimization: a long-lived worker runs that query every 60
+  // seconds forever, on the deliberately tiny control-plane pool the heartbeat
+  // depends on. An O(all failures ever) scan there is how a metrics line
+  // becomes the thing that starves the fence.
+  @@index([status, updatedAt])
+}
+
+// One memoized `step.run` / `step.ai.wrap` result — the durable-step store that
+// replaces Inngest's memoization. A completed step never executes twice, which
+// is what keeps a resumed run from re-sending an email or re-appending a row.
+//
+// This is load-bearing for correctness, not performance. Google Sheets writes
+// split a plan step from a write step precisely so the plan can be replayed
+// instead of re-derived: re-reading `nextFreeSheetRow` after the write landed
+// points one row lower and appends a DUPLICATE. See CHECKPOINTED_NODE_TYPES in
+// src/config/node-kinds.ts.
+//
+// Cascades from Execution, so `pruneOldExecutions` already collects these with
+// no new GC wiring — the same property NodeInputSnapshot and FanOutSource have.
+model StepResult {
+  executionId String
+  execution Execution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  // "<nodeId>:<the executor's own step id>[#n]".
+  //
+  // ⚠️ The `nodeId` prefix is REQUIRED, not tidiness. Executors use fixed literal
+  // step ids — "get-credential" appears in four AI executors, and "http-request",
+  // "condition", "switch", "slack-webhook" are each a single literal — so two
+  // nodes of the same type in one workflow collide on the bare id, and the second
+  // would be served the first's stored value. That is a wrong-result bug which
+  // looks exactly like memoization working.
+  //
+  // Inngest masks this today by auto-indexing collisions per RUN, in execution
+  // order (see its AUTOMATIC_PARALLEL_INDEXING warning). Keying by NODE instead
+  // is deliberately different and strictly more stable: an id here does not
+  // renumber when an unrelated node using the same literal is added upstream.
+  // The optional `#n` suffix handles a single node calling one id twice.
+  stepId String
+
+  // The JSON round-tripped return value. Round-tripped on the WRITE path too,
+  // not only on read: Inngest's step.run returns `Jsonify<T>`, so a Date is
+  // already a string by the time an executor sees it. Returning the raw value on
+  // first execution and a parsed one on resume would make behaviour differ only
+  // after a crash — green in every test, wrong only in production.
+  value Json
+
+  createdAt DateTime @default(now())
+
+  // ⚠️ NO iteration counter, so this encodes "a node runs at most once per
+  // execution" — the same constraint NodeExecution and NodeInputSnapshot carry
+  // (see the note on NodeExecution's @@unique). A Tier 2 loops feature must add
+  // `sequence` to ALL THREE, and this is the dangerous member of the set: the
+  // other two produce a visibly wrong row, while a memoized step in iteration 2
+  // would SILENTLY return iteration 1's value.
+  @@id([executionId, stepId])
 }

@@ -1,12 +1,15 @@
 import type { Realtime } from "@inngest/realtime";
 import { NonRetriableError } from "inngest";
 import { requiresCheckpoint, TRIGGER_NODE_TYPES } from "@/config/node-kinds";
+// Lives in `src/execution/` rather than `src/worker/` precisely so the shared
+// engine can name this condition without importing a runtime-specific module.
+import { isFencedError } from "@/execution/fenced-error";
+import { createPassthroughStep } from "@/execution/passthrough-step";
 import { getExecutor } from "@/features/executions/lib/executor-registry";
 import {
   type ExecutorStep,
   isFanOut,
   isRouted,
-  type StepTools,
   type WorkflowContext,
 } from "@/features/executions/types";
 import type { NodeType } from "@/generated/prisma";
@@ -281,44 +284,19 @@ export const MAX_SEGMENT_NODES = Math.min(
  * `step.run` JSON-round-trips the context on the way out. Only inline-safe types
  * see this shim, and none of them put non-JSON values into the context.
  *
- * ⚠️ The cast also means the type system checks nothing here. `ExecutorStep` is
- * `Pick<StepTools, "run" | "ai">`, and `ai` carries `infer` and `models` as well
- * as `wrap` — so an executor reaching for one of those compiles cleanly and
- * would hit `undefined is not a function` the first time it landed in a batch.
- * They are implemented rather than omitted for that reason; `infer` throws a
- * legible error instead of pretending, because it asks the PLATFORM to perform
- * the inference and there is nothing to run inline.
+ * The shim itself is `createPassthroughStep`, shared with `runExecution`'s
+ * run-level step and with `createWorkerStep`'s non-memoizing members — see that
+ * module for why one definition matters when the cast checks nothing.
+ *
+ * The `infer` message is this site's: unreachable today, because every AI node
+ * is checkpointed and all five use `wrap`. If that ever changes, it names the
+ * fix rather than throwing a bare TypeError.
  */
-const inlineStep = {
-  // Trailing input is forwarded, matching `flushingStep` and real `step.run`.
-  // Dropping it would hand an executor `undefined` for arguments it declared,
-  // and only when its node happened to be batched — a failure that appears in
-  // the hardest place to attribute it.
-  run: async (
-    _id: string,
-    fn: (...input: unknown[]) => unknown,
-    ...input: unknown[]
-  ) => fn(...input),
-  ai: {
-    wrap: async (
-      _id: string,
-      fn: (...args: unknown[]) => unknown,
-      ...args: unknown[]
-    ) => fn(...args),
-    // Unreachable today — every AI node is checkpointed, and all five use
-    // `wrap`. If that ever changes, fail with an actionable message rather than
-    // a TypeError from a missing method.
-    infer: async () => {
-      throw new NonRetriableError(
-        "step.ai.infer() cannot run inside a batched segment — it is executed " +
-          "by the Inngest platform, not by this process. Mark the node type " +
-          "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",
-      );
-    },
-    // Pure model descriptors, no execution — safe to pass through untouched.
-    models: {},
-  },
-} as unknown as ExecutorStep;
+const inlineStep = createPassthroughStep(
+  "step.ai.infer() cannot run inside a batched segment — it is executed " +
+    "by the Inngest platform, not by this process. Mark the node type " +
+    "`true` in CHECKPOINTED_NODE_TYPES (src/config/node-kinds.ts).",
+);
 
 /**
  * Wraps the real step so every callback flushes buffered node records first.
@@ -416,9 +394,30 @@ function planSegments(
 }
 
 /**
+ * The step the engine itself needs — `ExecutorStep`, plus an OPTIONAL way to
+ * ask for a step scoped to one node.
+ *
+ * This is the seam between the two runtimes, and the optionality is the whole
+ * point. Inngest's `StepTools` has no `forNode` and cannot grow one, so the
+ * engine must be able to run without it; the self-hosted worker's `WorkerStep`
+ * supplies it, and that is what stops two nodes of the same type colliding on a
+ * shared step literal like `"get-credential"` (see `worker-step.ts`). Optional
+ * beats a second `stepForNode` parameter because there is one step object here,
+ * not two, and the absence is a true statement about Inngest rather than a
+ * caller obligation somebody can forget.
+ *
+ * Narrowed from `StepTools` at the same time: the engine only ever used `run`
+ * and `ai`, and the worker's step is an `ExecutorStep`, so the wider type would
+ * have forced a cast at the worker's call site for nothing.
+ */
+export type EngineStep = ExecutorStep & {
+  forNode?: (nodeId: string) => ExecutorStep;
+};
+
+/**
  * Runs a workflow's nodes sequentially, threading the `context` object from one
  * node's output into the next node's input. This is the core of the execution
- * engine; `executeWorkflow` (src/inngest/functions.ts) wraps it with the
+ * engine; `runExecution` (src/execution/run-execution.ts) wraps it with the
  * Execution-row bookkeeping, while integration tests drive it directly with a
  * shimmed `step`/`publish` to exercise the real executors end to end.
  *
@@ -469,7 +468,7 @@ export async function runWorkflowNodes({
   /** Execution row id, threaded to executors for deterministic resource keys. */
   executionId: string;
   initialData?: WorkflowContext;
-  step: StepTools;
+  step: EngineStep;
   publish: Realtime.PublishFn;
   recorder?: NodeRecorder;
   fanOutDispatcher?: FanOutDispatcher;
@@ -770,6 +769,40 @@ export async function runWorkflowNodes({
 
       context = after;
     } catch (error) {
+      // A fence is NOT this node failing, and must not be recorded as one.
+      //
+      // Being fenced means another worker now owns this execution (see
+      // `FencedError`). Pushing a FAILED record here writes "this node failed"
+      // into a run somebody else is at that moment executing successfully. It
+      // is mostly self-healing — `createPrismaNodeRecorder` treats a FAILED row
+      // as stale and a later SUCCESS supersedes it — but it costs two things
+      // that are not worth a record nobody asked for. The narrow one: if the new
+      // owner succeeds this node BEFORE this process finishes unwinding, the
+      // FAILED record supersedes the SUCCESS permanently. The frequent one: a
+      // run that later fails at some OTHER node can have its alert email name
+      // this node instead, carrying an internal lease-reclaimed message the
+      // user cannot act on.
+      //
+      // ⚠️ A FENCED WORKER WRITES NOTHING — not the failure, and not the
+      // buffered successes either. It must return before the flush below.
+      //
+      // Being fenced means another worker owns this execution now, so the only
+      // safe act is to stop touching its rows. Recording the node as FAILED
+      // would put "this node failed" into a run somebody else is at that moment
+      // finishing successfully.
+      //
+      // Flushing the buffered SUCCESSES is not the harmless half it looks like.
+      // `createPrismaNodeRecorder.flush` opens with a `deleteMany` clearing any
+      // FAILED row for the node ids in its batch — correct when an attempt
+      // supersedes its own earlier failure, catastrophic here: the new owner may
+      // already have re-run one of those nodes and recorded a legitimate
+      // failure, and this flush would delete it and reinstate SUCCESS. Its run
+      // would then end FAILED with no failed node anywhere, so
+      // `resolveFailureCause` prepends "cause unknown" and the alert email can
+      // name nothing. Nothing is lost by staying silent: the new owner re-runs
+      // from the durable step results and records every node itself.
+      if (isFencedError(error)) throw error;
+
       pending.push({
         ...base,
         input: before,
@@ -810,10 +843,19 @@ export async function runWorkflowNodes({
       // callback runs exactly once and is memoized thereafter, so every buffered
       // row is written once, at no extra step. Flushing BEFORE the callback's own
       // work means a node that throws still persists its predecessors.
+      //
+      // `forNode` FIRST, then the flush wrapper: this is the only place a node
+      // receives a step that persists anything, so it is the only place that
+      // needs its ids namespaced under the node. The other two step sites
+      // deliberately do not — `nodes:i-j` below is run-level and already unique
+      // by topological position, and a batched segment's nodes get `inlineStep`,
+      // which persists nothing at all. `?? step` because Inngest has no
+      // `forNode`; on that runtime this line is exactly what it was.
+      const nodeStep = step.forNode?.(sortedNodes[segment.start].id) ?? step;
       await runNode(
         sortedNodes[segment.start],
         segment.start,
-        flushingStep(step, flushPending),
+        flushingStep(nodeStep, flushPending),
         false,
       );
       continue;
