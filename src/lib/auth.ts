@@ -3,16 +3,13 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import prisma from "@/lib/db";
 import { emailTemplate, sendEmail } from "@/lib/email";
 import { encrypt } from "@/lib/encryption";
-import { env } from "@/lib/env";
+import { socialProviderCredentials } from "@/lib/social-providers";
 import { trustedOrigins } from "@/lib/trusted-origins";
 
-// Through `env(...)`, so an unedited .env.example placeholder reads as absent
-// and the provider is simply not registered — rather than being registered with
-// a credential that fails at the OAuth redirect.
-const githubClientId = env(process.env.GITHUB_CLIENT_ID);
-const githubClientSecret = env(process.env.GITHUB_CLIENT_SECRET);
-const googleClientId = env(process.env.GOOGLE_CLIENT_ID);
-const googleClientSecret = env(process.env.GOOGLE_CLIENT_SECRET);
+// Which providers are configured is decided in one place, shared with the
+// sign-in buttons, so a button can never be offered for a provider this file
+// declines to register. See `src/lib/social-providers.ts`.
+const socialCredentials = socialProviderCredentials();
 
 async function syncGoogleCredentialFromAccountTable(userId: string) {
   const account = await prisma.account.findFirst({
@@ -144,19 +141,11 @@ export const auth = betterAuth({
     },
   },
   socialProviders: {
-    ...(githubClientId && githubClientSecret
-      ? {
-          github: {
-            clientId: githubClientId,
-            clientSecret: githubClientSecret,
-          },
-        }
-      : {}),
-    ...(googleClientId && googleClientSecret
+    ...(socialCredentials.github ? { github: socialCredentials.github } : {}),
+    ...(socialCredentials.google
       ? {
           google: {
-            clientId: googleClientId,
-            clientSecret: googleClientSecret,
+            ...socialCredentials.google,
             scope: [
               "openid",
               "email",
