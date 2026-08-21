@@ -146,6 +146,10 @@ raw copy produces workflows that look correct and silently never fire.
   executing* when exhausted rather than billing you)
 - Neon → confirm history retention, and upgrade to Launch for point-in-time
   restore before real client data accumulates
+- Neon → **usage alert on compute hours.** Exhausting the allowance does not
+  throttle, it *suspends the project's compute*: every query fails with
+  `exceeded the compute time quota` and the whole app — sign-in included —
+  is down until the quota resets. This has already happened once.
 - Uptime monitor on `https://app.<domain>`
 
 ## Loose ends
@@ -153,9 +157,12 @@ raw copy produces workflows that look correct and silently never fire.
 - [ ] **Rotate the Inngest signing key** — the current one was exposed in a chat
       transcript. Manage → Signing Key → Rotate; the Vercel integration pushes
       the new value automatically.
-- [ ] Confirm both `poll-triggers` and `poll-schedules` show `*/5 * * * *` in
-      Inngest. If `poll-schedules` shows `* * * * *`, `SCHEDULE_POLL_CRON` is not
-      taking effect and ~43,000 executions/month are being burned on empty ticks.
+- [ ] Confirm both `poll-triggers` and `poll-schedules` show the SAME cron in
+      Inngest (`*/15 * * * *` by default, or whatever `POLL_CRON` is set to). If
+      they differ, their wake-ups interleave and the database compute never gets
+      the idle window it needs to suspend — see `src/inngest/poll-cron.ts`.
+- [ ] Delete the obsolete `SCHEDULE_POLL_CRON` variable from Vercel. It is no
+      longer read; `POLL_CRON` replaced it and drives both pollers.
 - [ ] Remove the temporary tRPC timing instrumentation in `src/trpc/init.ts`
       once its numbers have been read.
 - [ ] Delete the old Singapore Neon project.
@@ -176,7 +183,7 @@ NEXT_PUBLIC_APP_URL       https://app.<domain>
 INNGEST_APP_ID            workflow-automation-app
 INNGEST_EVENT_KEY         provisioned by the Inngest Vercel integration
 INNGEST_SIGNING_KEY       provisioned by the Inngest Vercel integration
-SCHEDULE_POLL_CRON        */5 * * * *
+POLL_CRON                 */15 * * * * (drives BOTH pollers; see poll-cron.ts)
 GOOGLE_CLIENT_ID
 GOOGLE_CLIENT_SECRET
 RESEND_API_KEY

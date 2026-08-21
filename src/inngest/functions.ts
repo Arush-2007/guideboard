@@ -21,6 +21,7 @@ import { fetchNewYoutubeComments } from "@/lib/youtube-comments";
 import { pruneWorkflowJobs } from "@/queue/jobs";
 import { inngest } from "./client";
 import type { FanOutChain } from "./fan-out";
+import { POLL_CRON } from "./poll-cron";
 import { resolveWorkflowRetries } from "./retry-policy";
 import { processSchedulePoll } from "./schedule-poll";
 import {
@@ -189,7 +190,7 @@ const TRIGGER_POLL_SOURCES = [
 
 export const pollTriggers = inngest.createFunction(
   { id: "poll-triggers", retries: 1 },
-  { cron: "*/5 * * * *" },
+  { cron: POLL_CRON },
   async ({ step }) => {
     const { events, failed } = await step.run("fetch-poll-ids", async () => {
       // `allSettled`, not `all`: sharing one step means one rejection would
@@ -705,32 +706,13 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
   },
 );
 
-// How often to look for due schedules. Deployment-configurable because this
-// tick is billed whether or not anything is due: an installation with no
-// SCHEDULE_TRIGGER workflows pays ~43k empty executions a month at the default.
-//
-// The default stays every-minute so minute-grained crons fire on time out of
-// the box. A deployment whose schedules are coarse — or absent — sets
-// SCHEDULE_POLL_CRON="*/5 * * * *" and pays a fifth of that. Note this interval
-// caps granularity: a schedule can only fire as precisely as the poll that
-// finds it.
-//
-// `?.trim() ||`, not `??`: setting an env var to an empty value is the ordinary
-// way to unset one, and `??` only falls back on undefined — so "" (or "  ")
-// would reach createFunction as an invalid cron. That doesn't just break
-// schedules: every function is registered through the single serve() handler in
-// app/api/inngest/route.ts, so one bad cron takes executeWorkflow and every
-// other poller down with it.
-const SCHEDULE_POLL_CRON =
-  process.env.SCHEDULE_POLL_CRON?.trim() || "* * * * *";
-
 // Dispatcher: scans for SchedulePoll rows whose `nextRunAt` is due (indexed on
 // `nextRunAt`, so this is O(due) not O(all)) and fans out one
 // `polls/schedule.check` event per row. Per-poll work (dispatch + advance)
 // lives in `handleSchedulePoll`.
 export const pollSchedules = inngest.createFunction(
   { id: "poll-schedules", retries: 1 },
-  { cron: SCHEDULE_POLL_CRON },
+  { cron: POLL_CRON },
   async ({ step }) => {
     const polls = await step.run("fetch-due-schedule-poll-ids", async () => {
       return prisma.schedulePoll.findMany({

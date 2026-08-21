@@ -1,7 +1,6 @@
 "use client";
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useForm } from "react-hook-form";
@@ -24,8 +23,9 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { INTEGRATIONS } from "@/config/integrations";
 import { authClient } from "@/lib/auth-client";
+import type { SocialProvider } from "@/lib/social-providers";
+import { SocialSignIn } from "./social-sign-in";
 
 const loginSchema = z.object({
   email: z.email("Please enter a valid email address"),
@@ -34,7 +34,7 @@ const loginSchema = z.object({
 
 type LoginFormValues = z.infer<typeof loginSchema>;
 
-export function LoginForm() {
+export function LoginForm({ providers }: { providers: SocialProvider[] }) {
   const router = useRouter();
 
   const form = useForm<LoginFormValues>({
@@ -44,38 +44,6 @@ export function LoginForm() {
       password: "",
     },
   });
-
-  const signInGithub = async () => {
-    await authClient.signIn.social(
-      {
-        provider: "github",
-      },
-      {
-        onSuccess: () => {
-          router.push("/");
-        },
-        onError: () => {
-          toast.error("Something went wrong");
-        },
-      },
-    );
-  };
-
-  const signInGoogle = async () => {
-    await authClient.signIn.social(
-      {
-        provider: "google",
-      },
-      {
-        onSuccess: () => {
-          router.push("/");
-        },
-        onError: () => {
-          toast.error("Something went wrong");
-        },
-      },
-    );
-  };
 
   const onSubmit = async (values: LoginFormValues) => {
     await authClient.signIn.email(
@@ -112,40 +80,7 @@ export function LoginForm() {
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)}>
               <div className="grid gap-6">
-                <div className="flex flex-col gap-3">
-                  <Button
-                    onClick={signInGithub}
-                    variant="outline"
-                    className="h-10 w-full rounded-xl"
-                    type="button"
-                    disabled={isPending}
-                  >
-                    <Image
-                      alt={INTEGRATIONS.github.label}
-                      src={INTEGRATIONS.github.icon}
-                      width={20}
-                      height={20}
-                      unoptimized
-                    />
-                    Continue with GitHub
-                  </Button>
-                  <Button
-                    onClick={signInGoogle}
-                    variant="outline"
-                    className="h-10 w-full rounded-xl"
-                    type="button"
-                    disabled={isPending}
-                  >
-                    <Image
-                      alt={INTEGRATIONS.google.label}
-                      src={INTEGRATIONS.google.icon}
-                      width={20}
-                      height={20}
-                      unoptimized
-                    />
-                    Continue with Google
-                  </Button>
-                </div>
+                <SocialSignIn providers={providers} disabled={isPending} />
                 <div className="grid gap-5">
                   <FormField
                     control={form.control}
