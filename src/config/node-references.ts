@@ -70,6 +70,41 @@ export function isRefCheckedNodeType(type: string | null | undefined): boolean {
 }
 
 /**
+ * Node types that nest EVERYTHING they publish under a single key.
+ *
+ * The THIRD Code-node entry in this file, and like the other two it answers its
+ * own question. `UNCHECKED_NODE_TYPES` asks whether to badge the Code node's own
+ * config; this one asks what is valid in a reference pointing AT a Code node
+ * from somewhere else.
+ *
+ * The shape a Code node returns is arbitrary — no registry can know whether
+ * `result.total` exists. But the wrapper is not arbitrary: the executor writes
+ * `{ result }` and nothing else, so a reference whose first segment is not
+ * `result` is wrong no matter what the code does. That one knowable fact is
+ * enough, and it is worth checking: an entire workflow's Code outputs rendered
+ * blank because every consumer said `@<CODE_1.total>@` where the value lives at
+ * `@<CODE_1.result.total>@`, and nothing flagged it — `isOfferedPath` waves
+ * through any path under a reachable root, deliberately, because the output
+ * registry is curated rather than exhaustive.
+ *
+ * Add a type here only when its executor genuinely publishes ONE key. Getting
+ * that wrong turns working references amber.
+ */
+const nodeSingleOutputKey: Partial<Record<NodeType, string>> = {
+  [NodeType.CODE]: "result",
+};
+
+/**
+ * The single key this node type nests its output under, or undefined when it
+ * publishes a normal flat set of fields (nearly everything).
+ */
+export function singleOutputKeyForType(
+  type: string | null | undefined,
+): string | undefined {
+  return type ? nodeSingleOutputKey[type as NodeType] : undefined;
+}
+
+/**
  * Node types whose context reads CANNOT be enumerated from `@<path>@` tokens.
  *
  * Deliberately a separate set from `UNCHECKED_NODE_TYPES`, even though both

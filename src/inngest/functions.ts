@@ -641,6 +641,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
             },
             idempotencyKey: sheetsHeadingIdempotencyKey({
               spreadsheetId: poll.spreadsheetId,
+              sheetName: poll.sheetName,
               rowIndex: change.rowIndex,
               pollToken,
             }),
@@ -669,6 +670,7 @@ export const handleGoogleSheetsPoll = inngest.createFunction(
           },
           idempotencyKey: sheetsPollIdempotencyKey({
             spreadsheetId: poll.spreadsheetId,
+            sheetName: poll.sheetName,
             rowIndex,
             changeType,
             row,
