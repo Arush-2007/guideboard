@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   describeCompareOptions,
   evaluateCondition,
+  supportsCaseOption,
+  supportsCharOption,
   supportsNumericOption,
-  supportsTextOptions,
 } from "./compare";
 
 describe("evaluateCondition", () => {
@@ -132,14 +133,92 @@ describe("evaluateCondition", () => {
     });
   });
 
+  describe("numeric comparison of formatted values", () => {
+    // The bug this covers: every numeric path parsed the RAW operand, so a
+    // money cell answered false for any operator under any options.
+    const chars = { ignoreChars: "₹," };
+
+    it("orders currency-formatted amounts once the symbols are neglected", () => {
+      expect(
+        evaluateCondition("greater_than", "₹18,400.00", "₹13,500.00", chars),
+      ).toBe(true);
+      expect(
+        evaluateCondition("less_than", "₹13,500.00", "₹18,400.00", chars),
+      ).toBe(true);
+      expect(
+        evaluateCondition("greater_than", "₹13,500.00", "₹18,400.00", chars),
+      ).toBe(false);
+    });
+
+    it("equates a formatted zero with a bare zero", () => {
+      expect(
+        evaluateCondition("equals", "₹0.00", "0", { numeric: true, ...chars }),
+      ).toBe(true);
+    });
+
+    it("still refuses to order what is not a number after neglecting", () => {
+      expect(evaluateCondition("greater_than", "N/A", "5", chars)).toBe(false);
+      expect(evaluateCondition("greater_than", "", "5", chars)).toBe(false);
+    });
+
+    it("never lets ignoreChars change the VALUE of a number", () => {
+      // Nothing clears the options when a condition's operator changes, so the
+      // documented text example ("- ", for "RJ-09 AB") can land on the numeric
+      // path. Stripping the sign there would invert the answer.
+      const opts = { ignoreChars: "- " };
+      expect(evaluateCondition("greater_than", "-5", "3", opts)).toBe(false);
+      expect(evaluateCondition("less_than", "-5", "3", opts)).toBe(true);
+      // A decimal point is equally load-bearing: "18.5" must not become 185.
+      expect(
+        evaluateCondition("greater_than", "18.5", "100", { ignoreChars: "." }),
+      ).toBe(false);
+      // The non-significant characters in the same list still get stripped.
+      expect(evaluateCondition("greater_than", "- 18 400", "13500", opts)).toBe(
+        false,
+      );
+    });
+
+    it("does not case-fold on the numeric path", () => {
+      // ignoreCase can only break a parseable token, never fix one, and the
+      // run-detail summary already reports case as inert on ordering.
+      expect(
+        evaluateCondition("greater_than", "Infinity", "3", {
+          ignoreCase: true,
+        }),
+      ).toBe(true);
+    });
+
+    it("is unchanged when no options are set", () => {
+      // Without opting in, a formatted cell is still not a number — exact by
+      // default is the existing contract, and this must not silently change.
+      expect(
+        evaluateCondition("greater_than", "₹18,400.00", "₹13,500.00", {}),
+      ).toBe(false);
+      expect(evaluateCondition("greater_than", "18400", "13500", {})).toBe(
+        true,
+      );
+    });
+  });
+
   describe("option gating + description helpers", () => {
     it("gates options to the operators where they apply", () => {
-      expect(supportsTextOptions("equals")).toBe(true);
-      expect(supportsTextOptions("contains")).toBe(true);
-      expect(supportsTextOptions("greater_than")).toBe(false);
-      expect(supportsTextOptions("is_empty")).toBe(false);
+      expect(supportsCaseOption("equals")).toBe(true);
+      expect(supportsCaseOption("contains")).toBe(true);
+      // Case is meaningless once both sides are parsed as numbers.
+      expect(supportsCaseOption("greater_than")).toBe(false);
+      expect(supportsCaseOption("is_empty")).toBe(false);
+
+      // Character-neglect DOES apply to ordering — it is what makes a
+      // currency-formatted cell parse at all.
+      expect(supportsCharOption("greater_than")).toBe(true);
+      expect(supportsCharOption("less_than")).toBe(true);
+      expect(supportsCharOption("equals")).toBe(true);
+      expect(supportsCharOption("is_empty")).toBe(false);
+
       expect(supportsNumericOption("equals")).toBe(true);
       expect(supportsNumericOption("contains")).toBe(false);
+      // Ordering is always numeric, so the toggle would be a no-op.
+      expect(supportsNumericOption("greater_than")).toBe(false);
     });
 
     it("describes only the active options, empty when none", () => {
@@ -164,8 +243,11 @@ describe("evaluateCondition", () => {
       expect(describeCompareOptions(all, "contains")).toBe(
         'case-insensitive · ignoring "- "',
       );
-      // ordering / emptiness / row-selection operators apply none of them.
-      expect(describeCompareOptions(all, "greater_than")).toBe("");
+      // Ordering applies ONLY character-neglect: case can't matter once both
+      // sides are parsed as numbers, and numeric is implicit there.
+      expect(describeCompareOptions(all, "greater_than")).toBe('ignoring "- "');
+      expect(describeCompareOptions(all, "less_than")).toBe('ignoring "- "');
+      // Emptiness and row-selection operators apply none of them.
       expect(describeCompareOptions(all, "is_empty")).toBe("");
       expect(describeCompareOptions(all, "in_list")).toBe("");
     });

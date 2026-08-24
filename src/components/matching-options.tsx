@@ -12,8 +12,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
   describeCompareOptions,
+  supportsCaseOption,
+  supportsCharOption,
   supportsNumericOption,
-  supportsTextOptions,
 } from "@/features/executions/lib/compare";
 
 /** The three option fields, as they sit on a condition/case/rule config object. */
@@ -81,7 +82,10 @@ export function MatchingOptions({
   onChange,
   idPrefix,
 }: Props) {
-  if (!supportsTextOptions(operator)) return null;
+  // The char option covers the widest operator set (it is a superset of the
+  // case set), so a operator outside it has no applicable option at all.
+  if (!supportsCharOption(operator)) return null;
+  const showCase = supportsCaseOption(operator);
   const showNumeric = supportsNumericOption(operator);
   const summary = describeCompareOptions(
     { ignoreCase, ignoreChars, numeric },
@@ -90,19 +94,21 @@ export function MatchingOptions({
 
   return (
     <RestraintsSection summary={summary}>
-      <div className="flex items-center justify-between gap-2">
-        <Label
-          htmlFor={`${idPrefix}-ignore-case`}
-          className="text-xs font-normal"
-        >
-          Ignore case
-        </Label>
-        <Switch
-          id={`${idPrefix}-ignore-case`}
-          checked={ignoreCase === true}
-          onCheckedChange={(checked) => onChange({ ignoreCase: checked })}
-        />
-      </div>
+      {showCase ? (
+        <div className="flex items-center justify-between gap-2">
+          <Label
+            htmlFor={`${idPrefix}-ignore-case`}
+            className="text-xs font-normal"
+          >
+            Ignore case
+          </Label>
+          <Switch
+            id={`${idPrefix}-ignore-case`}
+            checked={ignoreCase === true}
+            onCheckedChange={(checked) => onChange({ ignoreCase: checked })}
+          />
+        </div>
+      ) : null}
 
       {showNumeric ? (
         <div className="flex items-center justify-between gap-2">
