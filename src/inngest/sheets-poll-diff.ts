@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sanitizeHeaderKey } from "@/lib/sheet-headers";
 import {
   type RowScope,
   rowPassesScope,
@@ -134,7 +135,11 @@ export function changedFieldNames(
   changedColumns: number[],
 ): string[] {
   return changedColumns.map((idx) => {
-    const name = (headerRow[idx] ?? "").trim();
+    // Sanitized for the same reason `rowValuesByHeader` is: these names travel
+    // in the same payload as `values`, and a downstream node comparing
+    // `changedFields` against a column name the picker offered would never
+    // match if one side kept the dots and the other dropped them.
+    const name = sanitizeHeaderKey(headerRow[idx] ?? "");
     return name || `Column ${idx + 1}`;
   });
 }
@@ -148,6 +153,14 @@ export function changedFieldNames(
  * static `<sid>:<rowIndex>` key would collide with the deleted row's long-lived
  * Execution forever and silently swallow the new row. Identical re-appends dedupe.
  *
+ * The key is scoped to the TAB, not just the spreadsheet. Row 5 of "Sheet1" and
+ * row 5 of "Sheet2" in one file are different records that happen to share an
+ * index, and keying on the spreadsheet alone made them collide: pointing a
+ * trigger at a fresh tab holding the same data as the old one produced keys
+ * already consumed by the old tab's runs, so every row deduped and the new
+ * trigger fired nothing at all. The name is percent-encoded so a tab called
+ * "a:b" cannot be confused with a tab "a" at some row "b".
+ *
  * Edits key on the POLL INVOCATION (`pollToken`), not content, because the same
  * cell can change back to a value it held before — a content key would collide
  * with that earlier edit's still-live Execution and swallow the repeat. The token
@@ -157,6 +170,7 @@ export function changedFieldNames(
  */
 export function sheetsPollIdempotencyKey(params: {
   spreadsheetId: string;
+  sheetName: string;
   rowIndex: number;
   changeType: "added" | "updated";
   row: string[];
@@ -165,7 +179,9 @@ export function sheetsPollIdempotencyKey(params: {
 }): string {
   const discriminator =
     params.changeType === "added" ? hashRow(params.row) : params.pollToken;
-  return `google_sheets:${params.spreadsheetId}:${params.rowIndex}:${discriminator}`;
+  return `google_sheets:${params.spreadsheetId}:${encodeURIComponent(
+    params.sheetName,
+  )}:${params.rowIndex}:${discriminator}`;
 }
 
 /**
@@ -173,14 +189,18 @@ export function sheetsPollIdempotencyKey(params: {
  * the same reason edits are: a title changed back to a value it held before would
  * otherwise collide with that earlier change's still-live Execution and be
  * swallowed. Distinct namespace from the row key, so a heading and a data row at
- * the same index can't collide.
+ * the same index can't collide — and tab-scoped for the same reason the row key
+ * is.
  */
 export function sheetsHeadingIdempotencyKey(params: {
   spreadsheetId: string;
+  sheetName: string;
   rowIndex: number;
   pollToken: string;
 }): string {
-  return `google_sheets:${params.spreadsheetId}:heading:${params.rowIndex}:${params.pollToken}`;
+  return `google_sheets:${params.spreadsheetId}:${encodeURIComponent(
+    params.sheetName,
+  )}:heading:${params.rowIndex}:${params.pollToken}`;
 }
 
 /**
@@ -471,7 +491,13 @@ export function rowValuesByHeader(
 ): Record<string, string> {
   const values: Record<string, string> = {};
   headerRow.forEach((header, i) => {
-    const key = (header ?? "").trim();
+    // Through `sanitizeHeaderKey`, exactly as the Sheets ACTION keys its
+    // `rowByHeader`. Template paths are split on ".", so a header carrying one
+    // ("S.No.", "Vehicle No.") produced a key no `@<...>@` reference could ever
+    // address: the value was present in the context and rendered blank anyway.
+    // The action had sanitized for this reason since it was written; the trigger
+    // not doing so is what made those two columns silently unreachable.
+    const key = sanitizeHeaderKey(header ?? "");
     if (key) values[key] = row[i] ?? "";
   });
   return values;

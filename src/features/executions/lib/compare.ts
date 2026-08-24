@@ -39,26 +39,45 @@ export type CompareOptions = {
   numeric?: boolean;
 };
 
-// Operators whose comparison is textual, so case/character normalization is
-// meaningful. The ordering operators are already numeric-only, and the emptiness
-// checks take no comparison value — options don't apply to those.
-const TEXT_COMPARE_OPERATORS = new Set<CompareOperator>([
+// Operators compared as text, where CASE normalization is meaningful. The
+// ordering pair is excluded because its operands are parsed as numbers, and the
+// emptiness checks take no comparison value at all.
+const CASE_OPTION_OPERATORS = new Set<CompareOperator>([
   "equals",
   "not_equals",
   "contains",
   "not_contains",
 ]);
 
-// Operators where "compare as number" changes anything (the equality pair —
-// greater/less are always numeric already).
+// Operators where stripping characters changes the outcome.
+//
+// This INCLUDES the ordering pair, and that is the whole point. Ordering parses
+// both operands as numbers, so a cell holding a formatted amount — "₹18,400.00",
+// "1,234", "45 kg" — parses as NaN and the comparison silently answers false.
+// Neglecting the symbol and separators is what makes such a cell orderable, so
+// hiding the option from the operators that most need it (as gating it on the
+// text set did) left no way to compare money at all.
+const CHAR_OPTION_OPERATORS = new Set<CompareOperator>([
+  ...CASE_OPTION_OPERATORS,
+  "greater_than",
+  "less_than",
+]);
+
+// Operators where "compare as number" is a CHOICE. Ordering is always numeric,
+// so the toggle would be a no-op there rather than a missing capability.
 const NUMERIC_OPTION_OPERATORS = new Set<CompareOperator>([
   "equals",
   "not_equals",
 ]);
 
-/** Whether case/character-ignore options apply to this operator (drives the UI). */
-export function supportsTextOptions(operator: string): boolean {
-  return TEXT_COMPARE_OPERATORS.has(operator as CompareOperator);
+/** Whether the ignore-case option applies to this operator (drives the UI). */
+export function supportsCaseOption(operator: string): boolean {
+  return CASE_OPTION_OPERATORS.has(operator as CompareOperator);
+}
+
+/** Whether the neglect-characters option applies to this operator (drives the UI). */
+export function supportsCharOption(operator: string): boolean {
+  return CHAR_OPTION_OPERATORS.has(operator as CompareOperator);
 }
 
 /** Whether the numeric-compare option applies to this operator (drives the UI). */
@@ -125,9 +144,14 @@ export function asString(value: unknown): string {
  * missing field reference renders to "" — so without the empty check a missing
  * value would satisfy `less_than 2` (0 < 2). Empty and non-numeric operands are
  * "not a number", never 0.
+ *
+ * Normalizes BEFORE parsing. Parsing the raw operand is what made every numeric
+ * comparison against a formatted cell answer false no matter which options were
+ * set: `ignoreChars` was applied only on the string-comparison fallback, which
+ * ordering never reaches. With no options set this is byte-identical to before.
  */
-function toNumber(value: unknown): number | null {
-  const s = asString(value).trim();
+function toNumber(value: unknown, options?: CompareOptions): number | null {
+  const s = normalizeForNumber(asString(value), options).trim();
   if (s === "") {
     return null;
   }
@@ -141,8 +165,9 @@ function toNumber(value: unknown): number | null {
  * active — nothing to show.
  *
  * Gated by `operator` so it only lists options the executor ACTUALLY applied:
- * case/character options are inert on ordering, emptiness, `in_list` and date
- * operators, and `numeric` is inert on anything but equals/not_equals. Reporting
+ * case is inert on ordering and emptiness, character-neglect is inert only on
+ * the emptiness checks (ordering DOES apply it — see `CHAR_OPTION_OPERATORS`),
+ * and `numeric` is inert on anything but equals/not_equals. Reporting
  * an option the comparison ignored would mislead a user debugging a mismatch.
  * When `operator` is omitted, every set option is listed (no gating).
  */
@@ -151,14 +176,46 @@ export function describeCompareOptions(
   operator?: string,
 ): string {
   if (!options) return "";
-  const textOk = operator === undefined || supportsTextOptions(operator);
+  const caseOk = operator === undefined || supportsCaseOption(operator);
+  const charOk = operator === undefined || supportsCharOption(operator);
   const numOk = operator === undefined || supportsNumericOption(operator);
   const parts: string[] = [];
-  if (textOk && options.ignoreCase) parts.push("case-insensitive");
-  if (textOk && options.ignoreChars)
+  if (caseOk && options.ignoreCase) parts.push("case-insensitive");
+  if (charOk && options.ignoreChars)
     parts.push(`ignoring "${options.ignoreChars}"`);
   if (numOk && options.numeric) parts.push("as number");
   return parts.join(" · ");
+}
+
+/**
+ * Characters `ignoreChars` must never strip when the operand is about to be
+ * PARSED as a number, because removing them changes the value rather than the
+ * formatting: "-5" would become 5 and invert an ordering, and "18.5" would
+ * become 185.
+ *
+ * This matters because the option is per-condition and survives an operator
+ * change — nothing clears it when a condition switches from `equals` to
+ * `greater_than`, so the documented text example (`"- "`, for matching
+ * "RJ-09 AB") can arrive on the numeric path without the user ever choosing it
+ * there.
+ */
+const NUMERICALLY_SIGNIFICANT = new Set(["-", "+", "."]);
+
+/**
+ * `ignoreChars` as applied on a NUMERIC path: the listed characters minus the
+ * ones that carry numeric meaning, and no case folding.
+ *
+ * Case is skipped deliberately rather than by omission. Lowercasing can only
+ * turn a parseable token into an unparseable one ("Infinity"), never the
+ * reverse, so applying it here would flip a comparison for no benefit — and
+ * `describeCompareOptions` already tells the user case is inert on ordering.
+ */
+function normalizeForNumber(value: string, options?: CompareOptions): string {
+  if (!options?.ignoreChars) return value;
+  const drop = [...options.ignoreChars].filter(
+    (c) => !NUMERICALLY_SIGNIFICANT.has(c),
+  );
+  return drop.length > 0 ? stripChars(value, drop.join("")) : value;
 }
 
 /** Removes every character listed in `chars` from `s` (the "neglect" option). */
@@ -211,7 +268,13 @@ function equalsWithOptions(
   options?: CompareOptions,
 ): boolean {
   if (options?.numeric) {
-    const eq = numericEquals(a, b);
+    // Normalized first, for the reason given on `toNumber`: "₹0.00" is not a
+    // number until the symbol is gone, and without this the numeric branch
+    // declined and fell through to comparing "0.00" with "0" as strings.
+    const eq = numericEquals(
+      normalizeForNumber(a, options),
+      normalizeForNumber(b, options),
+    );
     if (eq !== null) return eq;
   }
   return normalizeOperand(a, options) === normalizeOperand(b, options);
@@ -249,13 +312,13 @@ export function evaluateCondition(
     // no meaningful order, so the answer is false (no lexicographic fallback —
     // string ordering silently misranked values like "9" vs "10").
     case "greater_than": {
-      const a = toNumber(fieldValue);
-      const b = toNumber(compareRaw);
+      const a = toNumber(fieldValue, options);
+      const b = toNumber(compareRaw, options);
       return a !== null && b !== null && a > b;
     }
     case "less_than": {
-      const a = toNumber(fieldValue);
-      const b = toNumber(compareRaw);
+      const a = toNumber(fieldValue, options);
+      const b = toNumber(compareRaw, options);
       return a !== null && b !== null && a < b;
     }
     case "is_empty":

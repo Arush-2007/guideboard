@@ -2,6 +2,7 @@ import {
   inactiveFieldsForNode,
   isRefCheckedNodeType,
   selfRootsForType,
+  singleOutputKeyForType,
 } from "@/config/node-references";
 import { isCustomFeatureRef } from "@/lib/custom-feature-token";
 import {
@@ -79,6 +80,13 @@ export type ReachableValues = {
   closed: ReadonlySet<string>;
   /** Root keys reachable at all, for everything no closed container covers. */
   roots: ReadonlySet<string>;
+  /**
+   * Roots that nest everything they publish under one key (a Code node's
+   * `result`), as root -> that key. Narrower than `closed`: the key's CONTENTS
+   * stay open — nothing can know what a Code node returns — but a sibling of it
+   * is knowably wrong. See `singleOutputKeyForType`.
+   */
+  nestedUnder: ReadonlyMap<string, string>;
 };
 
 export function availablePaths(
@@ -107,10 +115,16 @@ type MutableReachable = {
   paths: Set<string>;
   closed: Set<string>;
   roots: Set<string>;
+  nestedUnder: Map<string, string>;
 };
 
 function emptyReachable(): MutableReachable {
-  return { paths: new Set(), closed: new Set(), roots: new Set() };
+  return {
+    paths: new Set(),
+    closed: new Set(),
+    roots: new Set(),
+    nestedUnder: new Map(),
+  };
 }
 
 /**
@@ -140,10 +154,14 @@ export function reachableValues(
  * the live data, so together they are the whole of it.
  */
 function addPublishedPaths(into: MutableReachable, node: GraphNode): void {
+  const nested = singleOutputKeyForType(node.type);
   for (const row of fieldsForNode(node)) {
     into.paths.add(row.path);
     const root = row.path.split(".", 1)[0];
     if (root) into.roots.add(root);
+    // Taken from the published path's root rather than from the node's ref, so
+    // it can only ever name a root this walk actually offered.
+    if (root && nested) into.nestedUnder.set(root, nested);
     if (row.discovered) {
       // Guarded on the INDEX, not on the resulting string. A dot-less path
       // (`rows`) gives `lastIndexOf` of -1, and `slice(0, -1)` is the path minus
@@ -171,6 +189,10 @@ function addPublishedPaths(into: MutableReachable, node: GraphNode): void {
  *      renamed is a value the sheet demonstrably no longer has.
  *   3. Otherwise, is the producing step reachable at all? Then yes.
  *
+ * Step 2b narrows step 3 for the one case where the wrapper IS knowable: a
+ * Code node publishes `{ result }` and nothing else, so `CODE_1.total` is wrong
+ * however arbitrary the returned shape is. The contents of `result` stay open.
+ *
  * Step 3 is deliberately permissive, because the static output registry is a
  * CURATED list, not a description: `node-outputs.ts` declares what is worth
  * offering in the picker and routinely omits outputs the executor really emits —
@@ -187,7 +209,17 @@ function isOfferedPath(path: string, available: ReachableValues): boolean {
   }
 
   const root = path.split(".", 1)[0];
-  return root ? available.roots.has(root) : false;
+  if (!root) return false;
+
+  const nested = available.nestedUnder.get(root);
+  if (nested !== undefined) {
+    const rest = path.slice(root.length + 1);
+    // The bare root is the whole object, which is legitimate to reference.
+    if (rest === "") return true;
+    return rest === nested || rest.startsWith(`${nested}.`);
+  }
+
+  return available.roots.has(root);
 }
 
 /**
@@ -294,6 +326,7 @@ function mergeReachable(into: MutableReachable, from: ReachableValues): void {
   for (const path of from.paths) into.paths.add(path);
   for (const container of from.closed) into.closed.add(container);
   for (const root of from.roots) into.roots.add(root);
+  for (const [root, key] of from.nestedUnder) into.nestedUnder.set(root, key);
 }
 
 /** Shared stand-in for the cycle break. Never mutated — see `resolve`. */

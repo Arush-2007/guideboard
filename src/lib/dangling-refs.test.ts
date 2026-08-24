@@ -934,3 +934,97 @@ describe("stripDanglingRefs", () => {
     expect(stripDanglingRefs(config, new Set())).toBe(config);
   });
 });
+
+describe("a producer that nests everything under one key (Code node)", () => {
+  // A Code node returns an arbitrary shape, so `result.<anything>` can never be
+  // checked — but the WRAPPER is fixed. The executor writes `{ result }`, so a
+  // sibling of `result` is knowably wrong however the code is written.
+  const graph = () => ({
+    nodes: [
+      {
+        id: "code",
+        type: NodeType.CODE,
+        data: { ref: "CODE_1", code: "return { total: 5 };" },
+      },
+      {
+        id: "sink",
+        type: NodeType.GOOGLE_SHEETS_ACTION,
+        data: {
+          ref: "P_HEAD",
+          action: "append_row",
+          spreadsheetId: "s",
+          sheetName: "t",
+          columnMappings: {} as Record<string, string>,
+        },
+      },
+    ],
+    edges: [{ source: "code", target: "sink" }],
+  });
+
+  const danglingFor = (mappings: Record<string, string>) => {
+    const { nodes, edges } = graph();
+    (
+      nodes[1].data as { columnMappings: Record<string, string> }
+    ).columnMappings = mappings;
+    return findDanglingRefsByNode(nodes, edges).flatMap((n) =>
+      n.refs.map((r) => r.path),
+    );
+  };
+
+  it("flags a path that skips the wrapper", () => {
+    // The exact defect: every consumer said `.total` where the value lives at
+    // `.result.total`, and each one rendered blank with nothing to say why.
+    expect(danglingFor({ a: "@<CODE_1.total>@" })).toEqual(["CODE_1.total"]);
+  });
+
+  it("allows anything under the wrapper, however deep", () => {
+    expect(
+      danglingFor({
+        a: "@<CODE_1.result>@",
+        b: "@<CODE_1.result.total>@",
+        c: "@<CODE_1.result.nested.deeply.here>@",
+      }),
+    ).toEqual([]);
+  });
+
+  it("allows the bare node reference", () => {
+    expect(danglingFor({ a: "@<CODE_1>@" })).toEqual([]);
+  });
+
+  it("does not flag a key that merely starts with the wrapper's name", () => {
+    // `resultant` is a sibling of `result`, not a child of it.
+    expect(danglingFor({ a: "@<CODE_1.resultant>@" })).toEqual([
+      "CODE_1.resultant",
+    ]);
+  });
+
+  it("leaves ordinary producers permissive", () => {
+    // The output registry is curated, not exhaustive, so an unlisted path on a
+    // normal node must still pass — that permissiveness is deliberate.
+    const nodes = [
+      {
+        id: "sheets",
+        type: NodeType.GOOGLE_SHEETS_ACTION,
+        data: {
+          ref: "OG_SHEETS",
+          action: "find_rows",
+          spreadsheetId: "s",
+          sheetName: "t",
+        },
+      },
+      {
+        id: "sink",
+        type: NodeType.GOOGLE_SHEETS_ACTION,
+        data: {
+          ref: "P_HEAD",
+          action: "append_row",
+          spreadsheetId: "s",
+          sheetName: "t",
+          columnMappings: { a: "@<OG_SHEETS.rows>@" },
+        },
+      },
+    ];
+    const edges = [{ source: "sheets", target: "sink" }];
+    expect(findDanglingRefsByNode(nodes, edges)).toEqual([]);
+  });
+});

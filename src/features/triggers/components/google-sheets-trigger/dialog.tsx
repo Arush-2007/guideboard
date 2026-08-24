@@ -35,6 +35,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { sanitizeHeaderKey } from "@/lib/sheet-headers";
 import type { RowScope } from "@/lib/sheets-trigger-options";
 import {
   SHEETS_TRIGGER_DEFAULT_ROW_SCOPE,
@@ -181,7 +182,10 @@ export const GoogleSheetsTriggerDialog = ({
           // what was saved so a quick re-save doesn't wipe the fields.
           headers.length > 0
           ? headers.map((h) => ({
-              path: `googleSheets.values.${h}`,
+              // Sanitized to match the key the poller writes
+              // (`rowValuesByHeader`); offering the raw header would hand the
+              // user a dotted path that can never resolve.
+              path: `googleSheets.values.${sanitizeHeaderKey(h)}`,
               label: h,
             }))
           : // Keep only COLUMN fields: if this node was last saved in heading
@@ -255,7 +259,7 @@ export const GoogleSheetsTriggerDialog = ({
                     <Input placeholder="Sheet1" {...field} />
                   </FormControl>
                   <FormDescription>
-                    This tab is checked every 5 minutes.
+                    This tab is checked on the deployment's poll interval.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

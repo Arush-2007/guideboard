@@ -6,7 +6,7 @@ import {
   TOKEN_WEBHOOK_TRIGGER_TYPES,
   TRIGGER_NODE_TYPES,
 } from "@/config/node-kinds";
-import { NodeType, type Prisma } from "@/generated/prisma";
+import { NodeType, Prisma } from "@/generated/prisma";
 import {
   findDanglingRefsByNode,
   type NodeDanglingRefs,
@@ -356,6 +356,31 @@ export async function syncTriggerPollsForWorkflow(
     const ignoreColumns = triggerData.ignoreColumns ?? [];
 
     if (triggerData.spreadsheetId && triggerData.sheetName) {
+      // Pointing the trigger at a different tab (or a different spreadsheet)
+      // invalidates the stored baseline, and nothing downstream can tell.
+      // `planSheetsPollChanges` diffs POSITIONALLY against `lastRowCount` +
+      // `rowHashes`, so the new tab would be compared with the OLD tab's
+      // snapshot: a smaller tab never reaches the old row count and so can never
+      // fire at all, and a larger one fires every row past that count as
+      // "added" — a burst of runs over rows that were already sitting there.
+      //
+      // Clearing both makes the next poll a baseline: it records the new tab as
+      // it stands and fires nothing, which is precisely what attaching a fresh
+      // trigger does. Rows added AFTER that poll fire normally.
+      //
+      // Only this axis needs handling here. A change to the watched COLUMNS is
+      // detected by the poller itself through the stored projection (see
+      // `ignoreColumns` above), which also covers headers edited directly in
+      // the sheet — one mechanism, one place.
+      const existing = await prisma.googleSheetsPoll.findUnique({
+        where: { workflowId },
+        select: { spreadsheetId: true, sheetName: true },
+      });
+      const nowWatchingElsewhere =
+        existing !== null &&
+        (existing.spreadsheetId !== triggerData.spreadsheetId ||
+          existing.sheetName !== triggerData.sheetName);
+
       await prisma.googleSheetsPoll.upsert({
         where: { workflowId },
         update: {
@@ -365,6 +390,10 @@ export async function syncTriggerPollsForWorkflow(
           triggerOn,
           rowScope,
           ignoreColumns,
+          // Json column, so a database NULL needs the explicit sentinel.
+          ...(nowWatchingElsewhere
+            ? { lastRowCount: 0, rowHashes: Prisma.DbNull }
+            : {}),
         },
         create: {
           userId,

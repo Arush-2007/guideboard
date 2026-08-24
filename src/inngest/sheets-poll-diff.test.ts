@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { sanitizeHeaderKey } from "@/lib/sheet-headers";
 import { SHEETS_TRIGGER_DEFAULT_ROW_SCOPE } from "@/lib/sheets-trigger-options";
 import {
   changedFieldNames,
@@ -420,7 +421,12 @@ describe("computeWatchedColumns (ignore set → watched indices)", () => {
 });
 
 describe("sheetsPollIdempotencyKey", () => {
-  const base = { spreadsheetId: "sheet1", rowIndex: 5, pollToken: "T" };
+  const base = {
+    spreadsheetId: "sheet1",
+    sheetName: "Tab A",
+    rowIndex: 5,
+    pollToken: "T",
+  };
 
   it("appends: a different row at the SAME index yields a different key (so an index reused after a delete still fires)", () => {
     const a = sheetsPollIdempotencyKey({
@@ -439,6 +445,7 @@ describe("sheetsPollIdempotencyKey", () => {
   it("appends: identical content at the same index is stable (dedups retries) and ignores the poll token", () => {
     const a = sheetsPollIdempotencyKey({
       spreadsheetId: "sheet1",
+      sheetName: "Tab A",
       rowIndex: 5,
       changeType: "added",
       row: ["same"],
@@ -446,6 +453,7 @@ describe("sheetsPollIdempotencyKey", () => {
     });
     const b = sheetsPollIdempotencyKey({
       spreadsheetId: "sheet1",
+      sheetName: "Tab A",
       rowIndex: 5,
       changeType: "added",
       row: ["same"],
@@ -458,6 +466,7 @@ describe("sheetsPollIdempotencyKey", () => {
     // Same row, same content, two different polls → distinct keys → not deduped.
     const first = sheetsPollIdempotencyKey({
       spreadsheetId: "sheet1",
+      sheetName: "Tab A",
       rowIndex: 2,
       changeType: "updated",
       row: ["Done"],
@@ -465,18 +474,61 @@ describe("sheetsPollIdempotencyKey", () => {
     });
     const laterRepeat = sheetsPollIdempotencyKey({
       spreadsheetId: "sheet1",
+      sheetName: "Tab A",
       rowIndex: 2,
       changeType: "updated",
       row: ["Done"],
       pollToken: "200",
     });
-    expect(first).toBe("google_sheets:sheet1:2:100");
+    expect(first).toBe("google_sheets:sheet1:Tab%20A:2:100");
     expect(first).not.toBe(laterRepeat);
+  });
+
+  it("scopes the key to the TAB, not just the spreadsheet", () => {
+    // Two tabs in ONE file are different records that merely share a row index.
+    // Keying on the spreadsheet alone made them collide, so repointing a trigger
+    // at a fresh tab holding the same data produced keys the old tab had already
+    // consumed — every row deduped and the new trigger fired nothing.
+    const onTabA = sheetsPollIdempotencyKey({
+      ...base,
+      sheetName: "Tab A",
+      changeType: "added",
+      row: ["same"],
+    });
+    const onTabB = sheetsPollIdempotencyKey({
+      ...base,
+      sheetName: "Tab B",
+      changeType: "added",
+      row: ["same"],
+    });
+    expect(onTabA).not.toEqual(onTabB);
+  });
+
+  it("encodes the tab name so a colon in it cannot forge another field", () => {
+    // Without encoding, sheet "a:b" at row 5 and sheet "a" at row "b:5" would
+    // render the same string.
+    const colonTab = sheetsPollIdempotencyKey({
+      ...base,
+      sheetName: "a:b",
+      rowIndex: 5,
+      changeType: "updated",
+      row: [],
+    });
+    const plainTab = sheetsPollIdempotencyKey({
+      ...base,
+      sheetName: "a",
+      rowIndex: 5,
+      changeType: "updated",
+      row: [],
+    });
+    expect(colonTab).not.toEqual(plainTab);
+    expect(colonTab).toContain("a%3Ab");
   });
 
   it("edits: the same poll token dedups a step retry regardless of content", () => {
     const a = sheetsPollIdempotencyKey({
       spreadsheetId: "sheet1",
+      sheetName: "Tab A",
       rowIndex: 2,
       changeType: "updated",
       row: ["Done"],
@@ -484,6 +536,7 @@ describe("sheetsPollIdempotencyKey", () => {
     });
     const b = sheetsPollIdempotencyKey({
       spreadsheetId: "sheet1",
+      sheetName: "Tab A",
       rowIndex: 2,
       changeType: "updated",
       row: ["Pending"],
@@ -517,6 +570,34 @@ describe("rowValuesByHeader", () => {
       Name: "a",
       Status: "c",
     });
+  });
+
+  it("strips dots so the key is reachable from a template path", () => {
+    // Template paths split on ".", so a raw "S.No." key resolves as
+    // values -> S -> No -> "" and the cell renders blank however it is
+    // referenced. The Sheets ACTION has always sanitized for this reason; the
+    // trigger not doing so made these columns silently unaddressable even
+    // though their values were present in the context.
+    expect(
+      rowValuesByHeader(
+        ["S.No.", "Vehicle No.", "Customer Name"],
+        ["46", "RJ34TA1496", "BRAJESH"],
+      ),
+    ).toEqual({
+      SNo: "46",
+      "Vehicle No": "RJ34TA1496",
+      "Customer Name": "BRAJESH",
+    });
+  });
+
+  it("keys by the same string the trigger dialog offers in the picker", () => {
+    // The picker builds `googleSheets.values.${sanitizeHeaderKey(h)}`; if these
+    // two ever disagree the user picks a variable that resolves to nothing.
+    const headers = ["S.No.", "Job No.", "Total Amount"];
+    const values = rowValuesByHeader(headers, ["1", "2", "3"]);
+    for (const h of headers) {
+      expect(Object.keys(values)).toContain(sanitizeHeaderKey(h));
+    }
   });
 });
 
@@ -827,7 +908,7 @@ describe("heading changes vs the stale-projection guard", () => {
 });
 
 describe("sheetsHeadingIdempotencyKey", () => {
-  const base = { spreadsheetId: "sid", rowIndex: 3 };
+  const base = { spreadsheetId: "sid", sheetName: "Tab A", rowIndex: 3 };
 
   it("is stable across retries of one poll", () => {
     expect(sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" })).toBe(
@@ -847,10 +928,19 @@ describe("sheetsHeadingIdempotencyKey", () => {
     );
   });
 
+  it("is tab-scoped too, so the same heading row in two tabs is distinct", () => {
+    expect(
+      sheetsHeadingIdempotencyKey({ ...base, sheetName: "A", pollToken: "1" }),
+    ).not.toBe(
+      sheetsHeadingIdempotencyKey({ ...base, sheetName: "B", pollToken: "1" }),
+    );
+  });
+
   it("cannot collide with a row change at the same index", () => {
     expect(sheetsHeadingIdempotencyKey({ ...base, pollToken: "1" })).not.toBe(
       sheetsPollIdempotencyKey({
         spreadsheetId: "sid",
+        sheetName: "Tab A",
         rowIndex: 3,
         changeType: "updated",
         row: [],
