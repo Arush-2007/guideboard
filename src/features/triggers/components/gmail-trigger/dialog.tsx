@@ -25,9 +25,9 @@ export const GmailTriggerDialog = ({
         <DialogHeader>
           <EditableNodeTitle nodeId={currentNodeId} />
           <DialogDescription>
-            This trigger polls your connected Gmail account every 5 minutes for
-            new unread emails. It captures sender, subject, snippet, then marks
-            each processed email as read.
+            This trigger polls your connected Gmail account on the deployment's
+            poll interval for new unread emails. It captures sender, subject,
+            snippet, then marks each processed email as read.
           </DialogDescription>
         </DialogHeader>
       </DialogContent>

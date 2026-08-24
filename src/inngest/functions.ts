@@ -166,8 +166,10 @@ export const executeWorkflow = inngest.createFunction(
 // Deliberately ONE function running ONE step for all three providers, rather
 // than the three near-identical dispatchers this replaces. A cron tick is
 // billed whether or not it finds work, and Inngest bills per step: three empty
-// `*/5` dispatchers cost three times one combined empty tick — roughly 26k
-// billed steps a month against 9k — for byte-identical behaviour. The three
+// dispatchers cost three times one combined empty tick, for byte-identical
+// behaviour. The absolute numbers move with `POLL_CRON` (three dispatchers at
+// a 15-minute interval is ~8.6k billed steps a month against ~2.9k), but the
+// 3x ratio this decision rests on does not. The three
 // queries share a single `step.run` for that same reason; splitting them into a
 // step apiece would hand the saving straight back.
 //
@@ -197,7 +199,7 @@ export const pollTriggers = inngest.createFunction(
       // otherwise take the other two providers' dispatch down with it, which is
       // the isolation the three separate functions used to give for free. A
       // provider that fails is skipped for this tick alone and recovers on the
-      // next one five minutes later — cheaper than losing all three. Retrying
+      // next one a poll interval later — cheaper than losing all three. Retrying
       // instead wouldn't buy that back: with `retries: 1` a persistent fault
       // still ends with every provider dropped.
       const settled = await Promise.allSettled(

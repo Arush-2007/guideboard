@@ -255,7 +255,7 @@ export const GoogleSheetsTriggerDialog = ({
                     <Input placeholder="Sheet1" {...field} />
                   </FormControl>
                   <FormDescription>
-                    This tab is checked every 5 minutes.
+                    This tab is checked on the deployment's poll interval.
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

@@ -291,6 +291,17 @@ export const ScheduleTriggerDialog = ({
                 <p className="text-xs text-muted-foreground font-mono">
                   {cron}
                 </p>
+                {preview.data.underFires ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-500">
+                    This deployment checks for due schedules every{" "}
+                    {preview.data.underFires.pollMinutes} minutes, so a schedule
+                    that repeats every {preview.data.underFires.scheduleMinutes}{" "}
+                    minutes will only run about every{" "}
+                    {preview.data.underFires.pollMinutes} minutes — the slots in
+                    between are skipped, not queued. Either widen the schedule
+                    or lower POLL_CRON.
+                  </p>
+                ) : null}
               </div>
             ) : (
               <span className="text-destructive">

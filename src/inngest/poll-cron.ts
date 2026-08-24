@@ -46,7 +46,20 @@ import { logger } from "@/lib/logger";
  * This interval caps granularity in both directions: a SCHEDULE_TRIGGER fires
  * only as precisely as the poll that finds it, and a Gmail/Sheets/YouTube
  * trigger sees new data only as promptly. At every 15 minutes a schedule set
- * for 09:07 runs at 09:15. Nothing is missed — only delayed.
+ * for 09:07 runs at 09:15.
+ *
+ * For a schedule COARSER than this interval that is the whole story — late, but
+ * every slot delivered. For a FINER one it is not: `processSchedulePoll`
+ * recomputes `nextRunAt` from now rather than from the slot it fired, so a
+ * five-minute cron under a 15-minute poll delivers about 4 of its 12 hourly
+ * slots and drops the rest. Slots are SKIPPED, not queued. The schedule dialog
+ * says so at configuration time (`scheduleUnderFires`, `src/lib/schedule.ts`);
+ * this comment used to claim nothing was ever missed, which held only for the
+ * coarse case.
+ *
+ * The polling triggers carry their own version of the trade: Gmail lists at
+ * most 10 unread messages per tick and YouTube 50 comments, neither paginated,
+ * so a longer interval is also a smaller share of a busy source per tick.
  */
 export const DEFAULT_POLL_CRON = "*/15 * * * *";
 
@@ -54,10 +67,18 @@ export const DEFAULT_POLL_CRON = "*/15 * * * *";
  * Whether a string is shaped like a cron expression Inngest will accept: five
  * whitespace-separated fields, after an optional `TZ=<zone>` prefix.
  *
- * A shape check, not a parse — it catches the realistic typo (four fields, a
- * stray quote, prose) and does not pretend to validate field contents.
+ * The quote check is not decoration. Vercel stores an environment value
+ * literally, so a value pasted WITH the quotes `.env.example` writes it in
+ * arrives as a five-field string that merely begins and ends with a quote — it
+ * passed a field count alone, reached `createFunction`, and took the whole
+ * serve() handler down with it. That is precisely the outage this function
+ * exists to prevent, so the check has to cover it.
+ *
+ * A shape check, not a parse — it catches the realistic typo (four fields,
+ * quotes, prose) and does not pretend to validate field contents.
  */
 function isCronShaped(value: string): boolean {
+  if (/["']/.test(value)) return false;
   const withoutTimezone = value.replace(/^TZ=\S+\s+/, "");
   return withoutTimezone.split(/\s+/).filter(Boolean).length === 5;
 }
@@ -93,3 +114,16 @@ export function resolvePollCron(value: string | undefined): string {
 
 /** Resolved once at module load — `createFunction` needs a literal at import. */
 export const POLL_CRON = resolvePollCron(process.env.POLL_CRON);
+
+// `SCHEDULE_POLL_CRON` drove the schedule poller before both pollers were put on
+// one interval. A deployment that had deliberately set it (DEPLOYMENT.md used to
+// instruct exactly that) would otherwise have its granularity changed by an
+// upgrade with nothing said, so say it once at boot rather than leave the only
+// trace in a checklist item.
+if (process.env.SCHEDULE_POLL_CRON?.trim()) {
+  logger.warn(
+    "SCHEDULE_POLL_CRON is no longer read — both pollers now share POLL_CRON. " +
+      "Delete it, and set POLL_CRON if you need a non-default interval.",
+    { ignored: process.env.SCHEDULE_POLL_CRON, using: POLL_CRON },
+  );
+}
